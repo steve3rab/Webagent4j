@@ -59,7 +59,7 @@
     <mockito.version>5.18.0</mockito.version>
     <picocli.version>4.7.7</picocli.version>
     <playwright.version>1.60.0</playwright.version>
-    <slf4j.version>2.0.17</slf4j.version>
+    <slf4j.version>2.0.18</slf4j.version>
     <testcontainers.version>1.21.3</testcontainers.version>
 
     <checkstyle.version>10.26.1</checkstyle.version>
