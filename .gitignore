@@ -1,0 +1,23 @@
+# Maven
+.tools/
+target/
+**/target/
+.flattened-pom.xml
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+
+# OS and local output
+.DS_Store
+Thumbs.db
+*.log
+screenshots/
+
+# Playwright
+playwright-report/
+test-results/

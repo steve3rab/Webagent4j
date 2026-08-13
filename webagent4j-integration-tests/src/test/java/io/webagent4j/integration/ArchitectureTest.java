@@ -1,0 +1,147 @@
+package io.webagent4j.integration;
+
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.slices;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.domain.JavaModifier;
+import com.tngtech.archunit.core.importer.ClassFileImporter;
+import org.junit.jupiter.api.Test;
+
+class ArchitectureTest {
+
+    private final JavaClasses projectClasses =
+            new ClassFileImporter().importPackages("io.webagent4j");
+
+    @Test
+    void packageSlicesHaveNoCycles() {
+        slices().matching("io.webagent4j.(*)..")
+                .should()
+                .beFreeOfCycles()
+                .ignoreDependency(
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.dom.."),
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.locator.api.."))
+                .ignoreDependency(
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.browser.."),
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.observation.."))
+                .ignoreDependency(
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.observation.."),
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.browser.."))
+                .check(projectClasses);
+    }
+
+    @Test
+    void coreNeverDependsOnPlaywright() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.core..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("com.microsoft.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void stableContractsNeverDependOnBackendImplementations() {
+        noClasses()
+                .that()
+                .resideInAnyPackage("io.webagent4j.locator..", "io.webagent4j.browser..")
+                .and()
+                .resideOutsideOfPackage("io.webagent4j.browser.playwright..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void semanticObservationRemainsIndependentFromPlaywright() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.observation..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void semanticObservationRemainsIndependentFromAiLibraries() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.observation..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("com.openai..", "dev.langchain4j..", "org.springframework.ai..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void publicObservationContractsDoNotDependOnInternalImplementations() {
+        assertThat(
+                        projectClasses.stream()
+                                .filter(
+                                        type ->
+                                                type.getPackageName()
+                                                        .equals("io.webagent4j.observation"))
+                                .filter(type -> !type.getSimpleName().equals("ObservationEngine")))
+                .allSatisfy(
+                        type ->
+                                assertThat(type.getDirectDependenciesFromSelf())
+                                        .noneMatch(
+                                                dependency ->
+                                                        dependency
+                                                                .getTargetClass()
+                                                                .getPackageName()
+                                                                .startsWith(
+                                                                        "io.webagent4j.observation"
+                                                                                + ".internal")));
+    }
+
+    @Test
+    void coreDoesNotDependOnObservationImplementations() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.core..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("io.webagent4j.observation.internal..")
+                .check(projectClasses);
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.core..")
+                .should()
+                .dependOnClassesThat()
+                .haveFullyQualifiedName("io.webagent4j.observation.ObservationEngine")
+                .check(projectClasses);
+    }
+
+    @Test
+    void abstractClassesUseTheProjectPrefix() {
+        assertThat(
+                        projectClasses.stream()
+                                .filter(type -> !type.isInterface())
+                                .filter(
+                                        type ->
+                                                type.getModifiers()
+                                                        .contains(JavaModifier.ABSTRACT)))
+                .allMatch(type -> type.getSimpleName().startsWith("A"));
+    }
+
+    @Test
+    void interfacesUseTheProjectPrefix() {
+        classes()
+                .that()
+                .areInterfaces()
+                .and()
+                .resideInAPackage("io.webagent4j..")
+                .should()
+                .haveSimpleNameStartingWith("I")
+                .check(projectClasses);
+    }
+}
