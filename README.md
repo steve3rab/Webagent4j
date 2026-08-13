@@ -28,7 +28,7 @@ behind stable public contracts. Playwright is the first browser adapter.
 
 ### Requirements
 
-- Java 21
+- Java 21 or newer
 - Git
 
 Maven is included through the Maven Wrapper.

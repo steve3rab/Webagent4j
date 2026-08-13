@@ -71,9 +71,10 @@
 
     <archunit.version>1.4.1</archunit.version>
     <assertj.version>3.27.3</assertj.version>
+    <byte-buddy.version>1.18.7</byte-buddy.version>
     <jackson.version>2.19.2</jackson.version>
     <junit.version>5.13.4</junit.version>
-    <mockito.version>5.18.0</mockito.version>
+    <mockito.version>5.23.0</mockito.version>
     <picocli.version>4.7.7</picocli.version>
     <playwright.version>1.60.0</playwright.version>
     <slf4j.version>2.0.18</slf4j.version>
@@ -128,6 +129,16 @@
         <groupId>info.picocli</groupId>
         <artifactId>picocli</artifactId>
         <version>${picocli.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>net.bytebuddy</groupId>
+        <artifactId>byte-buddy</artifactId>
+        <version>${byte-buddy.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>net.bytebuddy</groupId>
+        <artifactId>byte-buddy-agent</artifactId>
+        <version>${byte-buddy.version}</version>
       </dependency>
       <dependency>
         <groupId>org.assertj</groupId>
@@ -322,7 +333,7 @@
             <configuration>
               <rules>
                 <requireJavaVersion>
-                  <version>[21,22)</version>
+                  <version>[21,)</version>
                 </requireJavaVersion>
                 <requireMavenVersion>
                   <version>[3.9.0,)</version>
