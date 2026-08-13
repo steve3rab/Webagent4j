@@ -29,3 +29,6 @@ jobs:
       - name: Verify on Windows
         if: runner.os == 'Windows'
         run: .\mvnw.cmd --batch-mode --no-transfer-progress clean verify
+      - name: Verify headless Chromium in Docker
+        if: runner.os == 'Linux'
+        run: docker build --target test --tag webagent4j-test .

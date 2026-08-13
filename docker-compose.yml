@@ -1,8 +1,14 @@
 services:
+  tests:
+    profiles: [test]
+    build:
+      context: .
+      target: test
+
   cli:
     profiles: [tooling]
     build:
       context: .
     command: ["version"]
 
-# V1 integration tests use a local in-process HTTP server and need no external services.
+# Integration tests use a local in-process HTTP server and need no external services.

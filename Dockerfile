@@ -1,8 +1,14 @@
 # syntax=docker/dockerfile:1
-FROM mcr.microsoft.com/playwright/java:v1.60.0-noble AS build
+FROM mcr.microsoft.com/playwright/java:v1.60.0-noble AS base
 WORKDIR /workspace
 COPY . .
-RUN chmod +x mvnw && ./mvnw --batch-mode --no-transfer-progress -DskipTests package
+RUN chmod +x mvnw
+
+FROM base AS test
+RUN ./mvnw --batch-mode --no-transfer-progress clean verify
+
+FROM base AS build
+RUN ./mvnw --batch-mode --no-transfer-progress -DskipTests package
 
 FROM mcr.microsoft.com/playwright/java:v1.60.0-noble
 WORKDIR /app
