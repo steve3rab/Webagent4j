@@ -77,6 +77,7 @@ class VerificationEngineTest {
                                 true, true, true, true, false, true, true, true, true, true, false,
                                 true));
         when(element.text()).thenReturn("Ready now");
+        when(element.value()).thenReturn("42");
         when(element.attributes()).thenReturn(Map.of("data-state", "ready", "value", "42"));
         IElementReference<IElement> target = () -> element;
 

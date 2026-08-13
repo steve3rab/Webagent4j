@@ -110,6 +110,12 @@ final class PlaywrightElement implements IElement {
     }
 
     @Override
+    public String value() {
+        Object value = locator.evaluate("element => 'value' in element ? element.value : ''");
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    @Override
     public boolean visible() {
         return state().visible();
     }

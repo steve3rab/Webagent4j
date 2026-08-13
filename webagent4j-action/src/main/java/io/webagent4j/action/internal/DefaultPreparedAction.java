@@ -31,6 +31,12 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
     DefaultPreparedAction(IActionContext context, ActionCommand<R> command) {
         this.context = Objects.requireNonNull(context, "context");
         this.command = Objects.requireNonNull(command, "command");
+        if (command.target() != null && command.type() == io.webagent4j.action.ActionType.CHECK) {
+            postconditions.add(Verifications.elementChecked(command.target()));
+        }
+        if (command.target() != null && command.type() == io.webagent4j.action.ActionType.UNCHECK) {
+            postconditions.add(Verifications.elementUnchecked(command.target()));
+        }
     }
 
     DefaultPreparedAction<R> sensitive() {

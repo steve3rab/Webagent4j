@@ -1,6 +1,7 @@
 package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.Page;
+import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionBuilder;
 import io.webagent4j.action.internal.DefaultActionBuilder;
 import io.webagent4j.browser.BrowserOptions;
@@ -35,6 +36,7 @@ final class PlaywrightPage implements IPage {
     private final PlaywrightLocatorBackend locatorBackend;
     private final ObservationEngine observationEngine;
     private final PlaywrightObservationBackend observationBackend;
+    private final PlaywrightActionBackend actionBackend;
 
     PlaywrightPage(Page page, BrowserOptions options) {
         this.page = page;
@@ -52,6 +54,7 @@ final class PlaywrightPage implements IPage {
                                 .build());
         this.observationEngine = new ObservationEngine();
         this.observationBackend = new PlaywrightObservationBackend(page);
+        this.actionBackend = new PlaywrightActionBackend(page, options);
     }
 
     @Override
@@ -149,6 +152,11 @@ final class PlaywrightPage implements IPage {
     @Override
     public IActionBuilder action() {
         return new DefaultActionBuilder(this);
+    }
+
+    @Override
+    public IActionBackend actionBackend() {
+        return actionBackend;
     }
 
     @Override

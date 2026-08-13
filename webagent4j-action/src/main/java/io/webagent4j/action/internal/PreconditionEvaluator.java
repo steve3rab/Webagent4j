@@ -83,7 +83,6 @@ final class PreconditionEvaluator {
                     SCROLL,
                     SUBMIT,
                     PRESS_KEY,
-                    UPLOAD,
                     DOWNLOAD ->
                     true;
             default -> false;

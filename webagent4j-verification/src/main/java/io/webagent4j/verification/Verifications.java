@@ -221,7 +221,7 @@ public final class Verifications {
                 VerificationType.VALUE_EQUALS,
                 "Element value equals expected value",
                 expected,
-                element -> element.attributes().getOrDefault("value", ""),
+                IElement::value,
                 expected::equals);
     }
 

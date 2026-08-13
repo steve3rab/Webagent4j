@@ -32,6 +32,11 @@ public interface IElement {
     /** Returns a defensive immutable snapshot of element attributes. */
     Map<String, String> attributes();
 
+    /** Returns the current live form-control value, or an empty string when not applicable. */
+    default String value() {
+        return attributes().getOrDefault("value", "");
+    }
+
     /** Returns whether the element is currently visible. */
     boolean visible();
 
