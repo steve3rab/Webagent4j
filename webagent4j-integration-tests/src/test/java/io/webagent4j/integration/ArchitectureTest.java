@@ -82,6 +82,29 @@ class ArchitectureTest {
     }
 
     @Test
+    void actionAndVerificationRemainIndependentFromPlaywright() {
+        noClasses()
+                .that()
+                .resideInAnyPackage("io.webagent4j.action..", "io.webagent4j.verification..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void publicActionContractsDoNotDependOnInternalImplementations() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.action")
+                .should()
+                .dependOnClassesThat()
+                .resideInAPackage("io.webagent4j.action.internal..")
+                .check(projectClasses);
+    }
+
+    @Test
     void publicObservationContractsDoNotDependOnInternalImplementations() {
         assertThat(
                         projectClasses.stream()
