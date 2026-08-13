@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head><title>ARIA controls</title></head>
+  <body>
+    <main>
+      <span id="aria-checkout-label">Proceed to checkout</span>
+      <button aria-labelledby="aria-checkout-label" data-target="aria-checkout"><svg aria-hidden="true"></svg></button>
+      <button aria-label="Search products" data-target="aria-search"><svg aria-hidden="true"></svg></button>
+      <button aria-label="Delete file" data-target="aria-delete">Misleading save text</button>
+      <span id="aria-share-label">Share document</span><button aria-labelledby="aria-share-label" aria-label="Ignored share" data-target="aria-share">Ignored text</button>
+      <button aria-label="Close dialog" data-target="aria-close"><span aria-hidden="true">X</span></button>
+      <button aria-label="Open notifications" data-target="aria-notifications"><svg><title>Bell</title></svg></button>
+      <div role="button" aria-label="Custom submit" tabindex="0" data-target="aria-custom-submit"></div>
+      <div role="switch" aria-label="Dark mode" aria-checked="false" tabindex="0" data-target="aria-dark-mode"></div>
+      <div role="checkbox" aria-label="Marketing consent" aria-checked="false" tabindex="0" data-target="aria-consent"></div>
+      <div role="radio" aria-label="Express delivery" aria-checked="false" tabindex="0" data-target="aria-delivery"></div>
+      <div role="tablist" aria-label="Product sections">
+        <button role="tab" aria-label="Description tab" data-target="aria-description-tab">Description</button>
+        <button role="tab" aria-label="Reviews tab" data-target="aria-reviews-tab">Reviews</button>
+      </div>
+      <div role="menu" aria-label="Account actions" data-target="aria-account-menu">
+        <button role="menuitem" aria-label="Edit account" data-target="aria-edit-account">Edit</button>
+        <button role="menuitem" aria-label="Sign out account" data-target="aria-sign-out">Sign out</button>
+      </div>
+      <div role="dialog" aria-label="Privacy notice" data-target="aria-privacy-dialog">Privacy</div>
+      <div role="alertdialog" aria-label="Delete confirmation" data-target="aria-delete-dialog">Confirm</div>
+      <div role="status" aria-label="Upload status" data-target="aria-upload-status">Ready</div>
+      <img src="chart.png" aria-label="Quarterly revenue chart" data-target="aria-chart">
+      <a href="#support" aria-label="Open support center" data-target="aria-support">Help</a>
+      <form aria-labelledby="aria-payment-title" data-target="aria-payment-form"><h2 id="aria-payment-title">Payment details</h2></form>
+    </main>
+  </body>
+</html>

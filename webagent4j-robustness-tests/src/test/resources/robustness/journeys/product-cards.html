@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head><title>Scoped product cards</title></head>
+  <body>
+    <main>
+      <h1>Products</h1>
+      <section aria-label="Travel backpack">
+        <h2>Travel backpack</h2><p>42 EUR</p>
+        <button onclick="add('backpack')">Add</button>
+      </section>
+      <section aria-label="Desk lamp">
+        <h2>Desk lamp</h2><p>29 EUR</p>
+        <button onclick="add('lamp')">Add</button>
+      </section>
+      <p role="status" id="cart-status">Cart is empty</p>
+    </main>
+    <script>
+      async function add(product) {
+        await fetch(`/track?target=journey-product-${product}`);
+        document.getElementById('cart-status').textContent = `${product} added to cart`;
+      }
+    </script>
+  </body>
+</html>

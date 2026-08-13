@@ -411,6 +411,12 @@
 
   <profiles>
     <profile>
+      <id>robustness</id>
+      <modules>
+        <module>webagent4j-robustness-tests</module>
+      </modules>
+    </profile>
+    <profile>
       <id>mutation</id>
       <build>
         <plugins>

@@ -1,0 +1,13 @@
+package io.webagent4j.robustness;
+
+enum FailureClassification {
+    NONE,
+    LOCATOR_FAILURE,
+    AMBIGUITY_FAILURE,
+    INTERACTABILITY_FAILURE,
+    ACTION_FAILURE,
+    VERIFICATION_FAILURE,
+    TIMEOUT_FAILURE,
+    OBSERVATION_FAILURE,
+    WRONG_TARGET
+}

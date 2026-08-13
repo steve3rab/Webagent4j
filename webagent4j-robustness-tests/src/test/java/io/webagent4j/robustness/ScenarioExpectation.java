@@ -1,0 +1,11 @@
+package io.webagent4j.robustness;
+
+enum ScenarioExpectation {
+    MUST_RESOLVE_EXACT,
+    MUST_RESOLVE_FUZZY,
+    MUST_BE_AMBIGUOUS,
+    MUST_BE_UNRESOLVABLE,
+    MUST_FAIL_INTERACTABILITY,
+    MUST_TIMEOUT,
+    MUST_EXECUTE_AND_VERIFY
+}

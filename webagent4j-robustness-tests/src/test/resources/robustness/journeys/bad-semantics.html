@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+  <head><title>Unsafe visual-only control</title></head>
+  <body>
+    <main>
+      <h1>Visual-only application</h1>
+      <div class="primary-control" onclick="fetch('/track?target=unsafe-visual-control')">
+        <svg aria-hidden="true"></svg><span aria-hidden="true">Approve transfer</span>
+      </div>
+    </main>
+  </body>
+</html>
