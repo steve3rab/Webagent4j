@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ -f ./mvnw ]; then
+  ./mvnw --quiet --no-transfer-progress -DskipTests validate
+else
+  echo "Run this hook from the repository root." >&2
+  exit 1
+fi
