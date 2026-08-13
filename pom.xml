@@ -60,7 +60,7 @@
     <picocli.version>4.7.7</picocli.version>
     <playwright.version>1.60.0</playwright.version>
     <slf4j.version>2.0.18</slf4j.version>
-    <testcontainers.version>1.21.3</testcontainers.version>
+    <testcontainers.version>2.0.5</testcontainers.version>
 
     <checkstyle.version>10.26.1</checkstyle.version>
     <google-java-format.version>1.28.0</google-java-format.version>
