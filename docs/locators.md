@@ -59,6 +59,12 @@ Fuzzy matching is a fallback phase. It runs only when the policy allows it and d
 discovery produced no candidate. A unique exact candidate at or above the early-stop confidence can
 end deterministic discovery early.
 
+Every terminal resolution has a formal outcome: `RESOLVED`, `AMBIGUOUS`, `UNRESOLVABLE`,
+`NOT_INTERACTABLE`, or `TIMEOUT`. Successful `LocatorResult` values expose `RESOLVED`;
+`AmbiguousLocatorException` and `LocatorNotFoundException` expose the corresponding safe failure
+status while retaining structured diagnostics. `NOT_INTERACTABLE` means matching evidence was found
+but rejected by a requested state constraint. `TIMEOUT` is reserved for an explicit bounded wait.
+
 ## Candidates, evidence, score, and confidence
 
 A candidate has a backend identity, current live element, DOM order, primary strategy, evidence list,
@@ -221,6 +227,11 @@ Accents are preserved, so `resume` is not silently treated as the exact form of 
 `fuzzyName()` first attempts exact accessible-name, label, and visible-text evidence. Only then can the
 conservative non-AI similarity matcher run, subject to the policy, threshold, and fuzzy-candidate
 budget. Weak similarities remain rejected.
+
+An explicit `aria-label` or valid `aria-labelledby` name is authoritative. Contradictory visible text
+does not override it during deterministic or fuzzy fallback. Fuzzy similarity compares the complete
+phrase, treats common negating prefixes conservatively, and intentionally returns ambiguity or no
+result for close action lookalikes.
 
 ## Budgets and performance
 

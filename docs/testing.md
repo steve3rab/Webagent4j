@@ -13,3 +13,14 @@ Testcontainers is aligned in dependency management and available to integration 
 unused container.
 
 Run `./mvnw clean verify`. Use `./mvnw spotless:apply` to format changes.
+
+The local deterministic adversarial benchmark is isolated behind the `robustness` profile:
+
+```bash
+./mvnw -Probustness verify
+```
+
+Run one corpus scenario with `-Dscenario=HOSTILE-004`. The profile writes Markdown and JSON reports
+under `webagent4j-robustness-tests/target` and captures failure-only screenshots, compact semantic
+observations, HTML fixtures, and diagnostics. See the [robustness guide](robustness.md) for the corpus,
+quality gates, baseline review policy, and contribution workflow.

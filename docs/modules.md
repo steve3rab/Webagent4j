@@ -27,6 +27,7 @@ Arrows below mean "depends on."
 | `webagent4j-cli` | core; Playwright at runtime | Public-API CLI |
 | `webagent4j-examples` | core; Playwright at runtime | Executable public-API example |
 | `webagent4j-integration-tests` | core, Playwright, testing | Architecture and browser integration tests |
+| `webagent4j-robustness-tests` | core, Playwright | Profile-gated deterministic adversarial corpus and cross-phase journeys |
 
 The separate locator API module allows `IElement.find()` without a Maven dependency cycle. The DOM
 module depends only on immutable, backend-neutral contracts; the locator engine depends on DOM element

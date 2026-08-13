@@ -107,7 +107,7 @@ browser-specific implementations.
 | Engines | `locator`, `observation`, `verification`, `action` | Deterministic semantic behavior |
 | Browser adapters | `browser-playwright` | Playwright-backed execution |
 | Entry points | `core`, `cli`, `examples` | Configuration and usage |
-| Quality | `testing`, `integration-tests` | Fixtures, architecture rules, and browser coverage |
+| Quality | `testing`, `integration-tests`, `robustness-tests` | Fixtures, architecture rules, browser coverage, and adversarial validation |
 
 See the [architecture guide](docs/architecture.md) and [module graph](docs/modules.md) for details.
 
@@ -119,6 +119,8 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 - [Actions](docs/actions.md)
 - [Verification](docs/verification.md)
 - [Testing](docs/testing.md)
+- [Robustness benchmark](docs/robustness.md)
+- [Known limitations](docs/limitations.md)
 - [Roadmap](docs/roadmap.md)
 - [Architecture decision records](docs/adr)
 
