@@ -1,0 +1,37 @@
+package io.webagent4j.verification;
+
+/** Stable deterministic verification categories. */
+public enum VerificationType {
+    ELEMENT_EXISTS,
+    ELEMENT_NOT_EXISTS,
+    ELEMENT_VISIBLE,
+    ELEMENT_HIDDEN,
+    ELEMENT_ENABLED,
+    ELEMENT_DISABLED,
+    ELEMENT_EDITABLE,
+    ELEMENT_CHECKED,
+    ELEMENT_UNCHECKED,
+    ELEMENT_SELECTED,
+    ELEMENT_FOCUSED,
+    TEXT_EQUALS,
+    TEXT_CONTAINS,
+    TEXT_VISIBLE,
+    ATTRIBUTE_EQUALS,
+    VALUE_EQUALS,
+    URL_EQUALS,
+    URL_CONTAINS,
+    URL_MATCHES,
+    TITLE_EQUALS,
+    TITLE_CONTAINS,
+    ELEMENT_COUNT,
+    ELEMENT_ADDED,
+    ELEMENT_REMOVED,
+    DIALOG_OPENED,
+    DIALOG_CLOSED,
+    STATE_CHANGED,
+    DOWNLOAD_COMPLETED,
+    ALL,
+    ANY,
+    NOT,
+    CUSTOM
+}

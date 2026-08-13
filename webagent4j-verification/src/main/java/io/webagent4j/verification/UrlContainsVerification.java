@@ -17,12 +17,21 @@ public final class UrlContainsVerification implements IVerification {
     }
 
     @Override
+    public VerificationType type() {
+        return VerificationType.URL_CONTAINS;
+    }
+
+    @Override
     public VerificationResult verify(IVerificationContext context) {
         Objects.requireNonNull(context, "context");
         String actual = context.url();
         return new VerificationResult(
                 actual.contains(expectedFragment),
-                "URL contains '" + expectedFragment + "'",
-                actual);
+                type(),
+                "URL contains the expected fragment",
+                expectedFragment,
+                actual,
+                java.time.Duration.ZERO,
+                false);
     }
 }
