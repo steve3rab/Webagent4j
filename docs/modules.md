@@ -11,10 +11,10 @@ Arrows below mean "depends on."
 | `webagent4j-observation-api` | dom, locator-api | Immutable semantic model, options, renderer, fingerprint, diff, capture SPI |
 | `webagent4j-observation` | browser-api, observation-api | Semantic transformation, policies, observers, diagnostics, events |
 | `webagent4j-locator` | common, dom, locator-api | Planning, discovery ports, filtering, scoring, ambiguity, diagnostics |
-| `webagent4j-verification` | none | Deterministic condition model |
-| `webagent4j-action` | dom, verification | Explicit actions, structured results, audit events |
+| `webagent4j-verification` | dom, locator-api, observation-api | Deterministic conditions, composition, and bounded polling |
+| `webagent4j-action` | common, dom, locator-api, observation-api, verification | Commands, lifecycle orchestration, safe retries, structured results, and audit events |
 | `webagent4j-browser-api` | action, dom, locator, locator-api, observation-api | Browser/page lifecycle contracts |
-| `webagent4j-browser-playwright` | browser-api, dom, locator, locator-api, observation | Playwright backend, batch observation adapter, and service provider |
+| `webagent4j-browser-playwright` | action, browser-api, dom, locator, locator-api, observation | Playwright action backend, browser lifecycle, batch observation adapter, and service provider |
 | `webagent4j-core` | browser-api | Public facade and provider discovery |
 | `webagent4j-http` | common | Reserved non-browser transport boundary |
 | `webagent4j-storage` | common | Reserved persistence boundary |
@@ -40,3 +40,7 @@ exposes Playwright.
 Reserved modules are intentionally empty until a tested vertical needs their public API. This prevents
 placeholder types from becoming accidental compatibility commitments. No Maven dependency cycle
 exists.
+
+The action module owns orchestration but no browser-native implementation. Verification owns
+read-only conditions and polling. Browser adapters implement `IActionBackend`; target resolution,
+preconditions, stabilization, observations, and result construction remain backend-neutral.

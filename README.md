@@ -82,19 +82,14 @@ try (IBrowser browser = WebAgent.browser()
         .launch()) {
     IPage page = browser.open("https://example.com");
 
-    IElement link = page.find()
-            .link()
-            .named("More information...")
-            .visible()
-            .first();
-
     ActionResult<Void> result = page.action()
-            .click(link)
-            .expectUrlContains("iana")
+            .click(page.find()
+                    .link()
+                    .named("More information...")
+                    .single())
+            .expect(urlContains("iana"))
             .execute();
-
-    Observation observation = page.observe();
-    System.out.println(observation.toCompactText());
+    result.throwIfFailed();
 }
 ```
 
@@ -121,7 +116,8 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 - [Getting started](docs/getting-started.md)
 - [Semantic locators](docs/locators.md)
 - [Semantic observations](docs/observation.md)
-- [Actions and verification](docs/actions.md)
+- [Actions](docs/actions.md)
+- [Verification](docs/verification.md)
 - [Testing](docs/testing.md)
 - [Roadmap](docs/roadmap.md)
 - [Architecture decision records](docs/adr)

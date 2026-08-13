@@ -13,14 +13,12 @@ Application / CLI / future optional integration
                     |
                     v
               Browser API
-          /      |      |          \
-        DOM   Locator  Action  Observation API
-         |       |                 ^
-         +--> Locator API <--+      |
-                                   Observation Engine
-                         |
-                         v
-                   Verification
+          /      |       |          \
+        DOM    Locator  Action   Observation API
+         |        |       |            ^
+         +--> Locator API  +------> Verification
+                           |            |
+                           +-----> Observation Engine
 
 Playwright adapter ------> Browser API and domain contracts
 ```
@@ -32,6 +30,37 @@ options, renderers, diff, fingerprint, and batch-capture SPI used by `IPage`. Th
 depends on `IPage`, while the Playwright adapter supplies the single bounded batch capture. An action plan invokes
 the live element, evaluates explicit verification objects, and returns an `ActionResult` with audit
 events.
+
+Every command uses one backend-neutral lifecycle:
+
+```text
+Locator
+   |
+   v
+ActionTargetResolver
+   |
+   v
+Preconditions
+   |
+   v
+ActionBackend
+   |
+   v
+Stabilization
+   |
+   v
+Observation
+   |
+   v
+Verification
+   |
+   v
+ActionResult
+```
+
+Resolution retries are separated from execution. Non-idempotent backend execution occurs at most
+once, while stabilization and verification may safely poll read-only state. The Playwright adapter
+implements the action, locator, and observation ports without leaking its native types.
 
 ```text
 Browser backend
@@ -51,6 +80,8 @@ Semantic Model ----> Locator / Action / future Extraction
 - `core` cannot depend on Playwright or any future concrete browser backend.
 - Public APIs cannot expose backend-native objects.
 - `common`, `dom`, and the domain contracts have no framework dependency.
+- `action` and `verification` cannot depend on Playwright or another concrete browser backend.
+- Public action contracts cannot depend on action implementation packages.
 - No module depends on an AI, LLM, MCP, Spring, Jakarta EE, reactive, or dependency-injection framework.
 - Cross-module implementations live in `internal` packages when they are not stable API.
 - Cycles and the core/backend boundary are checked by ArchUnit.
