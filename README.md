@@ -2,7 +2,7 @@
 
 > A deterministic, backend-neutral foundation for semantic web automation in Java.
 
-[![CI](https://github.com/webagent4j/webagent4j/actions/workflows/ci.yml/badge.svg)](https://github.com/webagent4j/webagent4j/actions/workflows/ci.yml)
+[![CI](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml/badge.svg)](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://adoptium.net/)
 
