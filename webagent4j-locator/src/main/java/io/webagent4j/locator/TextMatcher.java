@@ -64,6 +64,9 @@ public final class TextMatcher {
         if (first.isEmpty() || second.isEmpty()) {
             return 0.0;
         }
+        if (negatedEquivalent(first, second)) {
+            return 0.0;
+        }
         double edit =
                 1.0
                         - ((double) levenshtein(first, second)
@@ -135,13 +138,28 @@ public final class TextMatcher {
     }
 
     private static double stemSimilarity(String left, String right) {
-        double best = 0.0;
-        for (String leftToken : stemTokens(left)) {
-            for (String rightToken : stemTokens(right)) {
-                best = Math.max(best, jaroWinkler(leftToken, rightToken));
-            }
+        Set<String> leftTokens = stemTokens(left);
+        Set<String> rightTokens = stemTokens(right);
+        if (leftTokens.isEmpty() || rightTokens.isEmpty()) {
+            return 0.0;
         }
-        return best;
+        return (directionalStemSimilarity(leftTokens, rightTokens)
+                        + directionalStemSimilarity(rightTokens, leftTokens))
+                / 2.0;
+    }
+
+    private static double directionalStemSimilarity(Set<String> source, Set<String> target) {
+        return source.stream()
+                .mapToDouble(
+                        sourceToken ->
+                                target.stream()
+                                        .mapToDouble(
+                                                targetToken ->
+                                                        jaroWinkler(sourceToken, targetToken))
+                                        .max()
+                                        .orElse(0.0))
+                .average()
+                .orElse(0.0);
     }
 
     private static double compactContainment(String left, String right) {
@@ -152,6 +170,32 @@ public final class TextMatcher {
             return 0.0;
         }
         return 0.82 + 0.18 * ((double) shorter / Math.max(first.length(), second.length()));
+    }
+
+    private static boolean negatedEquivalent(String left, String right) {
+        String first = left.replaceAll("[^\\p{L}\\p{N}]", "");
+        String second = right.replaceAll("[^\\p{L}\\p{N}]", "");
+        if (hasNegatingPrefix(first, second) || hasNegatingPrefix(second, first)) {
+            return true;
+        }
+        return tokens(left).stream()
+                .anyMatch(
+                        leftToken ->
+                                tokens(right).stream()
+                                        .anyMatch(
+                                                rightToken ->
+                                                        hasNegatingPrefix(leftToken, rightToken)
+                                                                || hasNegatingPrefix(
+                                                                        rightToken, leftToken)));
+    }
+
+    private static boolean hasNegatingPrefix(String candidate, String base) {
+        if (base.length() < 4) {
+            return false;
+        }
+        return candidate.equals("un" + base)
+                || candidate.equals("non" + base)
+                || candidate.equals("not" + base);
     }
 
     private static String stem(String value) {

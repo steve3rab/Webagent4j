@@ -93,7 +93,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         for (int index = 0; index < count; index++) {
             Locator item = resolved.nth(index);
             Map<String, Object> identity = (Map<String, Object>) item.evaluate(IDENTITY_SCRIPT);
-            ElementRole knownRole = query.role().orElse(ElementRole.UNKNOWN);
+            ElementRole knownRole = knownRole(query);
             candidates.add(
                     new LocatorBackendCandidate(
                             String.valueOf(identity.get("identity")),
@@ -101,6 +101,16 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             ((Number) identity.get("domOrder")).intValue()));
         }
         return new LocatorBackendSearchResult(candidates, discoveredCount, discoveredCount > count);
+    }
+
+    private static ElementRole knownRole(LocatorBackendQuery query) {
+        boolean guaranteedByDiscovery =
+                query.strategy() == LocatorStrategyType.ROLE
+                        || query.strategy() == LocatorStrategyType.ACCESSIBLE_NAME
+                        || query.strategy() == LocatorStrategyType.FUZZY_TEXT;
+        return guaranteedByDiscovery
+                ? query.role().orElse(ElementRole.UNKNOWN)
+                : ElementRole.UNKNOWN;
     }
 
     IFind<IElement> findOnPage() {

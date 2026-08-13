@@ -304,12 +304,13 @@ class SemanticLocatorIT {
             LocatorDiagnostics diagnostics = result.diagnostics();
 
             assertThat(result.element().attributes()).containsEntry("id", "semantic-checkout");
-            assertThat(result.candidates()).hasSize(2);
+            assertThat(result.candidates()).hasSize(1);
             assertThat(result.candidates().get(0).evidence())
                     .extracting("strategy")
                     .contains(LocatorStrategyType.ACCESSIBLE_NAME);
             assertThat(diagnostics.strategiesExecuted()).isNotEmpty();
             assertThat(diagnostics.candidatesDeduplicated()).isPositive();
+            assertThat(diagnostics.candidatesRejected()).isPositive();
             assertThat(diagnostics.duration()).isGreaterThanOrEqualTo(Duration.ZERO);
 
             IPage large = browser.open(baseUrl + "/locators/large-dom");

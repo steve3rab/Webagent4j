@@ -192,17 +192,21 @@ public final class LocatorEngine implements ILocatorEngine {
             latest = searchOnce(context, definition, remaining, diagnostics);
             if (!latest.isEmpty()) {
                 if (definition.stability().isEmpty()) {
-                    return new Resolution(latest, diagnostics);
-                }
-                String identities =
-                        String.join("|", latest.stream().map(LocatorCandidate::identity).toList());
-                if (!identities.equals(stableIdentity)) {
-                    stableIdentity = identities;
-                    stableSince = System.nanoTime();
-                }
-                if (System.nanoTime() - stableSince
-                        >= definition.stability().orElseThrow().toNanos()) {
-                    return new Resolution(latest, diagnostics);
+                    if (!awaitExactCandidate(definition, waitForCandidates, latest)) {
+                        return new Resolution(latest, diagnostics);
+                    }
+                } else {
+                    String identities =
+                            String.join(
+                                    "|", latest.stream().map(LocatorCandidate::identity).toList());
+                    if (!identities.equals(stableIdentity)) {
+                        stableIdentity = identities;
+                        stableSince = System.nanoTime();
+                    }
+                    if (System.nanoTime() - stableSince
+                            >= definition.stability().orElseThrow().toNanos()) {
+                        return new Resolution(latest, diagnostics);
+                    }
                 }
             } else {
                 stableIdentity = null;
@@ -230,6 +234,7 @@ public final class LocatorEngine implements ILocatorEngine {
         Map<String, LocatorCandidate> aggregated = new LinkedHashMap<>();
         int executed = 0;
         boolean deterministicCandidateFound = false;
+        boolean deterministicTextMatchRejected = false;
         LOGGER.debug(
                 "Locator resolution policy={} role={} strategies={} scopeDepth={}",
                 context.config().resolutionPolicy(),
@@ -245,7 +250,7 @@ public final class LocatorEngine implements ILocatorEngine {
                 break;
             }
             if (unit.strategy().phase() == LocatorStrategyPhase.FALLBACK
-                    && deterministicCandidateFound) {
+                    && (deterministicCandidateFound || deterministicTextMatchRejected)) {
                 diagnostics.skipped(type, "deterministic candidates available");
                 continue;
             }
@@ -276,9 +281,15 @@ public final class LocatorEngine implements ILocatorEngine {
                                     candidateLimit,
                                     sorted(aggregated));
             executed++;
-            int accepted =
+            Acceptance acceptance =
                     acceptCandidates(
                             definition, context, unit, discovered, aggregated, diagnostics);
+            int accepted = acceptance.accepted();
+            deterministicTextMatchRejected =
+                    deterministicTextMatchRejected
+                            || (unit.strategy().phase() == LocatorStrategyPhase.DETERMINISTIC
+                                    && unit.step().query().text().isPresent()
+                                    && acceptance.hardConstraintRejected());
             Duration strategyDuration = Duration.between(strategyStarted, Instant.now());
             diagnostics.executed(type, strategyDuration, discovered, accepted);
             if (discovered.truncated()
@@ -321,7 +332,7 @@ public final class LocatorEngine implements ILocatorEngine {
         return ranked;
     }
 
-    private int acceptCandidates(
+    private Acceptance acceptCandidates(
             LocatorDefinition definition,
             LocatorContext context,
             ExecutionUnit unit,
@@ -329,6 +340,7 @@ public final class LocatorEngine implements ILocatorEngine {
             Map<String, LocatorCandidate> aggregated,
             LocatorDiagnosticsAccumulator diagnostics) {
         int accepted = 0;
+        boolean hardConstraintRejected = false;
         for (LocatorBackendCandidate backendCandidate : discovered.candidates()) {
             if (!aggregated.containsKey(backendCandidate.identity())
                     && aggregated.size() >= context.config().resolutionBudget().maxCandidates()) {
@@ -346,6 +358,7 @@ public final class LocatorEngine implements ILocatorEngine {
                 rejection = Optional.of(RejectionReason.OUTSIDE_SCOPE);
             }
             if (rejection.isPresent()) {
+                hardConstraintRejected = true;
                 diagnostics.rejected(
                         backendCandidate.identity(),
                         unit.strategy().type(),
@@ -382,7 +395,7 @@ public final class LocatorEngine implements ILocatorEngine {
                             candidate.score()));
             accepted++;
         }
-        return accepted;
+        return new Acceptance(accepted, hardConstraintRejected);
     }
 
     private List<ExecutionUnit> executionUnits(LocatorDefinition definition) {
@@ -430,6 +443,17 @@ public final class LocatorEngine implements ILocatorEngine {
                 && candidates.get(0).exactMatch()
                 && candidates.get(0).hardConstraintsSatisfied()
                 && candidates.get(0).confidence() >= config.earlyStopConfidence();
+    }
+
+    private static boolean awaitExactCandidate(
+            LocatorDefinition definition,
+            boolean waitForCandidates,
+            List<LocatorCandidate> candidates) {
+        return waitForCandidates
+                && definition.accessibleName().isPresent()
+                && definition.accessibleName().orElseThrow().type()
+                        != io.webagent4j.locator.api.TextMatchType.FUZZY
+                && candidates.stream().noneMatch(LocatorCandidate::exactMatch);
     }
 
     private static boolean ambiguous(List<LocatorCandidate> candidates, double margin) {
@@ -519,7 +543,27 @@ public final class LocatorEngine implements ILocatorEngine {
                         + " ms"
                         + System.lineSeparator()
                         + renderer.render(diagnostics, resolution.candidates()),
-                diagnostics);
+                diagnostics,
+                failureStatus(diagnostics));
+    }
+
+    private static LocatorResolutionStatus failureStatus(LocatorDiagnostics diagnostics) {
+        boolean interactionConstraint =
+                diagnostics.requestedLocator().enabled().isPresent()
+                        || diagnostics.requestedLocator().editable().isPresent()
+                        || diagnostics.requestedLocator().inViewport().isPresent()
+                        || diagnostics.requestedLocator().clickable().isPresent()
+                        || diagnostics.requestedLocator().covered().isPresent();
+        if (interactionConstraint && diagnostics.candidatesDiscovered() > 0) {
+            return LocatorResolutionStatus.NOT_INTERACTABLE;
+        }
+        boolean explicitWait =
+                diagnostics.requestedLocator().waitUntilVisible()
+                        || diagnostics.requestedLocator().stability().isPresent();
+        if (explicitWait && diagnostics.reachedLimits().contains(BudgetLimit.TIMEOUT)) {
+            return LocatorResolutionStatus.TIMEOUT;
+        }
+        return LocatorResolutionStatus.UNRESOLVABLE;
     }
 
     private void completed(LocatorCandidate selected, LocatorDiagnostics diagnostics) {
@@ -588,6 +632,8 @@ public final class LocatorEngine implements ILocatorEngine {
             Objects.requireNonNull(diagnostics, "diagnostics");
         }
     }
+
+    private record Acceptance(int accepted, boolean hardConstraintRejected) {}
 
     private record ExecutionUnit(ILocatorStrategy strategy, LocatorPlanStep step) {
 

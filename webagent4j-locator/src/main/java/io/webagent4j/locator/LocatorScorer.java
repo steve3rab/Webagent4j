@@ -53,6 +53,10 @@ public final class LocatorScorer {
             Locale locale) {
         IElement element = candidate.element();
         List<LocatorEvidence> evidence = new ArrayList<>();
+        if (authoritativeAccessibleNameMismatch(
+                definition, step, element, locale, fuzzyThreshold)) {
+            return ScoreDecision.rejected();
+        }
         double quality = textQuality(step.query(), element, locale);
         if (step.query().text().isPresent() && quality == 0.0) {
             return ScoreDecision.rejected();
@@ -92,10 +96,36 @@ public final class LocatorScorer {
         TextMatch requested = query.text().orElseThrow();
         double quality =
                 textMatcher.score(requested, actualText(query.strategy(), element), locale);
-        if (query.strategy() == LocatorStrategyType.FUZZY_TEXT) {
+        if (query.strategy() == LocatorStrategyType.FUZZY_TEXT
+                && !hasAuthoritativeAccessibleName(element)) {
             quality = Math.max(quality, textMatcher.score(requested, element.text(), locale));
         }
         return quality;
+    }
+
+    private boolean authoritativeAccessibleNameMismatch(
+            LocatorDefinition definition,
+            LocatorPlanStep step,
+            IElement element,
+            Locale locale,
+            double fuzzyThreshold) {
+        if (definition.accessibleName().isEmpty()
+                || !hasAuthoritativeAccessibleName(element)
+                || (step.query().strategy() != LocatorStrategyType.LABEL
+                        && step.query().strategy() != LocatorStrategyType.VISIBLE_TEXT)) {
+            return false;
+        }
+        TextMatch requested = definition.accessibleName().orElseThrow();
+        double quality = textMatcher.score(requested, element.accessibleName(), locale);
+        return requested.type() == io.webagent4j.locator.api.TextMatchType.FUZZY
+                ? quality < fuzzyThreshold
+                : quality == 0.0;
+    }
+
+    private static boolean hasAuthoritativeAccessibleName(IElement element) {
+        Map<String, String> attributes = element.attributes();
+        return !attributes.getOrDefault("aria-label", "").isBlank()
+                || !attributes.getOrDefault("aria-labelledby", "").isBlank();
     }
 
     private static void addDiscoveryEvidence(

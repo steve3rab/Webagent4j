@@ -13,7 +13,7 @@ final class PlaywrightDomInspectionScripts {
               const labelledBy = (element.getAttribute('aria-labelledby') || '')
                 .split(/\s+/).filter(Boolean).map(id => document.getElementById(id))
                 .filter(Boolean).map(item => item.innerText || item.textContent || '').join(' ');
-              return normalize(element.getAttribute('aria-label') || labelledBy || labels
+              return normalize(labelledBy || element.getAttribute('aria-label') || labels
                 || element.getAttribute('alt') || element.getAttribute('placeholder')
                 || element.getAttribute('title') || element.innerText || element.textContent || '');
             }

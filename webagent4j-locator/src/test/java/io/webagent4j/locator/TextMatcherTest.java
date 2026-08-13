@@ -34,4 +34,26 @@ class TextMatcherTest {
         assertThat(matcher.similarity("", "value")).isZero();
         assertThat(matcher.similarity("same", "same")).isEqualTo(1.0);
     }
+
+    @Test
+    void fuzzyMatchingRejectsDangerousActionLookalikes() {
+        assertThat(matcher.similarity("Delete", "Details report")).isLessThan(0.82);
+        assertThat(matcher.similarity("Save", "Send message")).isLessThan(0.82);
+        assertThat(matcher.similarity("Cancel", "Confirm purchase")).isLessThan(0.82);
+        assertThat(matcher.similarity("Publish", "Unpublish")).isZero();
+        assertThat(matcher.similarity("Add", "Remove member")).isLessThan(0.82);
+    }
+
+    @Test
+    void fuzzyMatchingUsesTheWholePhraseInsteadOfOneSharedToken() {
+        double intended = matcher.similarity("Delayed sav", "Delayed save");
+        double decoy = matcher.similarity("Delayed sav", "Delayed send");
+        double secondIntended = matcher.similarity("Delayed sendt", "Delayed send");
+        double secondDecoy = matcher.similarity("Delayed sendt", "Delayed save");
+
+        assertThat(intended).isGreaterThanOrEqualTo(0.82);
+        assertThat(intended - decoy).isGreaterThan(0.04);
+        assertThat(secondIntended).isGreaterThanOrEqualTo(0.82);
+        assertThat(secondIntended - secondDecoy).isGreaterThan(0.04);
+    }
 }

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.webagent4j.locator.LocatorTestFixtures.TestElement;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.LocatorDefinition;
+import io.webagent4j.locator.api.TextMatch;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -110,5 +111,40 @@ class LocatorComponentsTest {
                         Optional.empty(),
                         Optional.empty());
         assertThat(new LocatorPlanStep(query, "role").description()).isEqualTo("role");
+    }
+
+    @Test
+    void explicitAccessibleNameCannotBeOverriddenByMisleadingVisibleText() {
+        LocatorDefinition definition =
+                LocatorDefinition.forRole(ElementRole.BUTTON).named("Save profile");
+        LocatorPlanStep visibleTextStep =
+                new LocatorPlanStep(
+                        new LocatorBackendQuery(
+                                LocatorStrategyType.VISIBLE_TEXT,
+                                Optional.of(ElementRole.BUTTON),
+                                Optional.of(TextMatch.exactIgnoringCase("Save profile")),
+                                Optional.empty(),
+                                Optional.empty()),
+                        "visible text");
+        TestElement misleading =
+                new TestElement(
+                        ElementRole.BUTTON,
+                        "Archive profile",
+                        "Save profile",
+                        "button",
+                        Map.of("aria-label", "Archive profile"),
+                        true,
+                        true);
+
+        assertThat(
+                        new LocatorScorer()
+                                .score(
+                                        definition,
+                                        visibleTextStep,
+                                        new LocatorBackendCandidate("misleading", misleading, 0),
+                                        LocatorScoringConfig.defaults(),
+                                        0.80)
+                                .candidate())
+                .isEmpty();
     }
 }

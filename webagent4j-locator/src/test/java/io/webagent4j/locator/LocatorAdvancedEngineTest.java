@@ -39,6 +39,7 @@ class LocatorAdvancedEngineTest {
                                 LocatorDefinition.forRole(ElementRole.BUTTON).named("Checkout"));
 
         assertThat(result.element()).isSameAs(semantic);
+        assertThat(result.status()).isEqualTo(LocatorResolutionStatus.RESOLVED);
         assertThat(result.candidates()).hasSize(2);
         assertThat(result.candidates().get(0).hasEvidence(LocatorStrategyType.ACCESSIBLE_NAME))
                 .isTrue();
@@ -109,8 +110,15 @@ class LocatorAdvancedEngineTest {
                 .isInstanceOf(AmbiguousLocatorException.class)
                 .satisfies(
                         error ->
-                                assertThat(((AmbiguousLocatorException) error).diagnostics())
-                                        .isPresent());
+                                assertThat((AmbiguousLocatorException) error)
+                                        .satisfies(
+                                                exception -> {
+                                                    assertThat(exception.status())
+                                                            .isEqualTo(
+                                                                    LocatorResolutionStatus
+                                                                            .AMBIGUOUS);
+                                                    assertThat(exception.diagnostics()).isPresent();
+                                                }));
         assertThat(
                         new LocatorEngine()
                                 .locate(LocatorContext.page(backend, wideMargin), definition)
@@ -328,6 +336,46 @@ class LocatorAdvancedEngineTest {
                                                         .orElseThrow()
                                                         .strategiesSkipped())
                                         .isNotEmpty());
+    }
+
+    @Test
+    void classifiesSafeUnresolvedInteractabilityAndTimeoutOutcomes() {
+        LocatorEngine engine = new LocatorEngine();
+        LocatorDefinition missing = LocatorDefinition.forRole(ElementRole.BUTTON).named("Missing");
+
+        assertThatThrownBy(() -> engine.locate(context(new FakeBackend(List.of())), missing))
+                .isInstanceOf(LocatorNotFoundException.class)
+                .satisfies(
+                        error ->
+                                assertThat(((LocatorNotFoundException) error).status())
+                                        .isEqualTo(LocatorResolutionStatus.UNRESOLVABLE));
+
+        assertThatThrownBy(
+                        () ->
+                                engine.locate(
+                                        context(
+                                                new FakeBackend(
+                                                        List.of(element("Submit", true, false)))),
+                                        LocatorDefinition.forRole(ElementRole.BUTTON)
+                                                .named("Submit")
+                                                .enabledOnly()))
+                .isInstanceOf(LocatorNotFoundException.class)
+                .satisfies(
+                        error ->
+                                assertThat(((LocatorNotFoundException) error).status())
+                                        .isEqualTo(LocatorResolutionStatus.NOT_INTERACTABLE));
+
+        assertThatThrownBy(
+                        () ->
+                                engine.locate(
+                                        context(new FakeBackend(List.of())),
+                                        missing.waitingUntilVisible()
+                                                .withTimeout(Duration.ofMillis(20))))
+                .isInstanceOf(LocatorNotFoundException.class)
+                .satisfies(
+                        error ->
+                                assertThat(((LocatorNotFoundException) error).status())
+                                        .isEqualTo(LocatorResolutionStatus.TIMEOUT));
     }
 
     private static TestElement element(String name, boolean visible, boolean enabled) {

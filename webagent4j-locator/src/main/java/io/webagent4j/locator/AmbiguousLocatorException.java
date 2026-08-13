@@ -24,4 +24,9 @@ public final class AmbiguousLocatorException extends LocatorException {
     public java.util.Optional<LocatorDiagnostics> diagnostics() {
         return java.util.Optional.ofNullable(diagnostics);
     }
+
+    /** Returns the formal safe ambiguity outcome. */
+    public LocatorResolutionStatus status() {
+        return LocatorResolutionStatus.AMBIGUOUS;
+    }
 }
