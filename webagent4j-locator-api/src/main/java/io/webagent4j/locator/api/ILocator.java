@@ -79,7 +79,7 @@ public interface ILocator<E> {
 
     /**
      * Returns a reusable semantic reference. Each {@link IElementReference#resolve()} operation
-     * executes the locator again against the current DOM.
+     * executes the locator again against the current DOM and requires an unambiguous match.
      */
     IElementReference<E> reference();
 

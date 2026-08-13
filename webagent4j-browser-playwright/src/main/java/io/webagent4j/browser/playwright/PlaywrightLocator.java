@@ -120,7 +120,7 @@ final class PlaywrightLocator implements ILocator<IElement> {
 
     @Override
     public IElementReference<IElement> reference() {
-        return () -> engine.locate(context, definition).element();
+        return () -> engine.locateSingle(context, definition).element();
     }
 
     @Override
