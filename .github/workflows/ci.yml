@@ -20,8 +20,14 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - name: Verify reactor
+      - name: Verify standard reactor
         run: ./mvnw --batch-mode --no-transfer-progress clean verify
+      - name: Verify core robustness subset
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -Probustness
+          -pl webagent4j-robustness-tests -am -Dscenario=CLEAN-001
+          -Dit.test=RobustnessBenchmarkIT
+          -Dfailsafe.failIfNoSpecifiedTests=false verify
       - name: Upload test and coverage reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -32,4 +38,7 @@ jobs:
             **/target/failsafe-reports/
             **/target/site/jacoco/
             **/target/action-artifacts/
+            **/target/robustness-report.md
+            **/target/robustness-report.json
+            **/target/robustness-artifacts/
           if-no-files-found: ignore

@@ -7,6 +7,9 @@ RUN chmod +x mvnw
 FROM base AS test
 RUN ./mvnw --batch-mode --no-transfer-progress clean verify
 
+FROM base AS robustness
+RUN ./mvnw --batch-mode --no-transfer-progress -Probustness verify
+
 FROM base AS build
 RUN ./mvnw --batch-mode --no-transfer-progress -DskipTests package
 
