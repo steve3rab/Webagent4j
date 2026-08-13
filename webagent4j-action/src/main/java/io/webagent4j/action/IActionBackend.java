@@ -9,75 +9,127 @@ import java.util.List;
 public interface IActionBackend {
 
     /** Performs a normal actionable click. */
-    void click(IElement element);
+    default void click(IElement element) {
+        element.click();
+    }
 
     /** Performs a normal actionable double click. */
-    void doubleClick(IElement element);
+    default void doubleClick(IElement element) {
+        throw unsupported();
+    }
 
     /** Replaces the current editable value. */
-    void fill(IElement element, String value);
+    default void fill(IElement element, String value) {
+        throw unsupported();
+    }
 
     /** Replaces the current editable value without exposing the secret to diagnostics. */
-    void fillSecret(IElement element, Secret value);
+    default void fillSecret(IElement element, Secret value) {
+        throw unsupported();
+    }
 
     /** Clears the current editable value. */
-    void clear(IElement element);
+    default void clear(IElement element) {
+        throw unsupported();
+    }
 
     /** Selects one option. */
-    void select(IElement element, Selection selection);
+    default void select(IElement element, Selection selection) {
+        throw unsupported();
+    }
 
     /** Idempotently checks a checkbox or activates a radio. */
-    void check(IElement element);
+    default void check(IElement element) {
+        throw unsupported();
+    }
 
     /** Idempotently unchecks a checkbox. */
-    void uncheck(IElement element);
+    default void uncheck(IElement element) {
+        throw unsupported();
+    }
 
     /** Focuses an element. */
-    void focus(IElement element);
+    default void focus(IElement element) {
+        throw unsupported();
+    }
 
     /** Removes focus from an element. */
-    void blur(IElement element);
+    default void blur(IElement element) {
+        throw unsupported();
+    }
 
     /** Hovers over an element. */
-    void hover(IElement element);
+    default void hover(IElement element) {
+        throw unsupported();
+    }
 
     /** Scrolls an element into view. */
-    void scrollTo(IElement element);
+    default void scrollTo(IElement element) {
+        throw unsupported();
+    }
 
     /** Scrolls the page by pixel offsets. */
-    void scrollBy(int horizontal, int vertical);
+    default void scrollBy(int horizontal, int vertical) {
+        throw unsupported();
+    }
 
     /** Scrolls to the top of the page. */
-    void scrollTop();
+    default void scrollTop() {
+        throw unsupported();
+    }
 
     /** Scrolls to the bottom of the page. */
-    void scrollBottom();
+    default void scrollBottom() {
+        throw unsupported();
+    }
 
     /** Submits a form without assuming a submit button. */
-    void submit(IElement form);
+    default void submit(IElement form) {
+        throw unsupported();
+    }
 
     /** Presses a portable key on the page or focused element. */
-    void press(IElement element, KeyPress keyPress);
+    default void press(IElement element, KeyPress keyPress) {
+        throw unsupported();
+    }
 
     /** Navigates to an absolute HTTP(S) URL. */
-    void navigate(String url);
+    default void navigate(String url) {
+        throw unsupported();
+    }
 
     /** Reloads the current document. */
-    void reload();
+    default void reload() {
+        throw unsupported();
+    }
 
     /** Navigates backward in history. */
-    void goBack();
+    default void goBack() {
+        throw unsupported();
+    }
 
     /** Navigates forward in history. */
-    void goForward();
+    default void goForward() {
+        throw unsupported();
+    }
 
     /** Uploads validated regular files. */
-    void upload(IElement element, List<Path> files);
+    default void upload(IElement element, List<Path> files) {
+        throw unsupported();
+    }
 
     /** Downloads after one trigger action and saves according to collision policy. */
-    DownloadedFile download(
-            IElement element, Path destination, DownloadCollisionPolicy collisionPolicy);
+    default DownloadedFile download(
+            IElement element, Path destination, DownloadCollisionPolicy collisionPolicy) {
+        throw unsupported();
+    }
 
     /** Delegates explicit waits to the established backend wait implementation. */
-    void waitFor(Duration duration);
+    default void waitFor(Duration duration) {
+        throw unsupported();
+    }
+
+    private static UnsupportedOperationException unsupported() {
+        return new UnsupportedOperationException("Action is not supported by this backend");
+    }
 }

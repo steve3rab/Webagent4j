@@ -11,7 +11,7 @@ public interface IActionContext extends IVerificationContext, ILocatorResolver<I
 
     /** Returns the backend-neutral operations for the current page. */
     default IActionBackend actionBackend() {
-        throw new UnsupportedOperationException("This context cannot execute browser actions");
+        return new IActionBackend() {};
     }
 
     /**

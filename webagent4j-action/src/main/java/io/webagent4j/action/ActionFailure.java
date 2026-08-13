@@ -18,4 +18,10 @@ public record ActionFailure(ActionFailureType type, String message, Optional<Thr
         message = Objects.requireNonNull(message, "message");
         cause = Objects.requireNonNull(cause, "cause");
     }
+
+    /** Renders only the safe category and sanitized message, never an exception payload. */
+    @Override
+    public String toString() {
+        return "ActionFailure[type=" + type + ", message=" + message + "]";
+    }
 }

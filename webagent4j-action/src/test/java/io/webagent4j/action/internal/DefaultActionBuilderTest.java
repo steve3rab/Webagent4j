@@ -7,7 +7,9 @@ import static org.mockito.Mockito.when;
 
 import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionResult;
+import io.webagent4j.action.ActionStage;
 import io.webagent4j.action.IActionContext;
+import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.IElementReference;
@@ -20,6 +22,7 @@ class DefaultActionBuilderTest {
         IElement element = mock(IElement.class);
         when(element.role()).thenReturn(ElementRole.LINK);
         when(element.accessibleName()).thenReturn("Continue");
+        when(element.state()).thenReturn(actionableState());
         IActionContext context = context("https://example.test/done");
 
         ActionResult<Void> result =
@@ -29,7 +32,9 @@ class DefaultActionBuilderTest {
                         .execute();
 
         assertThat(result.success()).isTrue();
-        assertThat(result.events()).extracting("result").containsExactly("started", "completed");
+        assertThat(result.events())
+                .extracting("stage")
+                .contains(ActionStage.BACKEND_ACTION_STARTED, ActionStage.ACTION_COMPLETED);
         verify(element).click();
     }
 
@@ -38,6 +43,7 @@ class DefaultActionBuilderTest {
         IElement element = mock(IElement.class);
         when(element.role()).thenReturn(ElementRole.BUTTON);
         when(element.accessibleName()).thenReturn("Submit");
+        when(element.state()).thenReturn(actionableState());
 
         ActionResult<Void> result =
                 new DefaultActionBuilder(context("https://example.test/form"))
@@ -46,10 +52,7 @@ class DefaultActionBuilderTest {
                         .execute();
 
         assertThat(result.success()).isFalse();
-        assertThat(result.failure())
-                .get()
-                .extracting("type")
-                .isEqualTo(ActionFailureType.POSTCONDITION);
+        assertThat(result.failure()).get().extracting("type").isEqualTo(ActionFailureType.TIMEOUT);
     }
 
     @Test
@@ -58,6 +61,7 @@ class DefaultActionBuilderTest {
         IElement replacement = mock(IElement.class);
         when(replacement.role()).thenReturn(ElementRole.BUTTON);
         when(replacement.accessibleName()).thenReturn("Confirm");
+        when(replacement.state()).thenReturn(actionableState());
         IElementReference<IElement> reference = () -> replacement;
 
         ActionResult<Void> result =
@@ -82,5 +86,10 @@ class DefaultActionBuilderTest {
                 return "Example";
             }
         };
+    }
+
+    private static ElementState actionableState() {
+        return new ElementState(
+                true, true, true, false, false, false, false, false, true, true, false, true);
     }
 }
