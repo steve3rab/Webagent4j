@@ -9,7 +9,7 @@
 
   <name>WebAgent4J</name>
   <description>Deterministic web automation, semantic observation, and verified actions for Java.</description>
-  <url>https://github.com/webagent4j/webagent4j</url>
+  <url>https://github.com/steve3rab/Webagent4j</url>
 
   <licenses>
     <license>
@@ -44,6 +44,23 @@
     <module>webagent4j-examples</module>
     <module>webagent4j-integration-tests</module>
   </modules>
+
+  <scm>
+    <connection>scm:git:https://github.com/steve3rab/Webagent4j.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/steve3rab/Webagent4j.git</developerConnection>
+    <tag>HEAD</tag>
+    <url>https://github.com/steve3rab/Webagent4j</url>
+  </scm>
+
+  <issueManagement>
+    <system>GitHub</system>
+    <url>https://github.com/steve3rab/Webagent4j/issues</url>
+  </issueManagement>
+
+  <ciManagement>
+    <system>GitHub Actions</system>
+    <url>https://github.com/steve3rab/Webagent4j/actions</url>
+  </ciManagement>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

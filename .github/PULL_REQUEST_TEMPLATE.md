@@ -1,6 +1,10 @@
 ## Description
 
-<!-- Explain the problem and solution. -->
+<!-- Explain the problem, the solution, and the user impact. -->
+
+## Related issue
+
+<!-- Use "Closes #123" when applicable. -->
 
 ## Type of change
 
@@ -22,7 +26,8 @@
 - [ ] User-facing behavior is documented
 - [ ] Module boundaries remain acyclic
 - [ ] No secrets or sensitive output are included
+- [ ] The change is focused and backward compatibility is documented
 
 ## Breaking changes
 
-<!-- Write “None” or describe migration requirements. -->
+<!-- Write "None" or describe the required migration. -->

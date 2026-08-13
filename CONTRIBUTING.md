@@ -1,33 +1,70 @@
 # Contributing to WebAgent4J
 
-Thank you for helping build a reliable Java web automation foundation.
+Thank you for helping build a reliable Java web automation foundation. Contributions of code,
+tests, documentation, design feedback, and reproducible bug reports are welcome.
+
+## Before you start
+
+- Search existing issues and pull requests before opening a new one.
+- Use GitHub Discussions for questions and early design exploration.
+- Open an issue before starting a large feature or breaking API change.
+- Never include credentials, tokens, cookies, private URLs, personal data, or proprietary page
+  content in issues, tests, fixtures, logs, commits, or pull requests.
 
 ## Development setup
 
-1. Install a Java 21 JDK.
-2. Run `git config core.hooksPath .githooks`.
-3. Run `./mvnw clean verify` (`.\mvnw.cmd clean verify` on Windows).
+1. Install a Java 21 JDK and Git.
+2. Fork and clone the repository.
+3. Configure the repository hooks with `git config core.hooksPath .githooks`.
+4. Run `./mvnw clean verify` (`mvnw.cmd clean verify` on Windows).
 
-Use `./mvnw spotless:apply` before committing. The complete quality gate includes formatting,
-Checkstyle, compilation, unit tests, integration tests, JaCoCo reports, architecture rules, packages,
-and Javadoc.
+Maven is supplied by the wrapper. The quality gate includes formatting, Checkstyle, compilation,
+unit tests, browser integration tests, JaCoCo reports, architecture rules, packaging, and Javadoc.
 
-## Pull requests
+Use `./mvnw spotless:apply` before committing when formatting needs correction.
 
-Every pull request must compile, pass all tests, follow formatting, include tests for behavior changes,
-document public APIs with useful Javadoc, update user documentation when relevant, and preserve module
-boundaries. Explain breaking changes explicitly.
+## Design and coding conventions
 
-Use Conventional Commits, for example:
+- Target Java 21 and keep public contracts backend-neutral.
+- Prefer immutable values, composition, constructor injection, explicit names, and one primary
+  responsibility per class.
+- Preserve Maven module boundaries and avoid dependency cycles.
+- Public APIs require useful Javadoc and focused tests.
+- Interfaces begin with `I`, abstract classes with `A`, unit tests end in `Test`, and integration
+  tests end in `IT`.
+- Do not expose native browser-backend objects from public APIs.
 
-- `feat(browser): add Chromium backend option`
+## Commits
+
+Keep commits focused and write imperative Conventional Commit messages, for example:
+
+- `feat(browser): add Chromium launch option`
 - `fix(locator): handle duplicate accessible names`
-- `docs(crawler): explain URL normalization`
+- `docs(observation): explain redaction defaults`
 - `test(action): cover failed postconditions`
 - `refactor(core): simplify provider discovery`
 
-Keep changes focused. Prefer composition, constructor injection, immutable values, explicit names, and
-one primary responsibility per class. Interfaces begin with `I`, abstract classes with `A`, unit tests
-end in `Test`, and integration tests end in `IT`.
+Configure Git with a public GitHub noreply address if you do not want a personal email embedded in
+commit metadata. See GitHub's documentation for keeping an email address private.
+
+## Pull requests
+
+Pull requests should:
+
+- describe the problem, approach, and user impact;
+- link the relevant issue when applicable;
+- include tests for changed behavior;
+- update documentation for user-facing or public API changes;
+- call out compatibility and migration concerns;
+- pass `./mvnw clean verify`; and
+- remain small enough to review effectively.
+
+Maintainers may ask for changes to API design, test coverage, documentation, or commit structure.
+Reviews focus on correctness, deterministic behavior, security, maintainability, and module
+boundaries.
+
+## Reporting security issues
+
+Do not report vulnerabilities in public issues. Follow the [security policy](SECURITY.md).
 
 By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
