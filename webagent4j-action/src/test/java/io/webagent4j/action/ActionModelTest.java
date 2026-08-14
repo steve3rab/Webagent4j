@@ -49,6 +49,31 @@ class ActionModelTest {
     }
 
     @Test
+    void reportsDryRunExecutionExplicitly() {
+        ActionResult<Void> result =
+                new ActionResult<>(
+                        ActionId.create(),
+                        ActionType.CLICK,
+                        ActionStatus.SUCCESS,
+                        null,
+                        Duration.ofMillis(184),
+                        ActionTimings.empty(Duration.ofMillis(184)),
+                        List.of(new VerificationResult(true, "ready", "ready")),
+                        List.of(new VerificationResult(true, "updated", "updated")),
+                        null,
+                        null,
+                        null,
+                        List.of(),
+                        Optional.empty(),
+                        new ActionDiagnostics(
+                                "BUTTON \"Commander\"", "", Map.of("execution", "dry-run")));
+
+        assertThat(result.dryRun()).isTrue();
+        assertThat(result.executed()).isFalse();
+        assertThat(result.success()).isTrue();
+    }
+
+    @Test
     void rendersCompactActionSummaryForSuccess() {
         ActionResult<Void> result =
                 new ActionResult<>(

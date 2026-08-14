@@ -130,6 +130,29 @@ class LocatorEngineTest {
     }
 
     @Test
+    void tryFindPropagatesRealBackendFailures() {
+        ILocator<IElement> locator =
+                locator(
+                        context(
+                                new ILocatorBackend() {
+                                    @Override
+                                    public LocatorBackendSearchResult find(
+                                            LocatorBackendQuery query,
+                                            LocatorScope scope,
+                                            LocatorConfig config,
+                                            Duration timeout,
+                                            int candidateLimit) {
+                                        throw new IllegalStateException("backend crashed");
+                                    }
+                                }),
+                        LocatorDefinition.forRole(ElementRole.BUTTON).named("Add"));
+
+        assertThatThrownBy(locator::tryFind)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("backend crashed");
+    }
+
+    @Test
     void detectsAmbiguityForEquivalentSingleCandidates() {
         FakeBackend backend =
                 new FakeBackend(
@@ -319,6 +342,10 @@ class LocatorEngineTest {
     }
 
     private static LocatorContext context(FakeBackend backend) {
+        return context((ILocatorBackend) backend);
+    }
+
+    private static LocatorContext context(ILocatorBackend backend) {
         LocatorConfig config =
                 new LocatorConfig(
                         0.80,
