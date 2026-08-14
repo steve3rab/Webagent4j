@@ -27,6 +27,7 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
     private final List<IVerification> postconditions = new ArrayList<>();
     private ActionOptions options = ActionOptions.defaults();
     private boolean sensitive;
+    private boolean dryRun;
 
     DefaultPreparedAction(IActionContext context, ActionCommand<R> command) {
         this.context = Objects.requireNonNull(context, "context");
@@ -41,6 +42,12 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
 
     DefaultPreparedAction<R> sensitive() {
         sensitive = true;
+        return this;
+    }
+
+    @Override
+    public IPreparedAction<R> dryRun() {
+        this.dryRun = true;
         return this;
     }
 
@@ -136,7 +143,8 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
                                 List.copyOf(postconditions),
                                 (current, remaining) ->
                                         io.webagent4j.action.StabilizationResult.none(),
-                                sensitive));
+                                sensitive,
+                                dryRun));
     }
 
     private IVerification bind(IVerification verification) {

@@ -12,6 +12,9 @@ import io.webagent4j.action.ActionTimings;
 import io.webagent4j.action.IActionContext;
 import io.webagent4j.action.ObservationCapturePolicy;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.locator.AmbiguousLocatorException;
+import io.webagent4j.locator.LocatorDiagnosticsRenderer;
+import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationDiff;
 import io.webagent4j.verification.VerificationEngine;
@@ -51,6 +54,19 @@ final class ActionExecutor {
                                     config.options().resolutionRetry(),
                                     config.options().timeout());
         } catch (RuntimeException failure) {
+            String locatorDiagnostics = "";
+            if (failure instanceof AmbiguousLocatorException ambiguous) {
+                locatorDiagnostics =
+                        ambiguous
+                                .diagnostics()
+                                .map(d -> new LocatorDiagnosticsRenderer().render(d, List.of()))
+                                .orElse("");
+            } else if (failure instanceof LocatorNotFoundException notFound) {
+                locatorDiagnostics =
+                        notFound.diagnostics()
+                                .map(d -> new LocatorDiagnosticsRenderer().render(d, List.of()))
+                                .orElse("");
+            }
             return failed(
                     context,
                     command,
@@ -66,6 +82,7 @@ final class ActionExecutor {
                     List.of(),
                     null,
                     null,
+                    locatorDiagnostics,
                     classifyResolution(failure),
                     ActionStatus.EXECUTION_FAILED,
                     "Action target could not be resolved",
@@ -120,6 +137,7 @@ final class ActionExecutor {
                     List.of(),
                     before,
                     target,
+                    "",
                     ActionFailureType.PRECONDITION_FAILED,
                     ActionStatus.PRECONDITION_FAILED,
                     "An action precondition was not satisfied",
@@ -134,7 +152,7 @@ final class ActionExecutor {
                         targetDescription,
                         started));
 
-        R value;
+        R value = null;
         Instant executionStarted = Instant.now();
         events.add(
                 event(
@@ -144,38 +162,53 @@ final class ActionExecutor {
                         "started",
                         targetDescription,
                         started));
-        try {
-            value = command.executeBackend(context.actionBackend(), target);
-        } catch (RuntimeException failure) {
-            return failed(
-                    context,
-                    command,
-                    config,
-                    actionId,
-                    started,
-                    events,
-                    resolutionStarted,
-                    preconditionDuration,
-                    Duration.between(executionStarted, Instant.now()),
-                    Duration.ZERO,
-                    preconditions,
-                    List.of(),
-                    before,
-                    target,
-                    classifyExecution(command, failure),
-                    ActionStatus.EXECUTION_FAILED,
-                    "Backend action execution failed",
-                    failure);
-        }
-        Duration executionDuration = Duration.between(executionStarted, Instant.now());
-        events.add(
-                event(
-                        actionId,
+        Duration executionDuration;
+        if (config.dryRun()) {
+            // Simulate execution without invoking backend; keep diagnostics and validations.
+            executionDuration = Duration.between(executionStarted, Instant.now());
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.BACKEND_ACTION_COMPLETED,
+                            "simulated",
+                            targetDescription,
+                            started));
+        } else {
+            try {
+                value = command.executeBackend(context.actionBackend(), target);
+            } catch (RuntimeException failure) {
+                return failed(
+                        context,
                         command,
-                        ActionStage.BACKEND_ACTION_COMPLETED,
-                        "executed-once",
-                        targetDescription,
-                        started));
+                        config,
+                        actionId,
+                        started,
+                        events,
+                        resolutionStarted,
+                        preconditionDuration,
+                        Duration.between(executionStarted, Instant.now()),
+                        Duration.ZERO,
+                        preconditions,
+                        List.of(),
+                        before,
+                        target,
+                        "",
+                        classifyExecution(command, failure),
+                        ActionStatus.EXECUTION_FAILED,
+                        "Backend action execution failed",
+                        failure);
+            }
+            executionDuration = Duration.between(executionStarted, Instant.now());
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.BACKEND_ACTION_COMPLETED,
+                            "executed-once",
+                            targetDescription,
+                            started));
+        }
 
         Instant stabilizationStarted = Instant.now();
         events.add(
@@ -186,16 +219,30 @@ final class ActionExecutor {
                         "started",
                         targetDescription,
                         started));
-        config.stabilization().await(context, remaining(config, started));
-        Duration stabilizationDuration = Duration.between(stabilizationStarted, Instant.now());
-        events.add(
-                event(
-                        actionId,
-                        command,
-                        ActionStage.STABILIZATION_COMPLETED,
-                        "stable",
-                        targetDescription,
-                        started));
+        Duration stabilizationDuration;
+        if (config.dryRun()) {
+            // Do not wait for stabilization in dry-run mode — no backend changes were applied.
+            stabilizationDuration = Duration.ZERO;
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.STABILIZATION_COMPLETED,
+                            "stable",
+                            targetDescription,
+                            started));
+        } else {
+            config.stabilization().await(context, remaining(config, started));
+            stabilizationDuration = Duration.between(stabilizationStarted, Instant.now());
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.STABILIZATION_COMPLETED,
+                            "stable",
+                            targetDescription,
+                            started));
+        }
 
         Instant verificationStarted = Instant.now();
         events.add(
@@ -232,6 +279,7 @@ final class ActionExecutor {
                     List.of(),
                     before,
                     target,
+                    "",
                     ActionFailureType.INTERRUPTED,
                     ActionStatus.CANCELLED,
                     "Action verification was interrupted",
@@ -265,6 +313,7 @@ final class ActionExecutor {
                     postconditions,
                     before,
                     target,
+                    "",
                     failedVerification.timedOut()
                             ? ActionFailureType.TIMEOUT
                             : ActionFailureType.POSTCONDITION_FAILED,
@@ -306,7 +355,10 @@ final class ActionExecutor {
                 diff,
                 events,
                 Optional.empty(),
-                new ActionDiagnostics(targetDescription, "", Map.of("execution", "once")));
+                new ActionDiagnostics(
+                        targetDescription,
+                        "",
+                        Map.of("execution", config.dryRun() ? "dry-run" : "once")));
     }
 
     @SuppressWarnings("checkstyle:ParameterNumber")
@@ -325,6 +377,7 @@ final class ActionExecutor {
             List<VerificationResult> postconditions,
             Observation before,
             IElement target,
+            String locatorDiagnostics,
             ActionFailureType failureType,
             ActionStatus status,
             String message,
@@ -364,7 +417,10 @@ final class ActionExecutor {
                 diff,
                 events,
                 Optional.of(new ActionFailure(failureType, message, safeCause)),
-                new ActionDiagnostics(targetDescription, "", Map.of("execution", "not-retried")));
+                new ActionDiagnostics(
+                        targetDescription,
+                        locatorDiagnostics == null ? "" : locatorDiagnostics,
+                        Map.of("execution", config.dryRun() ? "dry-run" : "not-retried")));
     }
 
     private static ActionFailureType classifyResolution(RuntimeException failure) {

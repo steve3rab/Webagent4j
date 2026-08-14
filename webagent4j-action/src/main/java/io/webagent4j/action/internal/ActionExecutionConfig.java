@@ -12,7 +12,8 @@ record ActionExecutionConfig(
         List<IVerification> preconditions,
         List<IVerification> postconditions,
         IStabilizationStrategy stabilization,
-        boolean sensitive) {
+        boolean sensitive,
+        boolean dryRun) {
 
     static ActionExecutionConfig defaults() {
         return new ActionExecutionConfig(
@@ -20,6 +21,7 @@ record ActionExecutionConfig(
                 List.of(),
                 List.of(),
                 (context, remaining) -> StabilizationResult.none(),
+                false,
                 false);
     }
 }
