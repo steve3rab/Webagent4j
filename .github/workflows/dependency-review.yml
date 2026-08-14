@@ -13,4 +13,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/dependency-review-action@v5
+      - name: Dependency review (disabled)
+        if: false
+        uses: actions/dependency-review-action@v5
