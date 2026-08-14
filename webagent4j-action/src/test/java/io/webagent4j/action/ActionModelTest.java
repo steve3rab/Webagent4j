@@ -3,8 +3,10 @@ package io.webagent4j.action;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.webagent4j.verification.VerificationResult;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -44,6 +46,75 @@ class ActionModelTest {
         assertThatThrownBy(result::throwIfFailed)
                 .isInstanceOf(ActionFailedException.class)
                 .hasMessageContaining(result.actionId().value());
+    }
+
+    @Test
+    void rendersCompactActionSummaryForSuccess() {
+        ActionResult<Void> result =
+                new ActionResult<>(
+                        ActionId.create(),
+                        ActionType.CLICK,
+                        ActionStatus.SUCCESS,
+                        null,
+                        Duration.ofMillis(184),
+                        new ActionTimings(
+                                Duration.ofMillis(184),
+                                Duration.ofMillis(10),
+                                Duration.ofMillis(20),
+                                Duration.ofMillis(30),
+                                Duration.ofMillis(40),
+                                Duration.ofMillis(84)),
+                        List.of(new VerificationResult(true, "ready", "ready")),
+                        List.of(new VerificationResult(true, "updated", "updated")),
+                        null,
+                        null,
+                        null,
+                        List.of(),
+                        Optional.empty(),
+                        new ActionDiagnostics("BUTTON \"Commander\"", "", Map.of()));
+
+        String compact = result.toCompactText();
+
+        assertThat(compact)
+                .contains("CLICK BUTTON \"Commander\"")
+                .contains("status=SUCCESS")
+                .contains("preconditions=1/1")
+                .contains("postconditions=1/1")
+                .contains("duration=184ms");
+    }
+
+    @Test
+    void rendersCompactActionSummaryForFailureWithoutSensitiveFields() {
+        ActionFailure failure =
+                new ActionFailure(
+                        ActionFailureType.TARGET_NOT_INTERACTABLE,
+                        "token=super-secret-value",
+                        Optional.empty());
+        ActionResult<Void> result =
+                new ActionResult<>(
+                        ActionId.create(),
+                        ActionType.CLICK,
+                        ActionStatus.PRECONDITION_FAILED,
+                        null,
+                        Duration.ofMillis(73),
+                        ActionTimings.empty(Duration.ofMillis(73)),
+                        List.of(),
+                        List.of(),
+                        null,
+                        null,
+                        null,
+                        List.of(),
+                        Optional.of(failure),
+                        new ActionDiagnostics("BUTTON \"Commander\"", "", Map.of()));
+
+        String compact = result.toCompactText();
+
+        assertThat(compact)
+                .contains("CLICK BUTTON \"Commander\"")
+                .contains("status=PRECONDITION_FAILED")
+                .contains("failure=TARGET_NOT_INTERACTABLE")
+                .contains("duration=73ms");
+        assertThat(compact).doesNotContain("token").doesNotContain("super-secret-value");
     }
 
     @Test

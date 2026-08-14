@@ -7,6 +7,7 @@ import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.LocatorTestFixtures.FakeBackend;
 import io.webagent4j.locator.LocatorTestFixtures.TestElement;
 import io.webagent4j.locator.api.ElementRole;
+import io.webagent4j.locator.api.ILocator;
 import io.webagent4j.locator.api.LocatorDefinition;
 import java.time.Duration;
 import java.util.List;
@@ -88,6 +89,47 @@ class LocatorEngineTest {
     }
 
     @Test
+    void tryFindReturnsTheSingleMatchingTarget() {
+        IElement target = LocatorTestFixtures.element(ElementRole.BUTTON, "Add");
+        FakeBackend backend = new FakeBackend(List.of(target));
+        ILocator<IElement> locator =
+                locator(
+                        context(backend),
+                        LocatorDefinition.forRole(ElementRole.BUTTON).named("Add"));
+
+        assertThat(locator.tryFind()).contains(target);
+    }
+
+    @Test
+    void tryFindReturnsEmptyWhenTargetIsMissing() {
+        FakeBackend backend = new FakeBackend(List.of());
+        ILocator<IElement> locator =
+                locator(
+                        context(backend),
+                        LocatorDefinition.forRole(ElementRole.BUTTON).named("Missing"));
+
+        assertThat(locator.tryFind()).isEmpty();
+    }
+
+    @Test
+    void tryFindDoesNotHideAmbiguity() {
+        FakeBackend backend =
+                new FakeBackend(
+                        List.of(
+                                LocatorTestFixtures.element(ElementRole.BUTTON, "Add"),
+                                LocatorTestFixtures.element(ElementRole.BUTTON, "Add")));
+        ILocator<IElement> locator =
+                locator(
+                        context(backend),
+                        LocatorDefinition.forRole(ElementRole.BUTTON).named("Add"));
+
+        assertThatThrownBy(locator::tryFind)
+                .isInstanceOf(AmbiguousLocatorException.class)
+                .hasMessageContaining("1. BUTTON")
+                .hasMessageContaining("score=1.00");
+    }
+
+    @Test
     void detectsAmbiguityForEquivalentSingleCandidates() {
         FakeBackend backend =
                 new FakeBackend(
@@ -153,6 +195,127 @@ class LocatorEngineTest {
 
         assertThat(results).extracting(LocatorCandidate::element).containsExactly(first, second);
         assertThat(backend.queries()).isNotEmpty();
+    }
+
+    private ILocator<IElement> locator(LocatorContext context, LocatorDefinition definition) {
+        return new ILocator<>() {
+            @Override
+            public ILocator<IElement> named(String name) {
+                return locator(context, definition.named(name));
+            }
+
+            @Override
+            public ILocator<IElement> nameContaining(String text) {
+                return locator(context, definition.nameContaining(text));
+            }
+
+            @Override
+            public ILocator<IElement> fuzzyName(String name) {
+                return locator(context, definition.fuzzyName(name));
+            }
+
+            @Override
+            public ILocator<IElement> labelled(String label) {
+                return locator(context, definition.labelled(label));
+            }
+
+            @Override
+            public ILocator<IElement> visible() {
+                return locator(context, definition.visibleOnly());
+            }
+
+            @Override
+            public ILocator<IElement> hidden() {
+                return locator(context, definition.hiddenOnly());
+            }
+
+            @Override
+            public ILocator<IElement> enabled() {
+                return locator(context, definition.enabledOnly());
+            }
+
+            @Override
+            public ILocator<IElement> disabled() {
+                return locator(context, definition.disabledOnly());
+            }
+
+            @Override
+            public ILocator<IElement> editable() {
+                return locator(context, definition.editableOnly());
+            }
+
+            @Override
+            public ILocator<IElement> readonly() {
+                return locator(context, definition.readOnlyOnly());
+            }
+
+            @Override
+            public ILocator<IElement> checked() {
+                return locator(context, definition.checkedOnly());
+            }
+
+            @Override
+            public ILocator<IElement> selected() {
+                return locator(context, definition.selectedOnly());
+            }
+
+            @Override
+            public ILocator<IElement> focused() {
+                return locator(context, definition.focusedOnly());
+            }
+
+            @Override
+            public ILocator<IElement> inViewport() {
+                return locator(context, definition.inViewportOnly());
+            }
+
+            @Override
+            public ILocator<IElement> clickable() {
+                return locator(context, definition.clickableOnly());
+            }
+
+            @Override
+            public ILocator<IElement> covered() {
+                return locator(context, definition.coveredOnly());
+            }
+
+            @Override
+            public ILocator<IElement> timeout(Duration timeout) {
+                return locator(context, definition.withTimeout(timeout));
+            }
+
+            @Override
+            public ILocator<IElement> waitUntilVisible() {
+                return locator(context, definition.waitingUntilVisible());
+            }
+
+            @Override
+            public ILocator<IElement> stableFor(Duration duration) {
+                return locator(context, definition.stableFor(duration));
+            }
+
+            @Override
+            public io.webagent4j.locator.api.IElementReference<IElement> reference() {
+                return () -> engine.locateSingle(context, definition).element();
+            }
+
+            @Override
+            public IElement first() {
+                return engine.locate(context, definition).element();
+            }
+
+            @Override
+            public IElement single() {
+                return engine.locateSingle(context, definition).element();
+            }
+
+            @Override
+            public List<IElement> all() {
+                return engine.locateAll(context, definition).stream()
+                        .map(LocatorCandidate::element)
+                        .toList();
+            }
+        };
     }
 
     private static LocatorContext context(FakeBackend backend) {

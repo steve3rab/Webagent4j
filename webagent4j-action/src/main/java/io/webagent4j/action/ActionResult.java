@@ -74,6 +74,11 @@ public record ActionResult<T>(
         return status == ActionStatus.SUCCESS;
     }
 
+    /** Returns a compact summary suitable for logs, CLI output, and diagnostics. */
+    public String toCompactText() {
+        return new CompactTextActionResultRenderer().render(this);
+    }
+
     /** Throws a structured exception when this result is unsuccessful. */
     public ActionResult<T> throwIfFailed() {
         if (!success()) {

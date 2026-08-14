@@ -2,6 +2,7 @@ package io.webagent4j.locator.api;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Fluent immutable query that resolves elements only at a terminal operation.
@@ -91,4 +92,29 @@ public interface ILocator<E> {
 
     /** Returns all compatible candidates in deterministic score and DOM order. */
     List<E> all();
+
+    /**
+     * Attempts a single unambiguous resolution without converting a real locator failure into a
+     * silent empty result.
+     *
+     * <p>Returns an empty optional when no candidate exists before the configured timeout. An
+     * ambiguous candidate set still raises the normal explicit exception so callers can distinguish
+     * a missing match from an invalid search.
+     */
+    default Optional<E> tryFind() {
+        try {
+            return Optional.of(single());
+        } catch (RuntimeException failure) {
+            if (isNotFoundFailure(failure)) {
+                return Optional.empty();
+            }
+            throw failure;
+        }
+    }
+
+    private static boolean isNotFoundFailure(RuntimeException failure) {
+        String className = failure.getClass().getName();
+        return className.endsWith(".LocatorNotFoundException")
+                || className.endsWith("LocatorNotFoundException");
+    }
 }
