@@ -18,9 +18,8 @@ public final class ObservationDiffExample {
     /** Opens the optional URL argument and demonstrates an in-page semantic change. */
     public static void main(String[] args) {
         String url = args.length == 0 ? "https://example.com" : args[0];
-        try (IBrowser browser =
-                WebAgent.browser().playwright().chromium().headless(true).launch()) {
-            IPage page = browser.open(url);
+        try (IBrowser browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+                IPage page = browser.open(url)) {
             Observation before = page.observe();
             page.evaluate(
                     "document.body.insertAdjacentHTML('beforeend',"

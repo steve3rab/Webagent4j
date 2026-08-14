@@ -39,6 +39,7 @@ final class PlaywrightBrowser implements IBrowser {
         this.options = options;
     }
 
+    @SuppressWarnings("java:S2095") // Ownership is transferred to the returned adapter.
     static PlaywrightBrowser launch(BrowserOptions options) {
         LOGGER.debug(
                 "Launching {} through Playwright (headless={})",

@@ -17,9 +17,8 @@ public final class FormActionExample {
         if (args.length == 0 || args[0].isBlank()) {
             throw new IllegalArgumentException("Expected the form page URL as the first argument");
         }
-        try (IBrowser browser =
-                WebAgent.browser().playwright().chromium().headless(true).launch()) {
-            var page = browser.open(args[0]);
+        try (IBrowser browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+                var page = browser.open(args[0])) {
             var email = page.find().textbox().labelled("Email").single();
             var password = page.find().textbox().labelled("Password").single();
 

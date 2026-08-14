@@ -15,9 +15,8 @@ public final class DownloadActionExample {
         if (args.length < 2 || args[0].isBlank() || args[1].isBlank()) {
             throw new IllegalArgumentException("Expected a page URL and destination directory");
         }
-        try (IBrowser browser =
-                WebAgent.browser().playwright().chromium().headless(true).launch()) {
-            var page = browser.open(args[0]);
+        try (IBrowser browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+                var page = browser.open(args[0])) {
             var result =
                     page.action()
                             .download(

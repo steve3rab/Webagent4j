@@ -14,9 +14,8 @@ public final class ClickActionExample {
     /** Runs against a page containing an Add to cart button. */
     public static void main(String[] args) {
         String url = requireArgument(args, "page URL");
-        try (IBrowser browser =
-                WebAgent.browser().playwright().chromium().headless(true).launch()) {
-            var page = browser.open(url);
+        try (IBrowser browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+                var page = browser.open(url)) {
             ActionResult<Void> result =
                     page.action()
                             .click(page.find().button().named("Add to cart").reference())

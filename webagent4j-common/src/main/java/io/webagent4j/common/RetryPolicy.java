@@ -40,7 +40,7 @@ public record RetryPolicy(
         if (attempt < 2 || attempt > maxAttempts) {
             throw new IllegalArgumentException("attempt must be between two and maxAttempts");
         }
-        double multiplier = Math.pow(backoffFactor, attempt - 2);
+        double multiplier = Math.pow(backoffFactor, attempt - 2.0);
         long candidate = Math.round(delay.toMillis() * multiplier);
         return Duration.ofMillis(Math.min(candidate, maximumDelay.toMillis()));
     }

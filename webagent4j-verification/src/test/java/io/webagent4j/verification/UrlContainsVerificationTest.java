@@ -30,7 +30,7 @@ class UrlContainsVerificationTest {
                                         new UrlContainsVerification("example.test"),
                                         new UrlContainsVerification("/checkout")));
 
-        assertThat(results).allMatch(VerificationResult::success);
+        assertThat(results).isNotEmpty().allMatch(VerificationResult::success);
         assertThatIllegalArgumentException().isThrownBy(() -> new UrlContainsVerification(" "));
     }
 

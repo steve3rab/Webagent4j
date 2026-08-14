@@ -70,8 +70,8 @@ public final class WebAgent4jCli implements Runnable {
         @Override
         public Integer call() throws IOException {
             try (IBrowser browser =
-                    WebAgent.browser().playwright().chromium().headless(!headed).launch()) {
-                IPage page = browser.open(url);
+                            WebAgent.browser().playwright().chromium().headless(!headed).launch();
+                    IPage page = browser.open(url)) {
                 ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
                 spec.commandLine().getOut().println(mapper.writeValueAsString(page.observe()));
                 return 0;
@@ -101,8 +101,9 @@ public final class WebAgent4jCli implements Runnable {
                 Files.createDirectories(parent);
             }
             try (IBrowser browser =
-                    WebAgent.browser().playwright().chromium().headless(true).launch()) {
-                Files.write(normalized, browser.open(url).screenshot());
+                            WebAgent.browser().playwright().chromium().headless(true).launch();
+                    IPage page = browser.open(url)) {
+                Files.write(normalized, page.screenshot());
             }
             spec.commandLine().getOut().println(normalized);
             return 0;

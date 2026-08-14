@@ -18,9 +18,8 @@ public final class VerifiedNavigationExample {
 
     /** Opens example.com, observes it, follows its semantic link, and verifies navigation. */
     public static void main(String[] args) {
-        try (IBrowser browser =
-                WebAgent.browser().playwright().chromium().headless(true).launch()) {
-            IPage page = browser.open("https://example.com");
+        try (IBrowser browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+                IPage page = browser.open("https://example.com")) {
             Observation observation = page.observe();
             LOGGER.info(
                     "Observed '{}' with {} semantic elements",

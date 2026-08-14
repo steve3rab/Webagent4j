@@ -17,9 +17,8 @@ public final class CompactObservationExample {
     /** Opens the optional URL argument and logs the compact semantic representation. */
     public static void main(String[] args) {
         String url = args.length == 0 ? "https://example.com" : args[0];
-        try (IBrowser browser =
-                WebAgent.browser().playwright().chromium().headless(true).launch()) {
-            IPage page = browser.open(url);
+        try (IBrowser browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+                IPage page = browser.open(url)) {
             Observation observation = page.observe();
             LOGGER.info(
                     "Compact observation:{}{}",
