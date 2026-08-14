@@ -74,6 +74,20 @@ public record ActionResult<T>(
         return status == ActionStatus.SUCCESS;
     }
 
+    /**
+     * Returns whether this result represents a simulated dry-run rather than a backend execution.
+     */
+    public boolean dryRun() {
+        return "dry-run".equalsIgnoreCase(diagnostics.details().getOrDefault("execution", ""));
+    }
+
+    /**
+     * Returns whether the backend action was actually executed, even when the result is successful.
+     */
+    public boolean executed() {
+        return !dryRun();
+    }
+
     /** Returns a compact summary suitable for logs, CLI output, and diagnostics. */
     public String toCompactText() {
         return new CompactTextActionResultRenderer().render(this);
