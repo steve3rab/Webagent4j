@@ -38,4 +38,10 @@ public interface IPreparedAction<R> {
 
     /** Executes the action pipeline exactly once after resolution and preconditions. */
     ActionResult<R> execute();
+
+    /**
+     * Marks this prepared action as a dry-run where the backend action is simulated but not
+     * performed.
+     */
+    IPreparedAction<R> dryRun();
 }
