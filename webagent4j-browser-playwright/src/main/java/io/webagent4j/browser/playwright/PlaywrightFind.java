@@ -1,5 +1,6 @@
 package io.webagent4j.browser.playwright;
 
+import io.webagent4j.browser.InteractionContext;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorContext;
@@ -18,6 +19,16 @@ final class PlaywrightFind implements IFind<IElement> {
     PlaywrightFind(ILocatorEngine engine, LocatorContext context) {
         this.engine = engine;
         this.context = context;
+    }
+
+    @Override
+    public IFind<IElement> within(Object scope) {
+        return new PlaywrightFind(engine, resolveScope(scope));
+    }
+
+    @Override
+    public IFind<IElement> inContext(Object context) {
+        return within(context);
     }
 
     @Override
@@ -184,5 +195,48 @@ final class PlaywrightFind implements IFind<IElement> {
 
     private ILocator<IElement> locator(LocatorDefinition definition) {
         return new PlaywrightLocator(engine, context, definition);
+    }
+
+    private LocatorContext resolveScope(Object scope) {
+        if (scope instanceof IElement element) {
+            return context.within(element);
+        }
+        if (scope instanceof InteractionContext interactionContext) {
+            LocatorContext next = context;
+            if (interactionContext.scope().isPresent()) {
+                next = next.within(interactionContext.scope().get());
+            }
+            for (String text : interactionContext.containingText()) {
+                if (text == null || text.isBlank()) {
+                    continue;
+                }
+                // Prefer accessible name matching (aria-label, aria-labelledby, etc.) and fall back
+                // to
+                // visible text when accessible name does not match anything.
+                IElement container;
+                try {
+                    container =
+                            engine.locate(
+                                            next,
+                                            LocatorDefinition.element()
+                                                    .withAccessibleName(
+                                                            TextMatch.exactIgnoringCase(text)))
+                                    .element();
+                } catch (RuntimeException accessibleFailure) {
+                    // Try visible text as a fallback before giving up
+                    container =
+                            engine.locate(
+                                            next,
+                                            LocatorDefinition.element()
+                                                    .withVisibleText(
+                                                            TextMatch.exactIgnoringCase(text)))
+                                    .element();
+                }
+                next = next.within(container);
+                break;
+            }
+            return next;
+        }
+        throw new IllegalArgumentException("scope must be an element or InteractionContext");
     }
 }

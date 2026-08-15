@@ -54,6 +54,17 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
     /** Starts a semantic or selector-based element query. */
     IFind<IElement> find();
 
+    /**
+     * Starts a query constrained by an explicit, immutable semantic context.
+     *
+     * <p>The context is resolved before the target lookup, so callers can disambiguate repeated
+     * labels such as duplicate product-card actions without relying on fragile CSS selectors.
+     * Contexts are re-resolved against the live DOM before execution when the backend supports it.
+     */
+    default IFind<IElement> find(InteractionContext context) {
+        return find().inContext(context);
+    }
+
     /** Starts a query using an explicit immutable locator configuration. */
     IFind<IElement> find(LocatorConfig config);
 
