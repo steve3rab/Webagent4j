@@ -16,6 +16,22 @@ public interface ILocator<E> {
     /** Constrains the query to an exact, case-insensitive accessible name. */
     ILocator<E> named(String name);
 
+    /**
+     * Narrows the query to an explicit semantic scope when the backend supports it.
+     *
+     * <p>Contexts are applied before target matching and must remain re-resolvable against the
+     * current DOM. They are hard constraints, not a scoring bonus, so an out-of-scope or ambiguous
+     * context blocks resolution instead of silently selecting the wrong candidate.
+     */
+    default ILocator<E> within(Object scope) {
+        throw new UnsupportedOperationException("Scoped queries are not supported by this backend");
+    }
+
+    /** Alias for {@link #within(Object)} used by callers that prefer a context-oriented API. */
+    default ILocator<E> inContext(Object context) {
+        return within(context);
+    }
+
     /** Constrains the query to an accessible name containing the supplied text. */
     ILocator<E> nameContaining(String text);
 

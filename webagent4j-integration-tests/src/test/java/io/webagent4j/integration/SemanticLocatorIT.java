@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IPage;
+import io.webagent4j.browser.InteractionContext;
 import io.webagent4j.core.WebAgent;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
@@ -130,6 +131,15 @@ class SemanticLocatorIT {
 
             IElement form = page.find().form().named("Payment").single();
             assertThat(form.find().button().named("Pay").single().accessibleName())
+                    .isEqualTo("Pay");
+            assertThat(page.find().within(form).button().named("Pay").single().accessibleName())
+                    .isEqualTo("Pay");
+            assertThat(
+                            page.find(InteractionContext.context().containingText("Payment"))
+                                    .button()
+                                    .named("Pay")
+                                    .single()
+                                    .accessibleName())
                     .isEqualTo("Pay");
             assertThat(page.find().button().named("Hidden action").hidden().single().visible())
                     .isFalse();

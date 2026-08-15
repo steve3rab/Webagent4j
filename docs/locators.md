@@ -88,6 +88,36 @@ Score expresses the accumulated ranking evidence. Confidence expresses certainty
 fuzzy confidence remains below equivalent exact confidence. Both values are present in
 `LocatorResult`, candidates, diagnostics, and completion events where appropriate.
 
+## Contextual resolution
+
+Some pages contain repeated actions that share the same accessible name but belong to different semantic
+regions such as product cards, forms, dialogs, or table rows. The locator engine therefore supports an
+explicit scope context that narrows the candidate universe before the main target resolution runs.
+
+```java
+IElement addToCart = page.find()
+        .within(
+                page.find().region().named("Laptop B").single())
+        .button()
+        .named("Ajouter")
+        .single();
+
+IElement shippingContinue = page.find(
+                InteractionContext.context().containingText("Shipping"))
+        .button()
+        .named("Continue")
+        .single();
+```
+
+A context is treated as a hard scope, not a scoring bonus. It is resolved before target selection and
+must fail explicitly when the scope is missing or ambiguous instead of silently picking the wrong
+candidate. The existing locator pipeline remains deterministic: exact semantic resolution, required
+state constraints, candidate reduction by scope, then ranking and ambiguity detection.
+
+Context-aware locators also work naturally with `IElement.find()`, which reuses the same location
+scope and backend. This helps resolve repeated actions inside a specific form, dialog, table row, or
+semantic landmark without relying on brittle CSS selectors.
+
 ## Hard constraints and preferences
 
 Requested role, name, label, id, attribute, test id, and state predicates are mandatory. A candidate

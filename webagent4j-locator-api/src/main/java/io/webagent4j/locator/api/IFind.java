@@ -5,6 +5,21 @@ public interface IFind<E> {
     /** Starts an unconstrained semantic query. */
     ILocator<E> element();
 
+    /**
+     * Narrows the current query to an explicit semantic scope when the backend supports it.
+     *
+     * <p>Scope objects are treated as hard constraints rather than scoring bonuses. A scope that is
+     * missing or ambiguous must fail explicitly before a target is selected.
+     */
+    default IFind<E> within(Object scope) {
+        throw new UnsupportedOperationException("Scoped queries are not supported by this backend");
+    }
+
+    /** Alias for {@link #within(Object)} used by callers that prefer a context-oriented API. */
+    default IFind<E> inContext(Object context) {
+        return within(context);
+    }
+
     /** Starts a query constrained to one semantic role. */
     ILocator<E> role(ElementRole role);
 
