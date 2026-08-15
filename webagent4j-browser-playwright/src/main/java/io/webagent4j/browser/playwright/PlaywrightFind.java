@@ -210,7 +210,8 @@ final class PlaywrightFind implements IFind<IElement> {
                 if (text == null || text.isBlank()) {
                     continue;
                 }
-                // Prefer accessible name matching (aria-label, aria-labelledby, etc.) and fall back to
+                // Prefer accessible name matching (aria-label, aria-labelledby, etc.) and fall back
+                // to
                 // visible text when accessible name does not match anything.
                 IElement container;
                 try {
@@ -218,7 +219,8 @@ final class PlaywrightFind implements IFind<IElement> {
                             engine.locate(
                                             next,
                                             LocatorDefinition.element()
-                                                    .withAccessibleName(TextMatch.exactIgnoringCase(text)))
+                                                    .withAccessibleName(
+                                                            TextMatch.exactIgnoringCase(text)))
                                     .element();
                 } catch (RuntimeException accessibleFailure) {
                     // Try visible text as a fallback before giving up
@@ -226,7 +228,8 @@ final class PlaywrightFind implements IFind<IElement> {
                             engine.locate(
                                             next,
                                             LocatorDefinition.element()
-                                                    .withVisibleText(TextMatch.exactIgnoringCase(text)))
+                                                    .withVisibleText(
+                                                            TextMatch.exactIgnoringCase(text)))
                                     .element();
                 }
                 next = next.within(container);
