@@ -2,6 +2,7 @@ package io.webagent4j.action.internal;
 
 import io.webagent4j.action.ActionDiagnostics;
 import io.webagent4j.action.ActionEvent;
+import io.webagent4j.action.ActionExecutionMode;
 import io.webagent4j.action.ActionFailure;
 import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionId;
@@ -84,6 +85,7 @@ final class ActionExecutor {
                     null,
                     locatorDiagnostics,
                     classifyResolution(failure),
+                    ActionExecutionMode.NOT_EXECUTED,
                     ActionStatus.EXECUTION_FAILED,
                     "Action target could not be resolved",
                     failure);
@@ -139,6 +141,7 @@ final class ActionExecutor {
                     target,
                     "",
                     ActionFailureType.PRECONDITION_FAILED,
+                    ActionExecutionMode.NOT_EXECUTED,
                     ActionStatus.PRECONDITION_FAILED,
                     "An action precondition was not satisfied",
                     null);
@@ -166,14 +169,51 @@ final class ActionExecutor {
         if (config.dryRun()) {
             // Simulate execution without invoking backend; keep diagnostics and validations.
             executionDuration = Duration.between(executionStarted, Instant.now());
+            // Do not emit backend started/completed events for a dry-run — they are misleading.
             events.add(
                     event(
                             actionId,
                             command,
-                            ActionStage.BACKEND_ACTION_COMPLETED,
-                            "simulated",
+                            ActionStage.ACTION_COMPLETED,
+                            "dry-run-validated",
                             targetDescription,
                             started));
+            // Short-circuit: do not perform stabilization or verification in dry-run mode.
+            Duration stabilizationDuration = Duration.ZERO;
+            Duration verificationDuration = Duration.ZERO;
+            Observation after = null;
+            ObservationDiff diff = null;
+            Duration total = Duration.between(started, Instant.now());
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_COMPLETED,
+                            "completed",
+                            targetDescription,
+                            started));
+            return new ActionResult<>(
+                    actionId,
+                    command.type(),
+                    ActionExecutionMode.DRY_RUN,
+                    ActionStatus.SUCCESS,
+                    null,
+                    total,
+                    new ActionTimings(
+                            total,
+                            resolutionDuration,
+                            preconditionDuration,
+                            executionDuration,
+                            stabilizationDuration,
+                            verificationDuration),
+                    preconditions,
+                    List.of(),
+                    before,
+                    after,
+                    diff,
+                    events,
+                    Optional.empty(),
+                    new ActionDiagnostics(targetDescription, "", Map.of("execution", "dry-run")));
         } else {
             try {
                 value = command.executeBackend(context.actionBackend(), target);
@@ -195,6 +235,7 @@ final class ActionExecutor {
                         target,
                         "",
                         classifyExecution(command, failure),
+                        ActionExecutionMode.REAL,
                         ActionStatus.EXECUTION_FAILED,
                         "Backend action execution failed",
                         failure);
@@ -281,6 +322,7 @@ final class ActionExecutor {
                     target,
                     "",
                     ActionFailureType.INTERRUPTED,
+                    ActionExecutionMode.REAL,
                     ActionStatus.CANCELLED,
                     "Action verification was interrupted",
                     failure);
@@ -317,6 +359,7 @@ final class ActionExecutor {
                     failedVerification.timedOut()
                             ? ActionFailureType.TIMEOUT
                             : ActionFailureType.POSTCONDITION_FAILED,
+                    ActionExecutionMode.REAL,
                     failedVerification.timedOut()
                             ? ActionStatus.TIMEOUT
                             : ActionStatus.VERIFICATION_FAILED,
@@ -338,6 +381,7 @@ final class ActionExecutor {
         return new ActionResult<>(
                 actionId,
                 command.type(),
+                ActionExecutionMode.REAL,
                 ActionStatus.SUCCESS,
                 value,
                 total,
@@ -379,6 +423,7 @@ final class ActionExecutor {
             IElement target,
             String locatorDiagnostics,
             ActionFailureType failureType,
+            ActionExecutionMode executionMode,
             ActionStatus status,
             String message,
             RuntimeException cause) {
@@ -400,6 +445,7 @@ final class ActionExecutor {
         return new ActionResult<>(
                 actionId,
                 command.type(),
+                executionMode,
                 status,
                 null,
                 total,
@@ -420,7 +466,11 @@ final class ActionExecutor {
                 new ActionDiagnostics(
                         targetDescription,
                         locatorDiagnostics == null ? "" : locatorDiagnostics,
-                        Map.of("execution", config.dryRun() ? "dry-run" : "not-retried")));
+                        Map.of(
+                                "execution",
+                                executionMode == ActionExecutionMode.DRY_RUN
+                                        ? "dry-run"
+                                        : "not-retried")));
     }
 
     private static ActionFailureType classifyResolution(RuntimeException failure) {
