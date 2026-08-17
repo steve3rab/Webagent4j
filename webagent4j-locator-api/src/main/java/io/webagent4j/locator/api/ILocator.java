@@ -129,8 +129,9 @@ public interface ILocator<E> {
     }
 
     private static boolean isNotFoundFailure(RuntimeException failure) {
-        String className = failure.getClass().getName();
-        return className.endsWith(".LocatorNotFoundException")
-                || className.endsWith("LocatorNotFoundException");
+        if (failure instanceof io.webagent4j.common.ILocatorFailure lf) {
+            return lf.isNotFound();
+        }
+        return false;
     }
 }

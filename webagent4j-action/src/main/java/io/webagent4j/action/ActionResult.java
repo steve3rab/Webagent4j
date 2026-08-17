@@ -12,6 +12,7 @@ import java.util.Optional;
 public record ActionResult<T>(
         ActionId actionId,
         ActionType actionType,
+        ActionExecutionMode executionMode,
         ActionStatus status,
         T value,
         Duration duration,
@@ -55,6 +56,7 @@ public record ActionResult<T>(
         this(
                 ActionId.create(),
                 ActionType.CLICK,
+                ActionExecutionMode.REAL,
                 success ? ActionStatus.SUCCESS : ActionStatus.EXECUTION_FAILED,
                 value,
                 duration,
@@ -78,14 +80,14 @@ public record ActionResult<T>(
      * Returns whether this result represents a simulated dry-run rather than a backend execution.
      */
     public boolean dryRun() {
-        return "dry-run".equalsIgnoreCase(diagnostics.details().getOrDefault("execution", ""));
+        return executionMode == ActionExecutionMode.DRY_RUN;
     }
 
     /**
      * Returns whether the backend action was actually executed, even when the result is successful.
      */
     public boolean executed() {
-        return !dryRun();
+        return executionMode == ActionExecutionMode.REAL;
     }
 
     /** Returns a compact summary suitable for logs, CLI output, and diagnostics. */

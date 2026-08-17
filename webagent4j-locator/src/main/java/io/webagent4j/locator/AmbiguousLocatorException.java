@@ -3,7 +3,8 @@ package io.webagent4j.locator;
 import io.webagent4j.common.LocatorException;
 
 /** Indicates that single-result resolution found materially equivalent best candidates. */
-public final class AmbiguousLocatorException extends LocatorException {
+public final class AmbiguousLocatorException extends LocatorException
+        implements io.webagent4j.common.ILocatorFailure {
 
     private static final long serialVersionUID = 1L;
 
@@ -28,5 +29,10 @@ public final class AmbiguousLocatorException extends LocatorException {
     /** Returns the formal safe ambiguity outcome. */
     public LocatorResolutionStatus status() {
         return LocatorResolutionStatus.AMBIGUOUS;
+    }
+
+    @Override
+    public boolean isAmbiguous() {
+        return true;
     }
 }

@@ -3,7 +3,8 @@ package io.webagent4j.locator;
 import io.webagent4j.common.LocatorException;
 
 /** Indicates that no compatible candidate appeared before the locator timeout. */
-public final class LocatorNotFoundException extends LocatorException {
+public final class LocatorNotFoundException extends LocatorException
+        implements io.webagent4j.common.ILocatorFailure {
 
     private static final long serialVersionUID = 1L;
 
@@ -40,5 +41,10 @@ public final class LocatorNotFoundException extends LocatorException {
     /** Returns the formal safe failure outcome. */
     public LocatorResolutionStatus status() {
         return status;
+    }
+
+    @Override
+    public boolean isNotFound() {
+        return true;
     }
 }

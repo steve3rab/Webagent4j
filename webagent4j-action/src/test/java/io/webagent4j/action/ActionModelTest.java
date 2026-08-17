@@ -54,6 +54,7 @@ class ActionModelTest {
                 new ActionResult<>(
                         ActionId.create(),
                         ActionType.CLICK,
+                        ActionExecutionMode.DRY_RUN,
                         ActionStatus.SUCCESS,
                         null,
                         Duration.ofMillis(184),
@@ -79,6 +80,7 @@ class ActionModelTest {
                 new ActionResult<>(
                         ActionId.create(),
                         ActionType.CLICK,
+                        ActionExecutionMode.REAL,
                         ActionStatus.SUCCESS,
                         null,
                         Duration.ofMillis(184),
@@ -119,6 +121,7 @@ class ActionModelTest {
                 new ActionResult<>(
                         ActionId.create(),
                         ActionType.CLICK,
+                        ActionExecutionMode.NOT_EXECUTED,
                         ActionStatus.PRECONDITION_FAILED,
                         null,
                         Duration.ofMillis(73),
