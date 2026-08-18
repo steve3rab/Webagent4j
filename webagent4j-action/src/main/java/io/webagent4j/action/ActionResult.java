@@ -30,6 +30,7 @@ public record ActionResult<T>(
     public ActionResult {
         Objects.requireNonNull(actionId, "actionId");
         Objects.requireNonNull(actionType, "actionType");
+        Objects.requireNonNull(executionMode, "executionMode");
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(duration, "duration");
         Objects.requireNonNull(timings, "timings");
@@ -46,17 +47,49 @@ public record ActionResult<T>(
         }
     }
 
-    /** Compatibility constructor retained for the original click API. */
+    /**
+     * Compatibility constructor retained for the original click API.
+     *
+     * <p>A plain success flag cannot distinguish {@link ActionExecutionMode#REAL} from {@link
+     * ActionExecutionMode#DRY_RUN} or {@link ActionExecutionMode#NOT_EXECUTED}, so a failure is
+     * never assumed to mean the backend was not invoked: this constructor always reports {@link
+     * ActionExecutionMode#REAL}, whether {@code success} is {@code true} or {@code false}. This is
+     * the fail-safe choice, since {@link #executed()} returning {@code true} signals "already
+     * attempted, do not blindly retry" rather than "definitely completed"; an unattempted
+     * resolution or precondition failure incorrectly marked {@code REAL} would be far less
+     * dangerous than an actually-attempted failure incorrectly marked {@link
+     * ActionExecutionMode#NOT_EXECUTED}, which could invite an unsafe duplicate execution. Callers
+     * that know the true execution mode should use {@link #ActionResult(boolean, Object, Duration,
+     * List, Optional, ActionExecutionMode)} or the canonical constructor instead.
+     *
+     * @deprecated cannot represent dry-run or not-executed outcomes; prefer the canonical
+     *     constructor or the explicit-execution-mode overload
+     */
+    @Deprecated
     public ActionResult(
             boolean success,
             T value,
             Duration duration,
             List<ActionEvent> events,
             Optional<ActionFailure> failure) {
+        this(success, value, duration, events, failure, ActionExecutionMode.REAL);
+    }
+
+    /**
+     * Compatibility constructor retained for the original click API, with an explicit execution
+     * mode supplied by a caller that knows whether the backend was actually invoked.
+     */
+    public ActionResult(
+            boolean success,
+            T value,
+            Duration duration,
+            List<ActionEvent> events,
+            Optional<ActionFailure> failure,
+            ActionExecutionMode executionMode) {
         this(
                 ActionId.create(),
                 ActionType.CLICK,
-                ActionExecutionMode.REAL,
+                executionMode,
                 success ? ActionStatus.SUCCESS : ActionStatus.EXECUTION_FAILED,
                 value,
                 duration,
@@ -84,7 +117,15 @@ public record ActionResult<T>(
     }
 
     /**
-     * Returns whether the backend action was actually executed, even when the result is successful.
+     * Returns whether the backend action was actually invoked, regardless of whether the overall
+     * result succeeded.
+     *
+     * <p>This is {@code true} whenever the pipeline reached backend execution at least once, which
+     * happens at most once per action. It remains {@code true} even when backend execution itself
+     * threw, since the backend call was genuinely made and a side effect may already have happened;
+     * it does not by itself certify that the side effect completed successfully — combine it with
+     * {@link #success()} for that. It is {@code false} for a dry-run ({@link #dryRun()}) and for
+     * any outcome decided before backend execution, such as a resolution or precondition failure.
      */
     public boolean executed() {
         return executionMode == ActionExecutionMode.REAL;
