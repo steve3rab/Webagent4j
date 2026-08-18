@@ -24,6 +24,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Fixed explicit-element scopes being able to escape a previously declared parent scope in mixed
+  locator chains: an explicit element declared after another scope is now proven, against the real
+  Playwright DOM relationship, to be a descendant of (or the same node as) that current scope before
+  it is accepted - resolution fails explicitly instead of silently narrowing to an unrelated element,
+  even one that contains a perfectly valid target of its own. This check is re-run at every terminal
+  operation, so a child moved out of its declared parent between building a reference and resolving
+  it is rejected too, not just at chain-build time.
 - Fixed mixed explicit/structured scope ordering in Playwright locator chains: a chain mixing
   `within(element)` and `within(structuredScope)` now always resolves in exactly the order the
   calls were declared, instead of implicitly applying every explicit element scope before any

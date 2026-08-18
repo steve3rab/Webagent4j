@@ -225,6 +225,18 @@ just on the initial `IFind`. Declaration order is resolved fresh at every termin
 like a single structured scope - see [Dynamic contextual resolution](#dynamic-contextual-resolution)
 above.
 
+`within(...)` is a conjunction of nested constraints, never a replacement. This is enforced, not just
+documented intent: whenever an explicit element scope is declared after another scope, it is proven -
+against the real DOM relationship, never accessible name, role, or any diagnostic label - to be a
+descendant of, or the same node as, the scope declared immediately before it. `within(A).within(B)`
+means "B, and B is inside A"; if B cannot be proven to be inside A, resolution fails explicitly
+instead of substituting an unrelated element that happens to satisfy the rest of the query. An
+explicit element declared as the very first scope in a chain needs no such proof - nothing narrowed
+it yet, so it simply becomes the first narrowing scope. This containment check runs at the same
+terminal-operation time as everything else in a pending scope chain, so a child element that was
+inside its declared parent when the reference was built, but has since been moved elsewhere in the
+DOM, is rejected when the action actually runs - not silently accepted because it once qualified.
+
 ## Non-throwing lookup
 
 `tryFind()` attempts a single unambiguous resolution and returns `Optional.empty()` only for a real
