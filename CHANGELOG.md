@@ -29,9 +29,20 @@ All notable changes to this project will be documented in this file. The format 
 - `ILocator.tryFind()` now recognizes a typed locator failure wrapped by an unrelated
   `RuntimeException`, within a bounded, cycle-safe cause chain.
 - `ActionResult.executionMode()` is now validated non-null.
+- `PlaywrightScopeResolver`'s context resolution no longer catches a bare `RuntimeException` when
+  falling back from accessible-name to visible-text matching: the fallback now triggers only on a
+  demonstrated typed "not found" outcome, so an ambiguous context or a genuine backend/runtime
+  failure always propagates instead of being silently retried under a different strategy.
+- Every `InteractionContext.containingText(...)` constraint is now honored, in order, progressively
+  narrowing the scope; previously only the first constraint was ever applied.
+- `ActionPlan.execute()` may now be called at most once per plan instance; a second call throws
+  `IllegalStateException` instead of risking a second real backend invocation.
+- `ActionPlan.actionId()` and its eventual `ActionPlan.execute().actionId()` are now always equal.
 
 ### Changed
 
+- `IPreparedAction.dryRun()` and `IPreparedAction.plan()` are now mutually exclusive: calling
+  `plan()` after `dryRun()` on the same prepared action throws `IllegalStateException`.
 - `ILocator`/`IFind`'s `within(Object)`/`inContext(Object)` were replaced with typed overloads,
   `within(E)` and `within(ILocatorScope<E>)`.
 

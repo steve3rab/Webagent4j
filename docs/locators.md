@@ -107,12 +107,30 @@ IElement shippingContinue = page.find(
         .button()
         .named("Continue")
         .single();
+
+IElement addToCartAvailable = page.find(
+                InteractionContext.context()
+                        .containingText("Laptop B")
+                        .containingText("Available"))
+        .button()
+        .named("Ajouter")
+        .single();
 ```
 
 A context is treated as a hard scope, not a scoring bonus. It is resolved before target selection and
 must fail explicitly when the scope is missing or ambiguous instead of silently picking the wrong
 candidate. The existing locator pipeline remains deterministic: exact semantic resolution, required
 state constraints, candidate reduction by scope, then ranking and ambiguity detection.
+
+Each `containingText(...)` constraint is resolved by accessible name first (aria-label,
+aria-labelledby, associated landmark or heading name, etc.). Visible-text matching is used only as a
+fallback, and only when accessible-name resolution demonstrably reports a typed "not found" outcome;
+an ambiguous accessible-name match or a genuine backend/runtime failure is never retried under visible
+text and always propagates unchanged - a context ambiguity or backend failure means resolution stops,
+not that a different strategy silently takes over. Every configured `containingText(...)` constraint is
+honored, in order, each one narrowing the scope produced by the previous one: with two constraints,
+`.containingText("Laptop B").containingText("Available")` first narrows to the "Laptop B" region, then
+narrows again to "Available" strictly inside that region.
 
 Context-aware locators also work naturally with `IElement.find()`, which reuses the same location
 scope and backend. This helps resolve repeated actions inside a specific form, dialog, table row, or

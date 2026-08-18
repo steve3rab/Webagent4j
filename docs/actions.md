@@ -169,8 +169,21 @@ revalidated against the live DOM before any backend side effect. Consequences:
 - If a new ambiguous duplicate appeared since `plan()`, `execute()` fails `TARGET_AMBIGUOUS`.
 - If a precondition that held at `plan()` time no longer holds, `execute()` fails
   `PRECONDITION_FAILED`.
+- Conversely, a `BLOCKED` plan can still succeed later if the blocking condition clears before
+  `execute()` runs - revalidation looks at current state in both directions, never at the plan()-time
+  snapshot.
 
 Executing a plan runs the backend at most once, exactly like a direct `execute()` call - `plan()`
-followed by `execute()` never doubles the side effect.
+followed by `execute()` never doubles the side effect. `ActionPlan.execute()` may itself be called at
+most once per plan instance: planning data is immutable, but the execution lifecycle is single-use and
+thread-safe, so a second call - even after the first one failed - throws `IllegalStateException`
+instead of risking a second real side effect. Build a new plan with `plan()` to try again.
+`plan.actionId()` and `plan.execute().actionId()` are always equal, so a result can be traced back to
+the plan that produced it even though `execute()` reruns the pipeline from scratch.
+
+`dryRun()` and `plan()` are mutually exclusive terminal modes on the same prepared action:
+`dryRun().execute()` validates and returns without ever producing a plan, and `plan()` always builds a
+plan whose `execute()` performs the real action. Calling `plan()` after `dryRun()` on the same prepared
+action throws `IllegalStateException` rather than silently picking one interpretation.
 
 See [Verification](verification.md) for the built-in conditions and composition rules.
