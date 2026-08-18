@@ -1,13 +1,13 @@
 package io.webagent4j.locator;
 
 import io.webagent4j.common.LocatorException;
+import io.webagent4j.common.LocatorFailureClassifier;
 import io.webagent4j.locator.LocatorDiagnostics.Ambiguity;
 import io.webagent4j.locator.LocatorDiagnostics.BudgetLimit;
 import io.webagent4j.locator.LocatorDiagnostics.RejectionReason;
 import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.locator.internal.LocatorCandidateOrder;
 import io.webagent4j.locator.internal.LocatorDiagnosticsAccumulator;
-import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.IWaitProbe;
 import io.webagent4j.wait.WaitBudget;
 import io.webagent4j.wait.WaitEngine;
@@ -37,7 +37,6 @@ public final class LocatorEngine implements ILocatorEngine {
     private static final Logger LOGGER = LoggerFactory.getLogger(LocatorEngine.class);
     private static final Comparator<LocatorCandidate> CANDIDATE_ORDER =
             LocatorCandidateOrder.comparator();
-    private static final IMonotonicClock CLOCK = IMonotonicClock.systemClock();
 
     private final ILocatorStrategyRegistry registry;
     private final LocatorPlanFactory planFactory;
@@ -120,10 +119,10 @@ public final class LocatorEngine implements ILocatorEngine {
     }
 
     @Override
-    public LocatorResult locate(LocatorContext context, LocatorDefinition definition) {
+    public LocatorResult locate(ILiveLocatorContext context, LocatorDefinition definition) {
         Resolution resolution = resolve(context, definition, true, false);
         if (resolution.candidates().isEmpty()) {
-            throw notFound(context, resolution);
+            throw notFound(context, definition, resolution);
         }
         LocatorCandidate selected = resolution.candidates().get(0);
         LocatorDiagnostics diagnostics =
@@ -135,13 +134,13 @@ public final class LocatorEngine implements ILocatorEngine {
     }
 
     @Override
-    public LocatorResult locateSingle(LocatorContext context, LocatorDefinition definition) {
+    public LocatorResult locateSingle(ILiveLocatorContext context, LocatorDefinition definition) {
         // failOnAmbiguity=true: every individual poll is checked, not just the final one - see
         // resolve() and probeOnce(). A candidate list this method receives back can therefore never
         // itself be ambiguous, since probeOnce() would already have thrown instead of returning it.
         Resolution resolution = resolve(context, definition, true, true);
         if (resolution.candidates().isEmpty()) {
-            throw notFound(context, resolution);
+            throw notFound(context, definition, resolution);
         }
         LocatorCandidate selected = resolution.candidates().get(0);
         LocatorDiagnostics diagnostics =
@@ -153,7 +152,8 @@ public final class LocatorEngine implements ILocatorEngine {
     }
 
     @Override
-    public List<LocatorCandidate> locateAll(LocatorContext context, LocatorDefinition definition) {
+    public List<LocatorCandidate> locateAll(
+            ILiveLocatorContext context, LocatorDefinition definition) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(definition, "definition");
         boolean waitForCandidates =
@@ -182,20 +182,21 @@ public final class LocatorEngine implements ILocatorEngine {
      * that could be retried into a stale-safe "less ambiguous later" result.
      */
     private Resolution resolve(
-            LocatorContext context,
+            ILiveLocatorContext context,
             LocatorDefinition definition,
             boolean waitForCandidates,
             boolean failOnAmbiguity) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(definition, "definition");
+        LocatorContext baseline = context.baseline();
         LocatorDiagnosticsAccumulator diagnostics =
-                new LocatorDiagnosticsAccumulator(definition, context.config(), context.scope());
+                new LocatorDiagnosticsAccumulator(definition, baseline.config(), baseline.scope());
         eventListener.onEvent(
                 new ILocatorEvent.ResolutionStarted(
-                        Instant.now(), definition, context.config().resolutionPolicy()));
-        Duration timeout = context.timeoutFor(definition);
-        WaitBudget budget = WaitBudget.start(timeout, CLOCK);
-        WaitPolicy policy = policyFor(context, definition);
+                        Instant.now(), definition, baseline.config().resolutionPolicy()));
+        Duration timeout = baseline.timeoutFor(definition);
+        WaitBudget budget = WaitBudget.start(timeout, waitEngine.clock());
+        WaitPolicy policy = policyFor(baseline, definition);
         IWaitProbe<List<LocatorCandidate>> probe =
                 () ->
                         probeOnce(
@@ -227,18 +228,37 @@ public final class LocatorEngine implements ILocatorEngine {
     }
 
     /**
-     * Performs exactly one immediate DOM search and classifies it as {@link WaitSample#pending()}
-     * (keep polling), {@link WaitSample#satisfied} (this {@link WaitEngine} attempt is done), or -
-     * only when {@code failOnAmbiguity} - throws {@link AmbiguousLocatorException} directly, ending
-     * the wait right there rather than being retried.
+     * Performs exactly one immediate live-context resolution followed by exactly one immediate DOM
+     * search, and classifies the outcome as {@link WaitSample#pending()} (keep polling), {@link
+     * WaitSample#satisfied} (this {@link WaitEngine} attempt is done), or - on ambiguity, either of
+     * the live context itself or, only when {@code failOnAmbiguity}, of the target candidates -
+     * throws directly, ending the wait right there rather than being retried.
+     *
+     * <p>{@code liveContext.resolve()} is called fresh on every attempt (not once for the whole
+     * wait), so a structured semantic scope this context depends on is re-evaluated against the
+     * current DOM on every poll. A typed "not found" failure resolving it (the scope is not
+     * currently present) is treated exactly like an absent target; any other failure - ambiguous or
+     * backend/runtime - propagates immediately, unconditionally, regardless of {@code
+     * failOnAmbiguity}: context ambiguity is always a fail-safe condition, never something only
+     * {@code locateSingle()} cares about.
      */
     private WaitSample<List<LocatorCandidate>> probeOnce(
-            LocatorContext context,
+            ILiveLocatorContext liveContext,
             LocatorDefinition definition,
             WaitBudget budget,
             boolean waitForCandidates,
             boolean failOnAmbiguity,
             LocatorDiagnosticsAccumulator diagnostics) {
+        LocatorContext context;
+        try {
+            context = liveContext.resolve();
+        } catch (RuntimeException resolutionFailure) {
+            if (!LocatorFailureClassifier.isNotFound(resolutionFailure)) {
+                throw resolutionFailure;
+            }
+            return waitForCandidates ? WaitSample.pending() : WaitSample.satisfied(List.of());
+        }
+        diagnostics.scope(context.scope());
         Duration remaining = atLeastOneNano(budget.remaining());
         List<LocatorCandidate> latest = searchOnce(context, definition, remaining, diagnostics);
         if (failOnAmbiguity && ambiguous(latest, context.config().ambiguityMargin())) {
@@ -596,7 +616,8 @@ public final class LocatorEngine implements ILocatorEngine {
                 + evidence.actual();
     }
 
-    private LocatorNotFoundException notFound(LocatorContext context, Resolution resolution) {
+    private LocatorNotFoundException notFound(
+            ILiveLocatorContext context, LocatorDefinition definition, Resolution resolution) {
         LocatorDiagnostics diagnostics =
                 resolution
                         .diagnostics()
@@ -604,7 +625,7 @@ public final class LocatorEngine implements ILocatorEngine {
         failed("not-found", diagnostics);
         return new LocatorNotFoundException(
                 "No element matched within "
-                        + context.timeoutFor(diagnostics.requestedLocator()).toMillis()
+                        + context.baseline().timeoutFor(definition).toMillis()
                         + " ms"
                         + System.lineSeparator()
                         + renderer.render(diagnostics, resolution.candidates()),

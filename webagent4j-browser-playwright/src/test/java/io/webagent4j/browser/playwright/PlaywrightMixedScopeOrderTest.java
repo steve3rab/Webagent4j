@@ -13,6 +13,7 @@ import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
+import io.webagent4j.locator.ILiveLocatorContext;
 import io.webagent4j.locator.ILocatorBackend;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorConfig;
@@ -59,7 +60,7 @@ class PlaywrightMixedScopeOrderTest {
         LocatorContext afterA = base.within(regionA.element());
         LocatorContext afterB = afterA.within(elementB.element());
         when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
-        when(engine.locateSingle(eq(afterB), any())).thenReturn(result(target));
+        stubTerminalResolution(engine, afterB, target);
 
         IElement resolved =
                 new PlaywrightFind(engine, base)
@@ -74,8 +75,9 @@ class PlaywrightMixedScopeOrderTest {
         // by elementB, which is what the previous (buggy) eager-element implementation produced.
         verify(engine).locateSingle(eq(base), byAccessibleName());
         // the final target is resolved inside base -> Product A -> outer-container, in that order,
-        // and only after outer-container was proven to be inside Product A.
-        verify(engine).locateSingle(eq(afterB), any());
+        // and only after outer-container was proven to be inside Product A - checked by
+        // stubTerminalResolution() itself, re-resolving the live context exactly as the real engine
+        // would on every polling attempt.
     }
 
     @Test
@@ -89,7 +91,7 @@ class PlaywrightMixedScopeOrderTest {
         LocatorContext afterA = base.within(elementA.element());
         LocatorContext afterB = afterA.within(regionB.element());
         when(engine.locateSingle(eq(afterA), byAccessibleName())).thenReturn(result(regionB));
-        when(engine.locateSingle(eq(afterB), any())).thenReturn(result(target));
+        stubTerminalResolution(engine, afterB, target);
 
         IElement resolved =
                 new PlaywrightFind(engine, base)
@@ -105,7 +107,6 @@ class PlaywrightMixedScopeOrderTest {
         // scope in the chain (nothing narrowed it yet), so it needs no containment proof.
         verify(engine).locateSingle(eq(afterA), byAccessibleName());
         verify(engine, never()).locateSingle(eq(base), byAccessibleName());
-        verify(engine).locateSingle(eq(afterB), any());
     }
 
     @Test
@@ -123,7 +124,7 @@ class PlaywrightMixedScopeOrderTest {
         LocatorContext afterC = afterB.within(regionC.element());
         when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
         when(engine.locateSingle(eq(afterB), byAccessibleName())).thenReturn(result(regionC));
-        when(engine.locateSingle(eq(afterC), any())).thenReturn(result(target));
+        stubTerminalResolution(engine, afterC, target);
 
         IElement resolved =
                 new PlaywrightFind(engine, base)
@@ -137,7 +138,6 @@ class PlaywrightMixedScopeOrderTest {
         assertThat(resolved).isSameAs(target.element());
         verify(engine).locateSingle(eq(base), byAccessibleName());
         verify(engine).locateSingle(eq(afterB), byAccessibleName());
-        verify(engine).locateSingle(eq(afterC), any());
     }
 
     @Test
@@ -154,7 +154,7 @@ class PlaywrightMixedScopeOrderTest {
         LocatorContext afterA = base.within(regionA.element());
         LocatorContext afterB = afterA.within(elementB.element());
         when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
-        when(engine.locateSingle(eq(afterB), any())).thenReturn(result(target));
+        stubTerminalResolution(engine, afterB, target);
 
         IElement resolved =
                 new PlaywrightFind(engine, base)
@@ -166,7 +166,6 @@ class PlaywrightMixedScopeOrderTest {
 
         assertThat(resolved).isSameAs(target.element());
         verify(engine).locateSingle(eq(base), byAccessibleName());
-        verify(engine).locateSingle(eq(afterB), any());
     }
 
     @Test
@@ -177,6 +176,17 @@ class PlaywrightMixedScopeOrderTest {
         AmbiguousLocatorException ambiguous = new AmbiguousLocatorException("two \"Available\"");
         LocatorContext afterA = base.within(elementA.element());
         when(engine.locateSingle(eq(afterA), byAccessibleName())).thenThrow(ambiguous);
+        when(engine.locateSingle(any(ILiveLocatorContext.class), any()))
+                .thenAnswer(
+                        invocation -> {
+                            // Re-resolving the live context is what actually re-runs the failed
+                            // structured scope lookup above and lets its ambiguity propagate - the
+                            // same thing the real engine does on every polling attempt.
+                            ((ILiveLocatorContext) invocation.getArgument(0)).resolve();
+                            throw new AssertionError(
+                                    "the target definition must never be reached after an"
+                                            + " ambiguous scope");
+                        });
 
         var locator =
                 new PlaywrightFind(engine, base)
@@ -189,9 +199,21 @@ class PlaywrightMixedScopeOrderTest {
         org.assertj.core.api.Assertions.assertThatRuntimeException()
                 .isThrownBy(locator::single)
                 .isSameAs(ambiguous);
-        // The scope after the failed one - including its containment proof - and the final target
-        // must never be evaluated.
-        verify(engine, never()).locateSingle(any(), argThat(d -> d.role().isPresent()));
+        // The scope after the failed one - including its containment proof - is never evaluated.
+        verify(engine, never())
+                .locateSingle(any(LocatorContext.class), argThat(d -> d.role().isPresent()));
+    }
+
+    private static void stubTerminalResolution(
+            ILocatorEngine engine, LocatorContext expectedContext, TestElement expectedResult) {
+        when(engine.locateSingle(any(ILiveLocatorContext.class), any()))
+                .thenAnswer(
+                        invocation -> {
+                            LocatorContext resolved =
+                                    ((ILiveLocatorContext) invocation.getArgument(0)).resolve();
+                            assertThat(resolved).isEqualTo(expectedContext);
+                            return result(expectedResult);
+                        });
     }
 
     static ILocatorScope<IElement> scope(String... containingText) {

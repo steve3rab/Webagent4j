@@ -25,6 +25,42 @@ import org.junit.jupiter.api.Test;
 class LocatorEngineWaitIntegrationTest {
 
     @Test
+    void aNeverSatisfiedWaitTimesOutByFakeTimeInsteadOfBusyLoopingOnRealWallClockTime() {
+        // A backend that never has a match: the only way this wait can ever end is the
+        // WaitBudget's deadline expiring.
+        ILocatorBackend neverFound =
+                (query, scope, config, timeout, candidateLimit) ->
+                        new LocatorBackendSearchResult(List.of(), 0, false);
+        FakeClock clock = new FakeClock();
+        AdvancingSleeper sleeper = new AdvancingSleeper(clock, () -> {});
+        LocatorEngine engine = new LocatorEngine(new WaitEngine(clock, sleeper));
+
+        long wallClockStartNanos = System.nanoTime();
+        assertThatExceptionOfType(LocatorNotFoundException.class)
+                .isThrownBy(
+                        () ->
+                                engine.locateSingle(
+                                        pageContext(neverFound),
+                                        LocatorDefinition.forRole(ElementRole.BUTTON)
+                                                .named("Confirm")));
+        Duration realWallClockElapsed = Duration.ofNanos(System.nanoTime() - wallClockStartNanos);
+
+        // The fixture's 5-second configured timeout and 25ms polling interval never actually
+        // sleep in real time - AdvancingSleeper only advances the fake clock - so a correctly
+        // wired LocatorEngine finishes in a few milliseconds of genuine wall-clock time. If
+        // LocatorEngine started its WaitBudget against a real system clock instead of
+        // waitEngine.clock() (the fake clock this engine was built with), that budget would
+        // never see the fake clock's advances and would never expire on its own: the engine
+        // would busy-loop, actually consuming real wall-clock time, until the real clock itself
+        // happened to pass 5 seconds. This bound is what turns that regression into a fast,
+        // deterministic test failure instead of a merely slow one.
+        assertThat(realWallClockElapsed).isLessThan(Duration.ofSeconds(1));
+        // Every attempt found nothing, so every attempt slept - proving the fake clock's
+        // advances (not real elapsed time) are what actually drove this wait to its deadline.
+        assertThat(sleeper.sleepCount()).isGreaterThan(1);
+    }
+
+    @Test
     void resetsTheStabilityWindowWhenTheLiveCandidateIdentityChanges() {
         IElement elementA = LocatorTestFixtures.element(ElementRole.BUTTON, "Confirm");
         IElement elementB = LocatorTestFixtures.element(ElementRole.BUTTON, "Confirm");
@@ -138,6 +174,7 @@ class LocatorEngineWaitIntegrationTest {
     private static final class AdvancingSleeper implements IWaitSleeper {
         private final FakeClock clock;
         private final Runnable onSleep;
+        private int sleepCount;
 
         AdvancingSleeper(FakeClock clock, Runnable onSleep) {
             this.clock = clock;
@@ -146,8 +183,13 @@ class LocatorEngineWaitIntegrationTest {
 
         @Override
         public void sleep(Duration duration) {
+            sleepCount++;
             clock.advance(duration);
             onSleep.run();
+        }
+
+        int sleepCount() {
+            return sleepCount;
         }
     }
 

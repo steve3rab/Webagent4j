@@ -1,6 +1,7 @@
 package io.webagent4j.browser.playwright;
 
 import io.webagent4j.dom.IElement;
+import io.webagent4j.locator.ILiveLocatorContext;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorCandidate;
 import io.webagent4j.locator.LocatorContext;
@@ -20,7 +21,10 @@ import java.util.Objects;
  * applying it immediately while a structured scope declared elsewhere in the same chain stays
  * pending would silently reorder the chain relative to how the caller wrote it. Every terminal
  * operation - {@link #reference()}'s deferred resolution included - resolves the whole pending
- * chain fresh, strictly in declaration order, through {@link #resolveContext()}.
+ * chain fresh, strictly in declaration order, through {@link #liveContext()}; the engine calls that
+ * resolution again on every polling attempt of its wait, not once before the wait begins, so a
+ * structured scope is re-evaluated against the current DOM throughout, not only when the wait
+ * starts.
  */
 final class PlaywrightLocator implements ILocator<IElement> {
 
@@ -157,36 +161,49 @@ final class PlaywrightLocator implements ILocator<IElement> {
 
     @Override
     public IElementReference<IElement> reference() {
-        return () -> engine.locateSingle(resolveContext(), definition).element();
+        return () -> engine.locateSingle(liveContext(), definition).element();
     }
 
     @Override
     public IElement first() {
-        return engine.locate(resolveContext(), definition).element();
+        return engine.locate(liveContext(), definition).element();
     }
 
     @Override
     public IElement single() {
-        return engine.locateSingle(resolveContext(), definition).element();
+        return engine.locateSingle(liveContext(), definition).element();
     }
 
     @Override
     public List<IElement> all() {
-        return engine.locateAll(resolveContext(), definition).stream()
+        return engine.locateAll(liveContext(), definition).stream()
                 .map(LocatorCandidate::element)
                 .toList();
     }
 
     /**
-     * Resolves the whole pending scope chain, strictly in declaration order, against the live DOM.
-     * Called fresh by each terminal operation, including every invocation of a {@link
-     * #reference()}'s deferred {@code resolve()} - so a target obtained long after the fluent chain
-     * was built (a retried resolution, a re-run {@code IActionPlan.execute()}) always re-derives
-     * its scopes in the order the caller declared them, instead of reusing a node captured once
-     * when the chain was assembled or regrouping explicit and structured scopes by kind.
+     * Returns a live context whose {@link ILiveLocatorContext#resolve()} resolves the whole pending
+     * scope chain, strictly in declaration order, against the live DOM - called fresh on every
+     * polling attempt of the {@link io.webagent4j.wait.WaitEngine}-driven wait each terminal
+     * operation performs, not once before that wait begins. A target obtained long after the fluent
+     * chain was built (a retried resolution, a re-run {@code IActionPlan.execute()}, a later poll
+     * within the same wait) always re-derives its scopes in the order the caller declared them,
+     * instead of reusing a node resolved on an earlier attempt or regrouping explicit and
+     * structured scopes by kind.
      */
-    private LocatorContext resolveContext() {
-        return PlaywrightScopeResolver.resolvePendingScopes(engine, baseContext, pendingScopes);
+    private ILiveLocatorContext liveContext() {
+        return new ILiveLocatorContext() {
+            @Override
+            public LocatorContext baseline() {
+                return baseContext;
+            }
+
+            @Override
+            public LocatorContext resolve() {
+                return PlaywrightScopeResolver.resolvePendingScopes(
+                        engine, baseContext, pendingScopes);
+            }
+        };
     }
 
     private ILocator<IElement> copy(LocatorDefinition next) {
