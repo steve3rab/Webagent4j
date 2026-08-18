@@ -24,6 +24,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Fixed mixed explicit/structured scope ordering in Playwright locator chains: a chain mixing
+  `within(element)` and `within(structuredScope)` now always resolves in exactly the order the
+  calls were declared, instead of implicitly applying every explicit element scope before any
+  structured scope.
 - `ActionExecutor` no longer emits `BACKEND_ACTION_STARTED`/`BACKEND_ACTION_COMPLETED` for a
   dry-run, and a dry-run now emits exactly one terminal `ACTION_COMPLETED` event.
 - Target-resolution failures are classified through the typed `ILocatorFailure` contract instead of

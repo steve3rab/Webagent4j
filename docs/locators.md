@@ -146,14 +146,15 @@ for an unsupported scope type.
 ## Dynamic contextual resolution
 
 An explicit element scope (`within(existingElement)`) and a structured scope
-(`within(InteractionContext.context()...)`) resolve differently on purpose. The caller handed over a
-concrete node for the former, so it is applied immediately - there is nothing left to re-derive. A
-structured scope instead carries a *definition* (its `containingText(...)` constraints), and that
-definition is never collapsed into one resolved DOM node while the fluent chain is being built. It
-stays pending and is re-resolved, in order, at every terminal operation - `first()`, `single()`,
-`all()`, and every invocation of a `reference()`'s deferred `resolve()` - so the semantic region is
-re-evaluated against the live DOM each time, not reused from whatever node it happened to match
-earlier:
+(`within(InteractionContext.context()...)`) resolve differently on purpose, even though neither is
+applied at `within(...)` call time - see [Mixed scope ordering](#mixed-scope-ordering) below for why
+that matters. The caller handed over a concrete node for the former, so once it is reached in the
+chain there is nothing left to re-derive: it becomes the scope directly. A structured scope instead
+carries a *definition* (its `containingText(...)` constraints), and that definition is never
+collapsed into one resolved DOM node while the fluent chain is being built. It stays pending and is
+re-resolved, in order, at every terminal operation - `first()`, `single()`, `all()`, and every
+invocation of a `reference()`'s deferred `resolve()` - so the semantic region is re-evaluated against
+the live DOM each time, not reused from whatever node it happened to match earlier:
 
 ```java
 IElementReference<IElement> continueButton = page.find(
@@ -190,6 +191,39 @@ revalidation instead of once. There is currently no shared outer deadline propag
 constraint lookups, so a resolution retry policy combined with several constraints multiplies, rather
 than divides, the per-call timeout; keep constraint chains short and resolution retries bounded if
 this matters for a page under heavy load.
+
+## Mixed scope ordering
+
+Chaining multiple `within(...)` calls - explicit element scopes, structured scopes, or a mix of both
+- is strictly ordered: each scope narrows the one declared immediately before it, in exactly the
+sequence the caller wrote them in.
+
+```java
+page.find()
+        .within(productContext)
+        .within(formElement)
+        // ...
+```
+
+is not the same search as the reverse order:
+
+```java
+page.find()
+        .within(formElement)
+        .within(productContext)
+        // ...
+```
+
+The first narrows to `productContext`, then to `formElement` *inside* it - `formElement` must be a
+real descendant of `productContext` for this to resolve. The second narrows to `formElement` first,
+then looks for `productContext` *inside* `formElement` - which fails explicitly if `productContext`
+is actually an ancestor of `formElement`, rather than silently reusing whichever scope resolved first
+or regrouping the chain by scope kind (all explicit scopes first, or all structured scopes first).
+This holds however deep the chain goes, and however explicit and structured scopes are interleaved;
+it also holds for `within(...)` called again on the `ILocator` returned by a role/name selector, not
+just on the initial `IFind`. Declaration order is resolved fresh at every terminal operation, exactly
+like a single structured scope - see [Dynamic contextual resolution](#dynamic-contextual-resolution)
+above.
 
 ## Non-throwing lookup
 
