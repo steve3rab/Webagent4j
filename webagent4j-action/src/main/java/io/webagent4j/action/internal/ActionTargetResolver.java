@@ -3,6 +3,8 @@ package io.webagent4j.action.internal;
 import io.webagent4j.common.RetryPolicy;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.LocatorNotFoundException;
+import io.webagent4j.wait.IWaitSleeper;
+import io.webagent4j.wait.WaitInterruptedException;
 import java.time.Duration;
 import java.util.Objects;
 
@@ -38,10 +40,9 @@ final class ActionTargetResolver {
 
     private static void pause(Duration delay) {
         try {
-            Thread.sleep(delay);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new ActionInterruptedException(exception);
+            IWaitSleeper.parking().sleep(delay);
+        } catch (WaitInterruptedException interrupted) {
+            throw new ActionInterruptedException(interrupted);
         }
     }
 }

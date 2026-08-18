@@ -26,6 +26,8 @@ import io.webagent4j.verification.VerificationEngine;
 import io.webagent4j.verification.VerificationInterruptedException;
 import io.webagent4j.verification.VerificationResult;
 import io.webagent4j.verification.VerificationType;
+import io.webagent4j.wait.IMonotonicClock;
+import io.webagent4j.wait.WaitBudget;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -36,6 +38,8 @@ import java.util.function.Supplier;
 
 /** Executes the ordered resolve, validate, execute-once, stabilize, observe, verify pipeline. */
 final class ActionExecutor {
+
+    private static final IMonotonicClock CLOCK = IMonotonicClock.systemClock();
 
     <R> ActionResult<R> execute(
             IActionContext context, ActionCommand<R> command, ActionExecutionConfig config) {
@@ -53,6 +57,7 @@ final class ActionExecutor {
             ActionExecutionConfig config,
             ActionId actionId) {
         Instant started = Instant.now();
+        WaitBudget budget = WaitBudget.start(config.options().timeout(), CLOCK);
         List<ActionEvent> events = new ArrayList<>();
         events.add(event(actionId, command, ActionStage.ACTION_STARTED, "started", "", started));
         IElement target;
@@ -252,7 +257,7 @@ final class ActionExecutor {
                         "started",
                         targetDescription,
                         started));
-        config.stabilization().await(context, remaining(config, started));
+        config.stabilization().await(context, budget.remaining());
         Duration stabilizationDuration = Duration.between(stabilizationStarted, Instant.now());
         events.add(
                 event(
@@ -279,7 +284,7 @@ final class ActionExecutor {
                             .awaitAll(
                                     context,
                                     config.postconditions(),
-                                    remaining(config, started),
+                                    budget,
                                     config.options().verificationInterval());
         } catch (VerificationInterruptedException failure) {
             Thread.currentThread().interrupt();
@@ -605,12 +610,6 @@ final class ActionExecutor {
                         || policy == ObservationCapturePolicy.ON_FAILURE
                 ? context.observe()
                 : null;
-    }
-
-    private static Duration remaining(ActionExecutionConfig config, Instant started) {
-        Duration elapsed = Duration.between(started, Instant.now());
-        Duration remaining = config.options().timeout().minus(elapsed);
-        return remaining.isNegative() || remaining.isZero() ? Duration.ofNanos(1) : remaining;
     }
 
     private static String describe(IElement target) {

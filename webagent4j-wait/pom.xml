@@ -6,32 +6,15 @@
     <artifactId>webagent4j-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
-  <artifactId>webagent4j-locator</artifactId>
-  <name>WebAgent4J Locator</name>
+  <artifactId>webagent4j-wait</artifactId>
+  <name>WebAgent4J Wait</name>
+  <description>Backend-neutral deterministic wait and stability primitive (monotonic deadlines, polling,
+    stability windows, interruption) shared by the locator, verification and action pipelines.</description>
   <dependencies>
     <dependency>
       <groupId>io.webagent4j</groupId>
       <artifactId>webagent4j-common</artifactId>
       <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>io.webagent4j</groupId>
-      <artifactId>webagent4j-dom</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>io.webagent4j</groupId>
-      <artifactId>webagent4j-locator-api</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>io.webagent4j</groupId>
-      <artifactId>webagent4j-wait</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-api</artifactId>
     </dependency>
     <dependency>
       <groupId>org.assertj</groupId>

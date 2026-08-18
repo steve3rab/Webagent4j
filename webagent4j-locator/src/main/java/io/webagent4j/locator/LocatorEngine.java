@@ -7,6 +7,8 @@ import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.locator.internal.LocatorCandidateOrder;
 import io.webagent4j.locator.internal.LocatorDiagnosticsAccumulator;
 import io.webagent4j.locator.internal.LocatorResolutionWaiter;
+import io.webagent4j.wait.IMonotonicClock;
+import io.webagent4j.wait.WaitBudget;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -28,6 +30,7 @@ public final class LocatorEngine implements ILocatorEngine {
     private static final Logger LOGGER = LoggerFactory.getLogger(LocatorEngine.class);
     private static final Comparator<LocatorCandidate> CANDIDATE_ORDER =
             LocatorCandidateOrder.comparator();
+    private static final IMonotonicClock CLOCK = IMonotonicClock.systemClock();
 
     private final ILocatorStrategyRegistry registry;
     private final LocatorPlanFactory planFactory;
@@ -183,12 +186,12 @@ public final class LocatorEngine implements ILocatorEngine {
                 new ILocatorEvent.ResolutionStarted(
                         Instant.now(), definition, context.config().resolutionPolicy()));
         Duration timeout = context.timeoutFor(definition);
-        long deadline = System.nanoTime() + timeout.toNanos();
+        WaitBudget budget = WaitBudget.start(timeout, CLOCK);
         String stableIdentity = null;
         long stableSince = 0L;
         List<LocatorCandidate> latest = List.of();
         do {
-            Duration remaining = remaining(deadline);
+            Duration remaining = atLeastOneNano(budget.remaining());
             latest = searchOnce(context, definition, remaining, diagnostics);
             if (!latest.isEmpty()) {
                 if (definition.stability().isEmpty()) {
@@ -201,9 +204,9 @@ public final class LocatorEngine implements ILocatorEngine {
                                     "|", latest.stream().map(LocatorCandidate::identity).toList());
                     if (!identities.equals(stableIdentity)) {
                         stableIdentity = identities;
-                        stableSince = System.nanoTime();
+                        stableSince = CLOCK.nanoTime();
                     }
-                    if (System.nanoTime() - stableSince
+                    if (CLOCK.nanoTime() - stableSince
                             >= definition.stability().orElseThrow().toNanos()) {
                         return new Resolution(latest, diagnostics);
                     }
@@ -215,11 +218,11 @@ public final class LocatorEngine implements ILocatorEngine {
                     return new Resolution(List.of(), diagnostics);
                 }
             }
-            if (System.nanoTime() >= deadline) {
+            if (budget.expired()) {
                 diagnostics.limit(BudgetLimit.TIMEOUT);
                 break;
             }
-            waiter.awaitNextPoll(context.config().pollingInterval(), remaining(deadline));
+            waiter.awaitNextPoll(context.config().pollingInterval(), budget.remaining());
         } while (true);
         LOGGER.debug("Locator timed out after {} ms", timeout.toMillis());
         return new Resolution(latest, diagnostics);
@@ -620,8 +623,8 @@ public final class LocatorEngine implements ILocatorEngine {
         }
     }
 
-    private static Duration remaining(long deadline) {
-        return Duration.ofNanos(Math.max(1L, deadline - System.nanoTime()));
+    private static Duration atLeastOneNano(Duration duration) {
+        return duration.compareTo(Duration.ofNanos(1)) < 0 ? Duration.ofNanos(1) : duration;
     }
 
     private record Resolution(

@@ -82,6 +82,24 @@ class ArchitectureTest {
     }
 
     @Test
+    void waitEngineRemainsIndependentFromEveryDomainModule() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.wait..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "io.webagent4j.dom..",
+                        "io.webagent4j.locator..",
+                        "io.webagent4j.verification..",
+                        "io.webagent4j.action..",
+                        "io.webagent4j.browser..",
+                        "io.webagent4j.observation..",
+                        "com.microsoft.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
     void actionAndVerificationRemainIndependentFromPlaywright() {
         noClasses()
                 .that()

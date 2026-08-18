@@ -1,23 +1,33 @@
 package io.webagent4j.verification;
 
-import java.time.Clock;
+import io.webagent4j.wait.WaitEngine;
+import io.webagent4j.wait.WaitInterruptedException;
+import io.webagent4j.wait.WaitPolicy;
+import io.webagent4j.wait.WaitResult;
+import io.webagent4j.wait.WaitSample;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Objects;
 
-/** Central polling loop used by action preconditions and postconditions. */
+/**
+ * Central polling loop used by action preconditions and postconditions.
+ *
+ * <p>An adapter over the shared {@code webagent4j-wait} {@link WaitEngine}: this class owns no
+ * timing, sleeping, or deadline logic of its own. {@link
+ * IVerification#verify(IVerificationContext)} is the probe; the engine decides when to poll and
+ * when to stop, against a monotonic clock rather than wall-clock time.
+ */
 public final class VerificationPoller {
 
-    private final Clock clock;
+    private final WaitEngine engine;
 
-    /** Creates a poller using the system clock. */
+    /** Creates a poller using the production monotonic clock and thread-parking sleeper. */
     public VerificationPoller() {
-        this(Clock.systemUTC());
+        this(new WaitEngine());
     }
 
-    /** Creates a poller with an injectable clock for deterministic tests. */
-    public VerificationPoller(Clock clock) {
-        this.clock = Objects.requireNonNull(clock, "clock");
+    /** Creates a poller backed by an explicit engine, for deterministic fake-time tests. */
+    public VerificationPoller(WaitEngine engine) {
+        this.engine = Objects.requireNonNull(engine, "engine");
     }
 
     /** Polls one side-effect-free condition until success or the positive timeout expires. */
@@ -30,37 +40,27 @@ public final class VerificationPoller {
         Objects.requireNonNull(context, "context");
         requirePositive(timeout, "timeout");
         requirePositive(interval, "interval");
-        Instant started = clock.instant();
-        VerificationResult latest;
-        do {
-            if (Thread.currentThread().isInterrupted()) {
-                Thread.currentThread().interrupt();
-                throw new VerificationInterruptedException("Verification polling was interrupted");
-            }
-            latest = verification.verify(context);
-            Duration elapsed = Duration.between(started, clock.instant());
-            if (latest.success()) {
-                return latest.withTiming(elapsed, false);
-            }
-            if (elapsed.compareTo(timeout) >= 0) {
-                return latest.withTiming(elapsed, true);
-            }
-            pause(shorter(interval, timeout.minus(elapsed)));
-        } while (true);
-    }
 
-    private static void pause(Duration duration) {
+        VerificationResult[] latest = new VerificationResult[1];
+        WaitResult<VerificationResult> waitResult;
         try {
-            Thread.sleep(duration);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
+            waitResult =
+                    engine.await(
+                            timeout,
+                            WaitPolicy.pollingEvery(interval),
+                            () -> probe(verification, context, latest));
+        } catch (WaitInterruptedException interrupted) {
             throw new VerificationInterruptedException(
-                    "Verification polling was interrupted", exception);
+                    "Verification polling was interrupted", interrupted);
         }
+        return latest[0].withTiming(waitResult.elapsed(), !waitResult.success());
     }
 
-    private static Duration shorter(Duration first, Duration second) {
-        return first.compareTo(second) <= 0 ? first : second;
+    private static WaitSample<VerificationResult> probe(
+            IVerification verification, IVerificationContext context, VerificationResult[] latest) {
+        VerificationResult result = verification.verify(context);
+        latest[0] = result;
+        return result.success() ? WaitSample.satisfied(result) : WaitSample.pending();
     }
 
     private static void requirePositive(Duration value, String name) {
