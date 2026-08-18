@@ -24,6 +24,39 @@ class WaitEngineTest {
     }
 
     @Test
+    void anAlreadyExpiredBudgetStillGetsExactlyOneImmediateProbeAndSucceedsIfItIsSatisfied() {
+        WaitBudget alreadyExpired = WaitBudget.start(Duration.ofMillis(50), clock);
+        clock.advance(Duration.ofSeconds(1));
+
+        WaitResult<String> result =
+                engine.await(
+                        alreadyExpired,
+                        WaitPolicy.pollingEvery(Duration.ofMillis(10)),
+                        () -> WaitSample.satisfied("ready"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.attempts()).isEqualTo(1);
+        assertThat(sleeper.sleeps()).isEmpty();
+    }
+
+    @Test
+    void anAlreadyExpiredBudgetStillGetsExactlyOneImmediateProbeThenTimesOutIfItIsPending() {
+        WaitBudget alreadyExpired = WaitBudget.start(Duration.ofMillis(50), clock);
+        clock.advance(Duration.ofSeconds(1));
+
+        WaitResult<String> result =
+                engine.await(
+                        alreadyExpired,
+                        WaitPolicy.pollingEvery(Duration.ofMillis(10)),
+                        WaitSample::pending);
+
+        assertThat(result.status()).isEqualTo(WaitStatus.TIMED_OUT);
+        assertThat(result.attempts()).isEqualTo(1);
+        // Never sleeps once the deadline has already passed - not even the requested poll interval.
+        assertThat(sleeper.sleeps()).isEmpty();
+    }
+
+    @Test
     void succeedsImmediatelyWithoutSleepingWhenAlreadySatisfied() {
         WaitResult<String> result =
                 engine.await(

@@ -15,6 +15,11 @@ import java.util.Optional;
  * be a value with a real, stable identity - never free text such as an accessible name, visible
  * label, or diagnostic description, which can coincidentally repeat for two different underlying
  * things.
+ *
+ * <p>A pending sample may optionally carry an informational last-known value (via {@link
+ * #pending(Object)}) - never treated as "satisfied", but preserved in {@link WaitResult#value()} if
+ * the wait ultimately times out, so a caller can still see, for example, the best candidates found
+ * so far even though none was accepted as the final answer.
  */
 public record WaitSample<T>(Status status, Optional<T> value, Optional<Object> stabilityKey) {
 
@@ -29,8 +34,8 @@ public record WaitSample<T>(Status status, Optional<T> value, Optional<Object> s
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(value, "value");
         Objects.requireNonNull(stabilityKey, "stabilityKey");
-        if (status == Status.PENDING && value.isPresent()) {
-            throw new IllegalArgumentException("a pending sample must not carry a value");
+        if (status == Status.PENDING && stabilityKey.isPresent()) {
+            throw new IllegalArgumentException("a pending sample must not carry a stability key");
         }
     }
 
@@ -46,8 +51,20 @@ public record WaitSample<T>(Status status, Optional<T> value, Optional<Object> s
         return new WaitSample<>(Status.SATISFIED, Optional.of(value), Optional.of(stabilityKey));
     }
 
-    /** Returns a pending sample: the condition does not currently hold. */
+    /** Returns a pending sample carrying no informational value: the condition does not hold. */
     public static <T> WaitSample<T> pending() {
         return new WaitSample<>(Status.PENDING, Optional.empty(), Optional.empty());
+    }
+
+    /**
+     * Returns a pending sample carrying an informational last-known value - still retried exactly
+     * like {@link #pending()}, but preserved in {@link WaitResult#value()} on a timeout instead of
+     * being discarded.
+     */
+    public static <T> WaitSample<T> pending(T lastValue) {
+        return new WaitSample<>(
+                Status.PENDING,
+                Optional.of(Objects.requireNonNull(lastValue, "lastValue")),
+                Optional.empty());
     }
 }

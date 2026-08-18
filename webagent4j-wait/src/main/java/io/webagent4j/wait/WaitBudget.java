@@ -36,7 +36,21 @@ public final class WaitBudget {
             throw new IllegalArgumentException("timeout must not be negative");
         }
         long start = clock.nanoTime();
-        return new WaitBudget(start, saturatedAdd(start, timeout.toNanos()), clock);
+        return new WaitBudget(start, saturatedAdd(start, saturatedNanos(timeout)), clock);
+    }
+
+    /**
+     * Converts {@code duration} to nanoseconds, saturating to {@link Long#MAX_VALUE} instead of
+     * letting {@link Duration#toNanos()} throw {@link ArithmeticException} for an implausibly large
+     * duration such as {@code Duration.ofSeconds(Long.MAX_VALUE)}. {@code duration} is already
+     * known non-negative by the caller.
+     */
+    private static long saturatedNanos(Duration duration) {
+        try {
+            return duration.toNanos();
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /** Returns the time elapsed since this budget started. Never negative. */

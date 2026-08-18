@@ -13,4 +13,9 @@ final class FakeMonotonicClock implements IMonotonicClock {
     void advance(java.time.Duration duration) {
         nanos += duration.toNanos();
     }
+
+    /** Sets the clock to an arbitrary raw nanosecond value, for boundary/overflow tests. */
+    void set(long nanoTime) {
+        nanos = nanoTime;
+    }
 }

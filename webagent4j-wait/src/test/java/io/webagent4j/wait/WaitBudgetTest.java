@@ -54,6 +54,34 @@ class WaitBudgetTest {
     }
 
     @Test
+    void saturatesInsteadOfThrowingForATimeoutThatOverflowsDurationToNanosItself() {
+        // Duration.ofSeconds(Long.MAX_VALUE).toNanos() throws ArithmeticException on its own;
+        // WaitBudget must never propagate that, only saturate.
+        WaitBudget budget = WaitBudget.start(Duration.ofSeconds(Long.MAX_VALUE), clock);
+
+        clock.advance(Duration.ofDays(365));
+
+        assertThat(budget.expired()).isFalse();
+        assertThat(budget.remaining().isNegative()).isFalse();
+        assertThat(budget.elapsed().isNegative()).isFalse();
+    }
+
+    @Test
+    void saturatesWhenTheClockItselfStartsNearTheEndOfItsRange() {
+        clock.set(Long.MAX_VALUE - 100);
+        WaitBudget budget = WaitBudget.start(Duration.ofSeconds(5), clock);
+
+        assertThat(budget.expired()).isFalse();
+        assertThat(budget.remaining().isNegative()).isFalse();
+
+        clock.advance(Duration.ofNanos(50));
+
+        assertThat(budget.expired()).isFalse();
+        assertThat(budget.remaining().isNegative()).isFalse();
+        assertThat(budget.elapsed().isNegative()).isFalse();
+    }
+
+    @Test
     void rejectsANegativeTimeout() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> WaitBudget.start(Duration.ofMillis(-1), clock));
