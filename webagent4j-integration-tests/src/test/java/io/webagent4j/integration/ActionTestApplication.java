@@ -5,6 +5,8 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -15,17 +17,23 @@ final class ActionTestApplication implements AutoCloseable {
     private final ExecutorService executor;
     private final String baseUrl;
     private final AtomicInteger clickCount;
+    private final Map<String, AtomicInteger> namedClickCounts;
 
     private ActionTestApplication(
-            HttpServer server, ExecutorService executor, AtomicInteger clickCount) {
+            HttpServer server,
+            ExecutorService executor,
+            AtomicInteger clickCount,
+            Map<String, AtomicInteger> namedClickCounts) {
         this.server = server;
         this.executor = executor;
         this.clickCount = clickCount;
+        this.namedClickCounts = namedClickCounts;
         baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     }
 
     static ActionTestApplication start() throws IOException {
         AtomicInteger count = new AtomicInteger();
+        Map<String, AtomicInteger> namedCounts = new ConcurrentHashMap<>();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/download/file", ActionTestApplication::download);
         server.createContext(
@@ -34,6 +42,7 @@ final class ActionTestApplication implements AutoCloseable {
                 "/test-state/reset",
                 exchange -> {
                     count.set(0);
+                    namedCounts.clear();
                     text(exchange, "reset");
                 });
         server.createContext(
@@ -49,13 +58,25 @@ final class ActionTestApplication implements AutoCloseable {
         server.createContext(
                 "/count-click",
                 exchange -> {
-                    count.incrementAndGet();
+                    String path = exchange.getRequestURI().getPath();
+                    String prefix = "/count-click";
+                    String name =
+                            path.length() > prefix.length() + 1
+                                    ? path.substring(prefix.length() + 1)
+                                    : "";
+                    if (name.isEmpty()) {
+                        count.incrementAndGet();
+                    } else {
+                        namedCounts
+                                .computeIfAbsent(name, key -> new AtomicInteger())
+                                .incrementAndGet();
+                    }
                     text(exchange, "ok");
                 });
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         server.setExecutor(executor);
         server.start();
-        return new ActionTestApplication(server, executor, count);
+        return new ActionTestApplication(server, executor, count, namedCounts);
     }
 
     String url(String route) {
@@ -64,6 +85,14 @@ final class ActionTestApplication implements AutoCloseable {
 
     int clickCount() {
         return clickCount.get();
+    }
+
+    /**
+     * Returns the independent click count recorded under a named {@code /count-click/<name>} hit.
+     */
+    int clickCount(String name) {
+        AtomicInteger recorded = namedClickCounts.get(name);
+        return recorded == null ? 0 : recorded.get();
     }
 
     @Override
@@ -185,6 +214,34 @@ final class ActionTestApplication implements AutoCloseable {
                             """
                             <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
                             <script>setTimeout(() => { confirm.disabled = true; }, 150)</script>
+                            """);
+            case "/actions/context-multi" ->
+                    document(
+                            "Context multi",
+                            """
+                            <section aria-label="Laptop A">
+                              <h2>Laptop A</h2>
+                              <div aria-label="Unavailable"><span>Unavailable</span>
+                                <button onclick="fetch('/count-click/laptopA-unavailable')">Ajouter</button></div>
+                              <div aria-label="Available"><span>Available</span>
+                                <button onclick="fetch('/count-click/laptopA-available')">Ajouter</button></div>
+                            </section>
+                            <section aria-label="Laptop B">
+                              <h2>Laptop B</h2>
+                              <div aria-label="Unavailable"><span>Unavailable</span>
+                                <button onclick="fetch('/count-click/laptopB-unavailable')">Ajouter</button></div>
+                              <div aria-label="Available"><span>Available</span>
+                                <button onclick="fetch('/count-click/laptopB-available')">Ajouter</button></div>
+                            </section>
+                            """);
+            case "/actions/context-ambiguous" ->
+                    document(
+                            "Context ambiguous",
+                            """
+                            <section aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-1')">Continue</button></section>
+                            <section aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-2')">Continue</button></section>
                             """);
             case "/actions/delayed-result", "/actions/retry" ->
                     document(

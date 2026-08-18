@@ -33,6 +33,10 @@ final class Phase4TestSupport implements AutoCloseable {
         return application.clickCount();
     }
 
+    int clickCount(String name) {
+        return application.clickCount(name);
+    }
+
     @Override
     public void close() {
         browser.close();
