@@ -15,12 +15,13 @@ import java.util.Objects;
  * Shared typed-scope resolution logic reused by {@link PlaywrightFind} and {@link
  * PlaywrightLocator}.
  *
- * <p>A structured scope ({@link ILocatorScope}) is never resolved here at chain-build time by its
- * callers: {@link PlaywrightFind} and {@link PlaywrightLocator} only append it to a pending list
- * via {@link #append(List, ILocatorScope)} and defer the actual call to {@link
- * #resolveStructuredScope} until a terminal operation runs, so the same scope definition can be
- * re-evaluated against the live DOM on every retry or replay instead of being frozen into one
- * concrete node.
+ * <p>Neither an explicit element scope nor a structured scope is resolved here at chain-build time
+ * by its callers: {@link PlaywrightFind} and {@link PlaywrightLocator} only append a {@link
+ * IPendingScope} to a single ordered list via {@link #append(List, IPendingScope)} and defer
+ * resolution until a terminal operation calls {@link #resolvePendingScopes}, so a mixed chain of
+ * explicit and structured scopes is always resolved in the exact order it was declared, and a
+ * structured scope's definition is re-evaluated against the live DOM on every retry or replay
+ * instead of being frozen into one concrete node.
  */
 final class PlaywrightScopeResolver {
 
@@ -35,11 +36,32 @@ final class PlaywrightScopeResolver {
     }
 
     /** Returns a new immutable pending-scope list with {@code scope} appended. */
-    static List<ILocatorScope<IElement>> append(
-            List<ILocatorScope<IElement>> pending, ILocatorScope<IElement> scope) {
-        List<ILocatorScope<IElement>> next = new ArrayList<>(pending);
+    static List<IPendingScope> append(List<IPendingScope> pending, IPendingScope scope) {
+        List<IPendingScope> next = new ArrayList<>(pending);
         next.add(scope);
         return List.copyOf(next);
+    }
+
+    /**
+     * Resolves every pending scope against {@code base}, strictly in declaration order: an explicit
+     * element scope narrows the context immediately, a structured scope is re-resolved fresh
+     * through {@link #resolveStructuredScope}, and each result becomes the starting context for the
+     * next entry - exactly the order the caller wrote the {@code within(...)} chain in, never
+     * regrouped by scope kind.
+     */
+    static LocatorContext resolvePendingScopes(
+            ILocatorEngine engine, LocatorContext base, List<IPendingScope> pending) {
+        LocatorContext resolved = base;
+        for (IPendingScope scope : pending) {
+            resolved =
+                    switch (scope) {
+                        case IPendingScope.Element element ->
+                                resolveElementScope(resolved, element.element());
+                        case IPendingScope.Structured structured ->
+                                resolveStructuredScope(engine, resolved, structured.scope());
+                    };
+        }
+        return resolved;
     }
 
     /**

@@ -23,6 +23,11 @@ public interface ILocator<E> {
      * <p>The scope is applied before target matching and must remain re-resolvable against the
      * current DOM. It is a hard constraint, not a scoring bonus, so a missing or detached scope
      * blocks resolution instead of silently selecting the wrong candidate.
+     *
+     * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
+     * mixing this overload with the structured-scope overload in any combination, narrows each
+     * scope inside the one declared immediately before it, in exactly the sequence the calls were
+     * made - never regrouped by scope kind.
      */
     default ILocator<E> within(E scope) {
         throw new UnsupportedOperationException("Scoped queries are not supported by this backend");
@@ -34,6 +39,11 @@ public interface ILocator<E> {
      * <p>The scope is applied before target matching and must remain re-resolvable against the
      * current DOM. It is a hard constraint, not a scoring bonus, so a missing or ambiguous scope
      * blocks resolution instead of silently selecting the wrong candidate.
+     *
+     * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
+     * mixing this overload with the explicit-element overload in any combination, narrows each
+     * scope inside the one declared immediately before it, in exactly the sequence the calls were
+     * made - never regrouped by scope kind.
      */
     default ILocator<E> within(ILocatorScope<E> scope) {
         throw new UnsupportedOperationException("Scoped queries are not supported by this backend");

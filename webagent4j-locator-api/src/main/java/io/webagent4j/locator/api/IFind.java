@@ -10,6 +10,11 @@ public interface IFind<E> {
      *
      * <p>The scope is treated as a hard constraint rather than a scoring bonus. A scope that is
      * missing or detached must fail explicitly before a target is selected.
+     *
+     * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
+     * mixing this overload with {@link #within(ILocatorScope)} in any combination, narrows each
+     * scope inside the one declared immediately before it, in exactly the sequence the calls were
+     * made - never regrouped by scope kind.
      */
     default IFind<E> within(E scope) {
         throw new UnsupportedOperationException("Scoped queries are not supported by this backend");
@@ -21,6 +26,11 @@ public interface IFind<E> {
      *
      * <p>The scope is treated as a hard constraint rather than a scoring bonus. A scope that is
      * missing or ambiguous must fail explicitly before a target is selected.
+     *
+     * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
+     * mixing this overload with the explicit-element overload in any combination, narrows each
+     * scope inside the one declared immediately before it, in exactly the sequence the calls were
+     * made - never regrouped by scope kind.
      */
     default IFind<E> within(ILocatorScope<E> scope) {
         throw new UnsupportedOperationException("Scoped queries are not supported by this backend");

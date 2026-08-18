@@ -15,36 +15,38 @@ import java.util.Objects;
 /**
  * Internal lazy fluent adapter backed by the shared semantic locator engine.
  *
- * <p>A pending structured scope (see {@link PlaywrightFind}) is never collapsed into a resolved
- * {@link LocatorContext} while the fluent chain is being built. Every terminal operation - {@link
- * #reference()}'s deferred resolution included - resolves the pending scope chain fresh through
- * {@link #resolveContext()}, so a semantic region is re-evaluated against the live DOM each time,
- * not reused from whatever concrete node it resolved to when the chain was built.
+ * <p>A pending scope (see {@link PlaywrightFind}) is never collapsed into a resolved {@link
+ * LocatorContext} while the fluent chain is being built - not even an explicit element scope, since
+ * applying it immediately while a structured scope declared elsewhere in the same chain stays
+ * pending would silently reorder the chain relative to how the caller wrote it. Every terminal
+ * operation - {@link #reference()}'s deferred resolution included - resolves the whole pending
+ * chain fresh, strictly in declaration order, through {@link #resolveContext()}.
  */
 final class PlaywrightLocator implements ILocator<IElement> {
 
     private final ILocatorEngine engine;
-    private final LocatorContext context;
-    private final List<ILocatorScope<IElement>> pendingScopes;
+    private final LocatorContext baseContext;
+    private final List<IPendingScope> pendingScopes;
     private final LocatorDefinition definition;
 
     PlaywrightLocator(
             ILocatorEngine engine,
-            LocatorContext context,
-            List<ILocatorScope<IElement>> pendingScopes,
+            LocatorContext baseContext,
+            List<IPendingScope> pendingScopes,
             LocatorDefinition definition) {
         this.engine = engine;
-        this.context = context;
+        this.baseContext = baseContext;
         this.pendingScopes = pendingScopes;
         this.definition = definition;
     }
 
     @Override
     public ILocator<IElement> within(IElement scope) {
+        Objects.requireNonNull(scope, "scope");
         return new PlaywrightLocator(
                 engine,
-                PlaywrightScopeResolver.resolveElementScope(context, scope),
-                pendingScopes,
+                baseContext,
+                PlaywrightScopeResolver.append(pendingScopes, new IPendingScope.Element(scope)),
                 definition);
     }
 
@@ -52,7 +54,10 @@ final class PlaywrightLocator implements ILocator<IElement> {
     public ILocator<IElement> within(ILocatorScope<IElement> scope) {
         Objects.requireNonNull(scope, "scope");
         return new PlaywrightLocator(
-                engine, context, PlaywrightScopeResolver.append(pendingScopes, scope), definition);
+                engine,
+                baseContext,
+                PlaywrightScopeResolver.append(pendingScopes, new IPendingScope.Structured(scope)),
+                definition);
     }
 
     @Override
@@ -173,21 +178,18 @@ final class PlaywrightLocator implements ILocator<IElement> {
     }
 
     /**
-     * Resolves every pending structured scope, in order, against the live DOM. Called fresh by each
-     * terminal operation, including every invocation of a {@link #reference()}'s deferred {@code
-     * resolve()} - so a target obtained long after the fluent chain was built (a retried
-     * resolution, a re-run {@code IActionPlan.execute()}) always re-derives its semantic region
-     * instead of reusing a node captured once when the chain was assembled.
+     * Resolves the whole pending scope chain, strictly in declaration order, against the live DOM.
+     * Called fresh by each terminal operation, including every invocation of a {@link
+     * #reference()}'s deferred {@code resolve()} - so a target obtained long after the fluent chain
+     * was built (a retried resolution, a re-run {@code IActionPlan.execute()}) always re-derives
+     * its scopes in the order the caller declared them, instead of reusing a node captured once
+     * when the chain was assembled or regrouping explicit and structured scopes by kind.
      */
     private LocatorContext resolveContext() {
-        LocatorContext resolved = context;
-        for (ILocatorScope<IElement> scope : pendingScopes) {
-            resolved = PlaywrightScopeResolver.resolveStructuredScope(engine, resolved, scope);
-        }
-        return resolved;
+        return PlaywrightScopeResolver.resolvePendingScopes(engine, baseContext, pendingScopes);
     }
 
     private ILocator<IElement> copy(LocatorDefinition next) {
-        return new PlaywrightLocator(engine, context, pendingScopes, next);
+        return new PlaywrightLocator(engine, baseContext, pendingScopes, next);
     }
 }
