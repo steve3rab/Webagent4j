@@ -367,16 +367,37 @@ final class ActionTestApplication implements AutoCloseable {
                               old.replaceWith(fresh);
                             }, 150)</script>
                             """);
-            case "/actions/mixed-scope-wrong-target" ->
+            case "/actions/mixed-scope-detached-child" ->
                     document(
-                            "Mixed scope wrong target",
+                            "Mixed scope detached child",
                             """
-                            <div id="containerX">
-                              <button onclick="fetch('/count-click/btn-direct')">Confirm</button>
-                              <section aria-label="Group">
-                                <button onclick="fetch('/count-click/btn-in-group')">Confirm</button>
-                              </section>
-                            </div>
+                            <section aria-label="Product A">
+                              <h2>Product A</h2>
+                              <div id="outer-container">
+                                <button onclick="fetch('/count-click/product-a-confirm')">Confirm</button>
+                              </div>
+                            </section>
+                            <script>setTimeout(() => {
+                              document.getElementById('outer-container').remove();
+                            }, 150)</script>
+                            """);
+            case "/actions/mixed-scope-child-moved" ->
+                    document(
+                            "Mixed scope child moved",
+                            """
+                            <section aria-label="Product A">
+                              <h2>Product A</h2>
+                              <div id="panel">
+                                <button onclick="fetch('/count-click/panel-confirm')">Confirm</button>
+                              </div>
+                            </section>
+                            <section aria-label="Product B" id="product-b">
+                              <h2>Product B</h2>
+                            </section>
+                            <script>setTimeout(() => {
+                              document.getElementById('product-b').appendChild(
+                                document.getElementById('panel'));
+                            }, 150)</script>
                             """);
             case "/actions/delayed-result", "/actions/retry" ->
                     document(

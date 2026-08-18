@@ -9,49 +9,49 @@ import io.webagent4j.dom.IElement;
 import org.junit.jupiter.api.Test;
 
 /**
- * The most important test in this suite: proves that regrouping a mixed scope chain by kind -
- * applying every explicit element scope before any structured scope, regardless of declared order,
- * which is exactly what the previous (buggy) implementation did - would have silently clicked a
- * wrong-but-plausible target instead of failing safely.
+ * The most important test in this suite: proves an explicit element scope declared after a
+ * structured scope cannot escape it, even when the foreign element contains a perfectly valid,
+ * uniquely-resolvable target of its own - so a weaker test that only proves {@code NOT_FOUND}
+ * against a scope with no matching target at all would not be enough.
  *
- * <p>The declared chain is {@code within(structured("Group")).within(explicit(#containerX))}: find
- * "Group" (searched from the page root, since nothing narrows it yet - there is only one "Group" on
- * the page, so this step alone succeeds), then override the scope to the literal {@code
- * #containerX} element. Per declared order, "Group"'s resolution has no further effect once the
- * explicit element scope is applied - the "Confirm" target must be searched directly inside {@code
- * #containerX}, which contains two same-named "Confirm" buttons (one direct, one nested inside
- * "Group"), so this must fail {@code TARGET_AMBIGUOUS}.
- *
- * <p>The previous buggy implementation applied every explicit element scope to the base context
- * eagerly, regardless of where it was declared relative to a structured scope, then resolved
- * structured scopes on top of that. For this exact chain that collapses to "search Group inside
- * containerX, then search Confirm inside Group" - which resolves uniquely to the button nested
- * inside "Group", silently clicking it. Independent proof comes from two separate server-side click
- * counters; both must stay at zero.
+ * <p>{@code within(...)} is a conjunction of nested constraints, never a replacement: {@code
+ * within(structured("Product A")).within(explicit)} means "the explicit element, and it must be
+ * proven to be inside Product A" - not "the explicit element, regardless of Product A". Here the
+ * explicit element is {@code #other-container}, which belongs entirely to Product B: it is not a
+ * descendant of Product A, and it contains its own real, unambiguous "Ajouter" button. An
+ * implementation that let a later explicit scope silently override an earlier structured one -
+ * exactly what this codebase did before containment was enforced - would have resolved this chain
+ * successfully and clicked Product B's button. The current implementation must instead prove the
+ * containment relationship before ever running the target lookup, fail {@code TARGET_NOT_FOUND}
+ * because {@code #other-container} is not inside Product A, and never touch either button.
+ * Independent proof comes from two separate server-side click counters.
  */
 class MixedScopeWrongTargetProtectionIT {
 
     @Test
-    void regroupingScopesByKindNeverSilentlyClicksTheNestedButtonInstead() throws Exception {
+    void anExplicitElementFromAForeignRegionIsRejectedEvenThoughItContainsAValidTarget()
+            throws Exception {
         try (var support = Phase4TestSupport.start();
-                var page = support.open("/actions/mixed-scope-wrong-target")) {
-            IElement containerX = page.find().id("containerX").single();
+                var page = support.open("/actions/mixed-scope-product")) {
+            IElement otherContainerFromProductB = page.find().id("other-container").single();
 
             ActionResult<Void> result =
                     page.action()
                             .click(
-                                    page.find(InteractionContext.context().containingText("Group"))
-                                            .within(containerX)
+                                    page.find(
+                                                    InteractionContext.context()
+                                                            .containingText("Product A"))
+                                            .within(otherContainerFromProductB)
                                             .button()
-                                            .named("Confirm")
+                                            .named("Ajouter")
                                             .reference())
                             .execute();
 
             assertThat(result.success()).isFalse();
             assertThat(result.failure().orElseThrow().type())
-                    .isEqualTo(ActionFailureType.TARGET_AMBIGUOUS);
-            assertThat(support.clickCount("btn-direct")).isZero();
-            assertThat(support.clickCount("btn-in-group")).isZero();
+                    .isEqualTo(ActionFailureType.TARGET_NOT_FOUND);
+            assertThat(support.clickCount("product-a-ajouter")).isZero();
+            assertThat(support.clickCount("product-b-ajouter")).isZero();
         }
     }
 }

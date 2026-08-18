@@ -9,6 +9,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.microsoft.playwright.ElementHandle;
+import com.microsoft.playwright.Locator;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.ILocatorBackend;
@@ -19,6 +21,7 @@ import io.webagent4j.locator.LocatorDiagnostics;
 import io.webagent4j.locator.LocatorDiagnosticsLevel;
 import io.webagent4j.locator.LocatorResolutionPolicy;
 import io.webagent4j.locator.LocatorResult;
+import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.LocatorStrategyType;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.ILocatorScope;
@@ -33,10 +36,14 @@ import org.junit.jupiter.api.Test;
 /**
  * Proves {@link PlaywrightFind}/{@link PlaywrightLocator} resolve a mixed chain of explicit-element
  * and structured {@code within(...)} calls in exactly the order they were declared, never grouped
- * by scope kind. Each test asserts the actual sequence of {@link ILocatorEngine} calls (via the
- * exact {@link LocatorContext} each call receives), not merely that resolution eventually succeeds
- * - a reordered chain can resolve to a plausible-looking, wrong target just as easily as it can
- * fail outright, so only checking the final result would not catch that.
+ * by scope kind, and that each subsequent explicit element scope is proven to belong to the scope
+ * declared before it. Each test asserts the actual sequence of {@link ILocatorEngine} calls (via
+ * the exact {@link LocatorContext} each call receives), not merely that resolution eventually
+ * succeeds - a reordered or unvalidated chain can resolve to a plausible-looking, wrong target just
+ * as easily as it can fail outright, so only checking the final result would not catch that.
+ *
+ * <p>See {@link PlaywrightScopeContainmentTest} for containment-failure coverage (foreign element,
+ * detached element, self case, stop-on-failure).
  */
 class PlaywrightMixedScopeOrderTest {
 
@@ -44,28 +51,30 @@ class PlaywrightMixedScopeOrderTest {
     void resolvesAStructuredScopeThenAnExplicitElementScopeInDeclaredOrder() {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext base = pageContext();
-        IElement regionA = element("Product A region");
-        IElement elementB = element("outer-container");
-        IElement target = element("Continue");
+        TestElement regionA = element("Product A region");
+        TestElement elementB = element("outer-container");
+        TestElement target = element("Continue");
+        allowDescendantOrSelf(elementB, regionA);
 
-        LocatorContext afterA = base.within(regionA);
-        LocatorContext afterB = afterA.within(elementB);
+        LocatorContext afterA = base.within(regionA.element());
+        LocatorContext afterB = afterA.within(elementB.element());
         when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
         when(engine.locateSingle(eq(afterB), any())).thenReturn(result(target));
 
         IElement resolved =
                 new PlaywrightFind(engine, base)
                         .within(scope("Product A"))
-                        .within(elementB)
+                        .within(elementB.element())
                         .button()
                         .named("Continue")
                         .single();
 
-        assertThat(resolved).isSameAs(target);
+        assertThat(resolved).isSameAs(target.element());
         // scopeA resolved from the untouched base context - not from a context already narrowed
         // by elementB, which is what the previous (buggy) eager-element implementation produced.
         verify(engine).locateSingle(eq(base), byAccessibleName());
-        // the final target is resolved inside base -> Product A -> outer-container, in that order.
+        // the final target is resolved inside base -> Product A -> outer-container, in that order,
+        // and only after outer-container was proven to be inside Product A.
         verify(engine).locateSingle(eq(afterB), any());
     }
 
@@ -73,26 +82,27 @@ class PlaywrightMixedScopeOrderTest {
     void resolvesAnExplicitElementScopeThenAStructuredScopeInDeclaredOrder() {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext base = pageContext();
-        IElement elementA = element("outer-container");
-        IElement regionB = element("Available region");
-        IElement target = element("Ajouter");
+        TestElement elementA = element("outer-container");
+        TestElement regionB = element("Available region");
+        TestElement target = element("Ajouter");
 
-        LocatorContext afterA = base.within(elementA);
-        LocatorContext afterB = afterA.within(regionB);
+        LocatorContext afterA = base.within(elementA.element());
+        LocatorContext afterB = afterA.within(regionB.element());
         when(engine.locateSingle(eq(afterA), byAccessibleName())).thenReturn(result(regionB));
         when(engine.locateSingle(eq(afterB), any())).thenReturn(result(target));
 
         IElement resolved =
                 new PlaywrightFind(engine, base)
-                        .within(elementA)
+                        .within(elementA.element())
                         .within(scope("Available"))
                         .button()
                         .named("Ajouter")
                         .single();
 
-        assertThat(resolved).isSameAs(target);
+        assertThat(resolved).isSameAs(target.element());
         // the structured scope is resolved from base -> outer-container, not from the untouched
-        // base context: elementA is applied first, exactly as declared.
+        // base context: elementA is applied first, exactly as declared. elementA is the first
+        // scope in the chain (nothing narrowed it yet), so it needs no containment proof.
         verify(engine).locateSingle(eq(afterA), byAccessibleName());
         verify(engine, never()).locateSingle(eq(base), byAccessibleName());
         verify(engine).locateSingle(eq(afterB), any());
@@ -102,14 +112,15 @@ class PlaywrightMixedScopeOrderTest {
     void resolvesAThreeLevelMixedChainInDeclaredOrder() {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext base = pageContext();
-        IElement regionA = element("Product A region");
-        IElement elementB = element("outer-container");
-        IElement regionC = element("Available region");
-        IElement target = element("Ajouter");
+        TestElement regionA = element("Product A region");
+        TestElement elementB = element("outer-container");
+        TestElement regionC = element("Available region");
+        TestElement target = element("Ajouter");
+        allowDescendantOrSelf(elementB, regionA);
 
-        LocatorContext afterA = base.within(regionA);
-        LocatorContext afterB = afterA.within(elementB);
-        LocatorContext afterC = afterB.within(regionC);
+        LocatorContext afterA = base.within(regionA.element());
+        LocatorContext afterB = afterA.within(elementB.element());
+        LocatorContext afterC = afterB.within(regionC.element());
         when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
         when(engine.locateSingle(eq(afterB), byAccessibleName())).thenReturn(result(regionC));
         when(engine.locateSingle(eq(afterC), any())).thenReturn(result(target));
@@ -117,13 +128,13 @@ class PlaywrightMixedScopeOrderTest {
         IElement resolved =
                 new PlaywrightFind(engine, base)
                         .within(scope("Product A"))
-                        .within(elementB)
+                        .within(elementB.element())
                         .within(scope("Available"))
                         .button()
                         .named("Ajouter")
                         .single();
 
-        assertThat(resolved).isSameAs(target);
+        assertThat(resolved).isSameAs(target.element());
         verify(engine).locateSingle(eq(base), byAccessibleName());
         verify(engine).locateSingle(eq(afterB), byAccessibleName());
         verify(engine).locateSingle(eq(afterC), any());
@@ -135,12 +146,13 @@ class PlaywrightMixedScopeOrderTest {
         // IFind - both must feed the same single ordered chain.
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext base = pageContext();
-        IElement regionA = element("Product A region");
-        IElement elementB = element("outer-container");
-        IElement target = element("Continue");
+        TestElement regionA = element("Product A region");
+        TestElement elementB = element("outer-container");
+        TestElement target = element("Continue");
+        allowDescendantOrSelf(elementB, regionA);
 
-        LocatorContext afterA = base.within(regionA);
-        LocatorContext afterB = afterA.within(elementB);
+        LocatorContext afterA = base.within(regionA.element());
+        LocatorContext afterB = afterA.within(elementB.element());
         when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
         when(engine.locateSingle(eq(afterB), any())).thenReturn(result(target));
 
@@ -148,11 +160,11 @@ class PlaywrightMixedScopeOrderTest {
                 new PlaywrightFind(engine, base)
                         .within(scope("Product A"))
                         .button()
-                        .within(elementB)
+                        .within(elementB.element())
                         .named("Continue")
                         .single();
 
-        assertThat(resolved).isSameAs(target);
+        assertThat(resolved).isSameAs(target.element());
         verify(engine).locateSingle(eq(base), byAccessibleName());
         verify(engine).locateSingle(eq(afterB), any());
     }
@@ -161,27 +173,28 @@ class PlaywrightMixedScopeOrderTest {
     void stopsTheChainWhenAnIntermediateStructuredScopeIsAmbiguous() {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext base = pageContext();
-        IElement elementA = element("outer-container");
+        TestElement elementA = element("outer-container");
         AmbiguousLocatorException ambiguous = new AmbiguousLocatorException("two \"Available\"");
-        LocatorContext afterA = base.within(elementA);
+        LocatorContext afterA = base.within(elementA.element());
         when(engine.locateSingle(eq(afterA), byAccessibleName())).thenThrow(ambiguous);
 
         var locator =
                 new PlaywrightFind(engine, base)
-                        .within(elementA)
+                        .within(elementA.element())
                         .within(scope("Available"))
-                        .within(element("never reached"))
+                        .within(element("never reached").element())
                         .button()
                         .named("Ajouter");
 
         org.assertj.core.api.Assertions.assertThatRuntimeException()
                 .isThrownBy(locator::single)
                 .isSameAs(ambiguous);
-        // The scope after the failed one, and the final target, must never be evaluated.
+        // The scope after the failed one - including its containment proof - and the final target
+        // must never be evaluated.
         verify(engine, never()).locateSingle(any(), argThat(d -> d.role().isPresent()));
     }
 
-    private static ILocatorScope<IElement> scope(String... containingText) {
+    static ILocatorScope<IElement> scope(String... containingText) {
         List<String> values = Arrays.asList(containingText);
         return new ILocatorScope<>() {
             @Override
@@ -196,11 +209,11 @@ class PlaywrightMixedScopeOrderTest {
         };
     }
 
-    private static LocatorDefinition byAccessibleName() {
+    static LocatorDefinition byAccessibleName() {
         return argThat(definition -> definition.accessibleName().isPresent());
     }
 
-    private static LocatorContext pageContext() {
+    static LocatorContext pageContext() {
         ILocatorBackend backend =
                 (query, scope, config, timeout, limit) -> {
                     throw new UnsupportedOperationException("backend must not be invoked directly");
@@ -208,7 +221,7 @@ class PlaywrightMixedScopeOrderTest {
         return LocatorContext.page(backend, LocatorConfig.builder().build());
     }
 
-    private static LocatorResult result(IElement element) {
+    static LocatorResult result(TestElement element) {
         LocatorDefinition definition = LocatorDefinition.element();
         LocatorDiagnostics diagnostics =
                 new LocatorDiagnostics(
@@ -232,7 +245,7 @@ class PlaywrightMixedScopeOrderTest {
                         List.of());
         return new LocatorResult(
                 definition,
-                element,
+                element.element(),
                 LocatorStrategyType.ACCESSIBLE_NAME,
                 1.0,
                 1.0,
@@ -241,10 +254,49 @@ class PlaywrightMixedScopeOrderTest {
                 diagnostics);
     }
 
-    private static IElement element(String name) {
-        IElement element = mock(IElement.class);
-        when(element.role()).thenReturn(ElementRole.REGION);
-        when(element.accessibleName()).thenReturn(name);
-        return element;
+    /**
+     * A {@link PlaywrightElement} with its underlying mocked {@link Locator} and handle exposed.
+     */
+    record TestElement(PlaywrightElement element, Locator locator, ElementHandle handle) {}
+
+    /** Creates a present, attached test element backed by a mocked {@link Locator}. */
+    static TestElement element(String accessibleName) {
+        Locator locator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        when(locator.count()).thenReturn(1);
+        when(locator.elementHandle()).thenReturn(handle);
+        when(locator.evaluate(PlaywrightDomInspectionScripts.ACCESSIBLE_NAME_FUNCTION))
+                .thenReturn(accessibleName);
+        PlaywrightElement wrapped =
+                new PlaywrightElement(
+                        locator,
+                        ElementRole.REGION,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        return new TestElement(wrapped, locator, handle);
+    }
+
+    /**
+     * Stubs {@code child}'s Playwright DOM containment check to report it is inside {@code parent}.
+     */
+    static void allowDescendantOrSelf(TestElement child, TestElement parent) {
+        when(child.locator()
+                        .evaluate(
+                                eq(PlaywrightDomInspectionScripts.DESCENDANT_OR_SELF_FUNCTION),
+                                eq(parent.handle())))
+                .thenReturn(true);
+    }
+
+    /**
+     * Stubs {@code child}'s Playwright DOM containment check to report it is NOT inside {@code
+     * parent}.
+     */
+    static void denyDescendantOrSelf(TestElement child, TestElement parent) {
+        when(child.locator()
+                        .evaluate(
+                                eq(PlaywrightDomInspectionScripts.DESCENDANT_OR_SELF_FUNCTION),
+                                eq(parent.handle())))
+                .thenReturn(false);
     }
 }
