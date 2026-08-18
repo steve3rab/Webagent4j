@@ -2,6 +2,7 @@ package io.webagent4j.action.internal;
 
 import io.webagent4j.common.RetryPolicy;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.locator.LocatorNotFoundException;
 import java.time.Duration;
 import java.util.Objects;
 
@@ -19,7 +20,7 @@ final class ActionTargetResolver {
                 if (element.state().present()) {
                     return element;
                 }
-                latest = new IllegalStateException("Resolved target is detached");
+                latest = new LocatorNotFoundException("Resolved target is detached");
             } catch (RuntimeException exception) {
                 latest = exception;
             }
@@ -32,7 +33,7 @@ final class ActionTargetResolver {
             }
         }
         throw Objects.requireNonNullElseGet(
-                latest, () -> new IllegalStateException("Target could not be resolved"));
+                latest, () -> new LocatorNotFoundException("Target could not be resolved"));
     }
 
     private static void pause(Duration delay) {
