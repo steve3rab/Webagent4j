@@ -27,7 +27,11 @@ public interface ILocator<E> {
      * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
      * mixing this overload with the structured-scope overload in any combination, narrows each
      * scope inside the one declared immediately before it, in exactly the sequence the calls were
-     * made - never regrouped by scope kind.
+     * made - never regrouped by scope kind. This is a conjunction, not a replacement: an explicit
+     * element supplied after another scope must belong to that current scope - a backend that
+     * supports this contract proves that relationship before accepting it and fails explicitly,
+     * rather than substituting an unrelated element, if it cannot. An explicit element supplied as
+     * the very first scope in a chain needs no such proof.
      */
     default ILocator<E> within(E scope) {
         throw new UnsupportedOperationException("Scoped queries are not supported by this backend");

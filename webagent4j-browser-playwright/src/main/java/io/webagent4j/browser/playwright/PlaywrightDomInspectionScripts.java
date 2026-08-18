@@ -99,5 +99,8 @@ final class PlaywrightDomInspectionScripts {
             }
             """;
 
+    static final String DESCENDANT_OR_SELF_FUNCTION =
+            "(element, ancestorOrSelf) => ancestorOrSelf.contains(element)";
+
     private PlaywrightDomInspectionScripts() {}
 }
