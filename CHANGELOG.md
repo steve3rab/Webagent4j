@@ -13,11 +13,14 @@ All notable changes to this project will be documented in this file. The format 
 - Playwright Chromium adapter and first end-to-end semantic navigation vertical.
 - Unit, architecture, and browser integration tests.
 - CLI commands for version, observation, inspection, and screenshots.
-- `IPreparedAction.plan()`, returning an immutable, side-effect-free `ActionPlan<R>` that shares
+- `IPreparedAction.plan()`, returning an immutable, side-effect-free `IActionPlan<R>` that shares
   target resolution and precondition evaluation with `execute()`/`dryRun()` and always revalidates
-  against the live DOM before `ActionPlan.execute()` runs the backend.
+  against the live DOM before `IActionPlan.execute()` runs the backend.
 - `ILocatorScope<E>`, a typed contract for `ILocator`/`IFind`'s `within(...)`/`inContext(...)`,
   implemented by `InteractionContext`.
+- `io.webagent4j.integration.coverage.PlaywrightCoverageGate`, a real, automated, enforced aggregate
+  line-coverage gate for `webagent4j-browser-playwright`, replacing the skipped per-module JaCoCo
+  `check` with a threshold check against the module's real cross-module coverage.
 
 ### Fixed
 
@@ -35,9 +38,21 @@ All notable changes to this project will be documented in this file. The format 
   failure always propagates instead of being silently retried under a different strategy.
 - Every `InteractionContext.containingText(...)` constraint is now honored, in order, progressively
   narrowing the scope; previously only the first constraint was ever applied.
-- `ActionPlan.execute()` may now be called at most once per plan instance; a second call throws
+- `IActionPlan.execute()` may now be called at most once per plan instance; a second call throws
   `IllegalStateException` instead of risking a second real backend invocation.
-- `ActionPlan.actionId()` and its eventual `ActionPlan.execute().actionId()` are now always equal.
+- `IActionPlan.actionId()` and its eventual `IActionPlan.execute().actionId()` are now always equal.
+- A structured locator scope (`within(ILocatorScope<E>)`) is no longer resolved once, eagerly, when
+  the fluent chain is built. `PlaywrightFind`/`PlaywrightLocator` now keep it as a pending,
+  backend-neutral definition and re-resolve it fresh at every terminal operation - `first()`,
+  `single()`, `all()`, and every invocation of a `reference()`'s deferred `resolve()` - so a context
+  that becomes ambiguous, disappears, or is replaced by a semantically different region between
+  reference creation and action execution blocks the action instead of silently reusing whatever
+  node it resolved to earlier. An explicit element scope (`within(E)`) is unaffected and stays
+  eager, since the caller already handed over a concrete node.
+- The JaCoCo per-module coverage comment on `webagent4j-browser-playwright`'s `coverage-check`
+  execution incorrectly claimed the "report" goal was also skipped; only "check" ever was. The
+  comment now matches the configuration, and the module's exemption is backed by a real enforced
+  aggregate gate instead of being a bare, unreplaced skip (see `PlaywrightCoverageGate` above).
 
 ### Changed
 
@@ -45,6 +60,10 @@ All notable changes to this project will be documented in this file. The format 
   `plan()` after `dryRun()` on the same prepared action throws `IllegalStateException`.
 - `ILocator`/`IFind`'s `within(Object)`/`inContext(Object)` were replaced with typed overloads,
   `within(E)` and `within(ILocatorScope<E>)`.
+- `ActionPlan` is now the `IActionPlan` interface; its sole implementation, `DefaultActionPlan`, is
+  package-private. A plan is obtainable only through `IPreparedAction.plan()` - there was never a
+  public usage of the old public constructor outside the module's own pipeline and tests, so there
+  is no public migration path to document beyond the type rename.
 
 ### Deprecated
 

@@ -139,11 +139,11 @@ the backend stage, never preconditions.
 ## Plans
 
 `plan()` goes one step further than `dryRun()`: instead of returning an `ActionResult`, it returns an
-immutable, backend-neutral, side-effect-free `ActionPlan<R>` that can be inspected before deciding
+immutable, backend-neutral, side-effect-free `IActionPlan<R>` that can be inspected before deciding
 whether to execute:
 
 ```java
-ActionPlan<Void> plan = page.action()
+IActionPlan<Void> plan = page.action()
         .click(page.find().button().named("Confirm").reference())
         .expect(Verifications.urlContains("/done"))
         .plan();
@@ -156,9 +156,11 @@ if (plan.ready()) {
 `plan()` runs the same resolution and precondition pipeline as `dryRun()` and `execute()` - it never
 invokes the backend - and produces `ActionPlanStatus.READY` only when the target resolved
 unambiguously and every precondition held at that moment; otherwise `BLOCKED`, with a structured
-`ActionFailure` reusing the same `ActionFailureType` values as `ActionResult`.
+`ActionFailure` reusing the same `ActionFailureType` values as `ActionResult`. `IActionPlan` is
+obtained only through `plan()`: its sole implementation is package-private, so there is no public
+constructor to build a plan by hand or bypass its execution guard.
 
-A plan is a snapshot, not a guarantee. `ActionPlan.execute()` never trusts it: it reruns the entire
+A plan is a snapshot, not a guarantee. `IActionPlan.execute()` never trusts it: it reruns the entire
 pipeline from scratch, so target resolution, ambiguity detection, and preconditions are all
 revalidated against the live DOM before any backend side effect. Consequences:
 
@@ -173,8 +175,13 @@ revalidated against the live DOM before any backend side effect. Consequences:
   `execute()` runs - revalidation looks at current state in both directions, never at the plan()-time
   snapshot.
 
+This revalidation covers a structured locator scope too, not just the final target: see
+[Dynamic contextual resolution](locators.md#dynamic-contextual-resolution). A plan built while a
+context resolved uniquely can still be blocked, or still succeed against a semantically-equivalent
+replacement region, depending on what changed before `execute()` runs.
+
 Executing a plan runs the backend at most once, exactly like a direct `execute()` call - `plan()`
-followed by `execute()` never doubles the side effect. `ActionPlan.execute()` may itself be called at
+followed by `execute()` never doubles the side effect. `IActionPlan.execute()` may itself be called at
 most once per plan instance: planning data is immutable, but the execution lifecycle is single-use and
 thread-safe, so a second call - even after the first one failed - throws `IllegalStateException`
 instead of risking a second real side effect. Build a new plan with `plan()` to try again.

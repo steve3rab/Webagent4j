@@ -143,6 +143,54 @@ optional element and containing-text constraints. `InteractionContext` implement
 matching typed overload at compile time; there is no runtime type check or `IllegalArgumentException`
 for an unsupported scope type.
 
+## Dynamic contextual resolution
+
+An explicit element scope (`within(existingElement)`) and a structured scope
+(`within(InteractionContext.context()...)`) resolve differently on purpose. The caller handed over a
+concrete node for the former, so it is applied immediately - there is nothing left to re-derive. A
+structured scope instead carries a *definition* (its `containingText(...)` constraints), and that
+definition is never collapsed into one resolved DOM node while the fluent chain is being built. It
+stays pending and is re-resolved, in order, at every terminal operation - `first()`, `single()`,
+`all()`, and every invocation of a `reference()`'s deferred `resolve()` - so the semantic region is
+re-evaluated against the live DOM each time, not reused from whatever node it happened to match
+earlier:
+
+```java
+IElementReference<IElement> continueButton = page.find(
+                InteractionContext.context().containingText("Shipping"))
+        .button()
+        .named("Continue")
+        .reference();
+
+// Later - possibly after the DOM changed - each of these re-resolves "Shipping" fresh:
+page.action().click(continueButton).execute();
+```
+
+This makes a stale context impossible to act on silently:
+
+- If "Shipping" still resolves to the same, or a semantically equivalent replacement, region, the
+  click reaches the correct target.
+- If a second "Shipping" region appeared since the reference was built, resolution now reports
+  `AmbiguousLocatorException` (surfaced as `ActionFailureType.TARGET_AMBIGUOUS` through an action) -
+  the two-region case is never silently resolved against whichever one matched first.
+- If "Shipping" was removed, resolution reports `LocatorNotFoundException`
+  (`ActionFailureType.TARGET_NOT_FOUND`) - it never falls through to matching "Continue" inside an
+  unrelated region that replaced it, such as a "Billing" section that happens to contain an
+  identically-named button.
+
+The same mechanism protects `IActionPlan.execute()` (see [Plans](actions.md#plans)): because it reruns
+the whole pipeline from scratch, including target resolution through the same `reference()`, a plan
+built against a context that later became ambiguous or disappeared is blocked, while a plan built
+against a context later replaced with the same semantics can still execute exactly once.
+
+Re-resolving a structured scope costs one bounded lookup per `containingText(...)` constraint, each
+under the configured resolution budget, in addition to the final target lookup - the same cost the
+scope already had at `within(...)` time, now paid again on each retry attempt and on `execute()`
+revalidation instead of once. There is currently no shared outer deadline propagated across nested
+constraint lookups, so a resolution retry policy combined with several constraints multiplies, rather
+than divides, the per-call timeout; keep constraint chains short and resolution retries bounded if
+this matters for a page under heavy load.
+
 ## Non-throwing lookup
 
 `tryFind()` attempts a single unambiguous resolution and returns `Optional.empty()` only for a real

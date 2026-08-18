@@ -44,9 +44,9 @@ ActionTargetResolver
    v
 Preconditions
    |
-   +------ plan() -----------------------------> ActionPlan (READY / BLOCKED)
+   +------ plan() -----------------------------> IActionPlan (READY / BLOCKED)
    |                                                    |
-   |                                              ActionPlan.execute()
+   |                                              IActionPlan.execute()
    |                                              (revalidates from here)
    |                                                    |
    +------ dryRun() -----------------------------> ActionResult (DRY_RUN, no side effect)
@@ -56,10 +56,16 @@ Preconditions
 
 `plan()`, `dryRun()`, and a real `execute()` share the exact same `ActionTargetResolver` and
 precondition evaluation, so they can never disagree about whether a target resolves or a precondition
-holds. `plan()` never invokes the backend; it returns an immutable, inspectable `ActionPlan` instead of
-an `ActionResult`. `ActionPlan.execute()` never trusts that snapshot - it reruns the whole pipeline
-from scratch, so a stale plan can never act on a semantically different element, tolerate new
-ambiguity, or ignore a precondition that stopped holding.
+holds. `plan()` never invokes the backend; it returns an immutable, inspectable `IActionPlan` instead
+of an `ActionResult`. Its sole implementation, `DefaultActionPlan`, is package-private, so a plan can
+only be obtained through `plan()`, never hand-built. `IActionPlan.execute()` never trusts that
+snapshot - it reruns the whole pipeline from scratch, so a stale plan can never act on a semantically
+different element, tolerate new ambiguity, or ignore a precondition that stopped holding. Structured
+locator scopes follow the same rule: a scope built with `InteractionContext.containingText(...)` is
+kept as a pending, backend-neutral definition and re-resolved fresh at every terminal operation
+(`reference().resolve()` included), never frozen into one DOM node when the fluent chain is built - so
+a context that becomes ambiguous, disappears, or is replaced by a semantically different region
+between reference creation and execution blocks the action instead of silently acting on stale state.
 
 Resolution retries are separated from execution. Non-idempotent backend execution occurs at most
 once, while stabilization and verification may safely poll read-only state. The Playwright adapter
