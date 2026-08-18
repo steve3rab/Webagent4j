@@ -143,6 +143,49 @@ final class ActionTestApplication implements AutoCloseable {
                               fresh.onclick=() => result.hidden=false; old.replaceWith(fresh);
                             }, 150)</script>
                             """);
+            case "/actions/plan-same-target" ->
+                    document(
+                            "Plan same target",
+                            """
+                            <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('confirm');
+                              const fresh = document.createElement('button');
+                              fresh.id='fresh'; fresh.textContent='Confirm';
+                              fresh.onclick=() => fetch('/count-click'); old.replaceWith(fresh);
+                            }, 150)</script>
+                            """);
+            case "/actions/plan-wrong-target" ->
+                    document(
+                            "Plan wrong target",
+                            """
+                            <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('confirm');
+                              const wrong = document.createElement('button');
+                              wrong.id='delete'; wrong.textContent='Delete';
+                              wrong.onclick=() => fetch('/count-click'); old.replaceWith(wrong);
+                            }, 150)</script>
+                            """);
+            case "/actions/plan-ambiguity" ->
+                    document(
+                            "Plan ambiguity",
+                            """
+                            <div id="host"><button onclick="fetch('/count-click')">Confirm</button></div>
+                            <script>setTimeout(() => {
+                              const duplicate = document.createElement('button');
+                              duplicate.textContent='Confirm';
+                              duplicate.onclick=() => fetch('/count-click');
+                              host.appendChild(duplicate);
+                            }, 150)</script>
+                            """);
+            case "/actions/plan-precondition-invalidates" ->
+                    document(
+                            "Plan precondition invalidates",
+                            """
+                            <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
+                            <script>setTimeout(() => { confirm.disabled = true; }, 150)</script>
+                            """);
             case "/actions/delayed-result", "/actions/retry" ->
                     document(
                             "Delayed result",
