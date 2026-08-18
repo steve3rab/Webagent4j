@@ -1,6 +1,6 @@
 package io.webagent4j.action;
 
-/** Whether a prepared {@link ActionPlan} resolved cleanly and is safe to execute. */
+/** Whether a prepared {@link IActionPlan} resolved cleanly and is safe to execute. */
 public enum ActionPlanStatus {
     /** Target resolution and every precondition succeeded at the time the plan was built. */
     READY,

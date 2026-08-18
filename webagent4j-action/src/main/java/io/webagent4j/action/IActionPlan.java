@@ -3,10 +3,7 @@ package io.webagent4j.action;
 import io.webagent4j.verification.VerificationResult;
 import io.webagent4j.verification.VerificationType;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
 
 /**
  * Immutable, backend-neutral, side-effect-free preview of one action pipeline.
@@ -26,7 +23,7 @@ import java.util.function.Supplier;
  * never cause the wrong element to be acted on.
  *
  * <p>The planning data captured above is immutable, but a plan's execution lifecycle is not: an
- * {@code ActionPlan} may be executed at most once. This matters because a plan can represent a
+ * {@code IActionPlan} may be executed at most once. This matters because a plan can represent a
  * non-idempotent operation (submit an order, delete an account, pay, confirm a transfer), and a
  * caller or future agent accidentally calling {@code execute()} twice must never be able to produce
  * two side effects. The single-use guard is thread-safe: only one concurrent caller of {@link
@@ -34,57 +31,14 @@ import java.util.function.Supplier;
  * after the first one returns or throws - fails with {@link IllegalStateException} without invoking
  * the backend again. The first call counts as the one attempt even if it fails.
  *
+ * <p>An {@code IActionPlan} is obtained only through {@link IPreparedAction#plan()}; there is
+ * intentionally no public way to construct one directly. Every field is derived from a real
+ * resolution and precondition pass over live page state and pairs with a single-use execution
+ * guard, so a hand-built instance could misrepresent that pass or bypass the guard.
+ *
  * @param <R> the result type produced by {@link #execute()}
  */
-public final class ActionPlan<R> {
-
-    private final ActionId actionId;
-    private final ActionType actionType;
-    private final ActionIdempotency idempotency;
-    private final ActionSideEffect sideEffect;
-    private final ActionPlanStatus status;
-    private final String targetDescription;
-    private final List<VerificationResult> preconditions;
-    private final List<VerificationType> expectedPostconditions;
-    private final Optional<ActionFailure> failure;
-    private final ActionDiagnostics diagnostics;
-    private final Supplier<ActionResult<R>> executor;
-    private final AtomicBoolean executionStarted = new AtomicBoolean();
-
-    /** Builds an immutable plan snapshot; obtain one through {@link IPreparedAction#plan()}. */
-    @SuppressWarnings("checkstyle:ParameterNumber")
-    public ActionPlan(
-            ActionId actionId,
-            ActionType actionType,
-            ActionIdempotency idempotency,
-            ActionSideEffect sideEffect,
-            ActionPlanStatus status,
-            String targetDescription,
-            List<VerificationResult> preconditions,
-            List<VerificationType> expectedPostconditions,
-            Optional<ActionFailure> failure,
-            ActionDiagnostics diagnostics,
-            Supplier<ActionResult<R>> executor) {
-        this.actionId = Objects.requireNonNull(actionId, "actionId");
-        this.actionType = Objects.requireNonNull(actionType, "actionType");
-        this.idempotency = Objects.requireNonNull(idempotency, "idempotency");
-        this.sideEffect = Objects.requireNonNull(sideEffect, "sideEffect");
-        this.status = Objects.requireNonNull(status, "status");
-        this.targetDescription = Objects.requireNonNull(targetDescription, "targetDescription");
-        this.preconditions = List.copyOf(Objects.requireNonNull(preconditions, "preconditions"));
-        this.expectedPostconditions =
-                List.copyOf(
-                        Objects.requireNonNull(expectedPostconditions, "expectedPostconditions"));
-        this.failure = Objects.requireNonNull(failure, "failure");
-        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
-        this.executor = Objects.requireNonNull(executor, "executor");
-        if (status == ActionPlanStatus.READY && failure.isPresent()) {
-            throw new IllegalArgumentException("a ready plan cannot carry a failure");
-        }
-        if (status == ActionPlanStatus.BLOCKED && failure.isEmpty()) {
-            throw new IllegalArgumentException("a blocked plan must carry a failure");
-        }
-    }
+public interface IActionPlan<R> {
 
     /**
      * Returns the correlation identifier for this plan. If {@link #execute()} is called, the
@@ -92,63 +46,41 @@ public final class ActionPlan<R> {
      * traced back to the plan that produced it even though {@code execute()} revalidates everything
      * from scratch.
      */
-    public ActionId actionId() {
-        return actionId;
-    }
+    ActionId actionId();
 
     /** Returns the planned operation category. */
-    public ActionType actionType() {
-        return actionType;
-    }
+    ActionType actionType();
 
     /** Returns the conservative execution retry classification of the planned operation. */
-    public ActionIdempotency idempotency() {
-        return idempotency;
-    }
+    ActionIdempotency idempotency();
 
     /** Returns the broad side-effect category of the planned operation. */
-    public ActionSideEffect sideEffect() {
-        return sideEffect;
-    }
+    ActionSideEffect sideEffect();
 
     /** Returns whether this plan is safe to execute. */
-    public ActionPlanStatus status() {
-        return status;
-    }
+    ActionPlanStatus status();
 
     /** Returns a safe, non-secret description of the resolved or attempted target. */
-    public String targetDescription() {
-        return targetDescription;
-    }
+    String targetDescription();
 
     /** Returns the precondition results evaluated while building this plan. */
-    public List<VerificationResult> preconditions() {
-        return preconditions;
-    }
+    List<VerificationResult> preconditions();
 
     /**
      * Returns the categories of postconditions configured for this action. Postconditions are never
      * evaluated while planning, since doing so would require the backend side effect to have
      * already happened.
      */
-    public List<VerificationType> expectedPostconditions() {
-        return expectedPostconditions;
-    }
+    List<VerificationType> expectedPostconditions();
 
     /** Returns the structured reason this plan is blocked, if any. */
-    public Optional<ActionFailure> failure() {
-        return failure;
-    }
+    Optional<ActionFailure> failure();
 
     /** Returns safe, non-secret diagnostics for this plan. */
-    public ActionDiagnostics diagnostics() {
-        return diagnostics;
-    }
+    ActionDiagnostics diagnostics();
 
     /** Returns whether this plan resolved cleanly and can be executed. */
-    public boolean ready() {
-        return status == ActionPlanStatus.READY;
-    }
+    boolean ready();
 
     /**
      * Executes the planned action pipeline from scratch.
@@ -159,17 +91,12 @@ public final class ActionPlan<R> {
      * here if page state changed since; a plan that was {@link ActionPlanStatus#BLOCKED} can still
      * succeed if the blocking condition cleared.
      *
-     * <p>This may be called at most once per {@code ActionPlan} instance, and the backend executes
+     * <p>This may be called at most once per {@code IActionPlan} instance, and the backend executes
      * at most once as a result. A second call - even after the first one failed - throws {@link
      * IllegalStateException} instead of invoking the backend again; build a new plan with {@code
      * plan()} to try again.
      *
      * @throws IllegalStateException if this plan has already been executed
      */
-    public ActionResult<R> execute() {
-        if (!executionStarted.compareAndSet(false, true)) {
-            throw new IllegalStateException("ActionPlan has already been executed");
-        }
-        return executor.get();
-    }
+    ActionResult<R> execute();
 }

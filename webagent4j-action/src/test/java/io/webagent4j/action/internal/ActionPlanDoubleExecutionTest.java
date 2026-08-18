@@ -8,16 +8,16 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.webagent4j.action.ActionPlan;
 import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionContext;
+import io.webagent4j.action.IActionPlan;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.api.ElementRole;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves {@link ActionPlan#execute()} runs the backend at most once per plan instance. A plan can
+ * Proves {@link IActionPlan#execute()} runs the backend at most once per plan instance. A plan can
  * represent a non-idempotent operation (submit, delete, pay, confirm), so a caller accidentally
  * calling {@code execute()} twice must never be able to produce two side effects.
  */
@@ -27,7 +27,7 @@ class ActionPlanDoubleExecutionTest {
     void aSecondExecuteCallIsRejectedAndNeverTouchesTheBackendAgain() {
         IActionBackend backend = mock(IActionBackend.class);
         IElement target = element();
-        ActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
+        IActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
 
         assertThat(plan.execute().success()).isTrue();
 
@@ -40,7 +40,7 @@ class ActionPlanDoubleExecutionTest {
         IActionBackend backend = mock(IActionBackend.class);
         IElement target = element();
         doThrow(new IllegalStateException("backend disconnected")).when(backend).click(target);
-        ActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
+        IActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
 
         assertThat(plan.execute().success()).isFalse();
 

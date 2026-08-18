@@ -1,8 +1,22 @@
-package io.webagent4j.action;
+package io.webagent4j.action.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
+import io.webagent4j.action.ActionDiagnostics;
+import io.webagent4j.action.ActionEvent;
+import io.webagent4j.action.ActionExecutionMode;
+import io.webagent4j.action.ActionFailure;
+import io.webagent4j.action.ActionFailureType;
+import io.webagent4j.action.ActionId;
+import io.webagent4j.action.ActionIdempotency;
+import io.webagent4j.action.ActionPlanStatus;
+import io.webagent4j.action.ActionResult;
+import io.webagent4j.action.ActionSideEffect;
+import io.webagent4j.action.ActionStatus;
+import io.webagent4j.action.ActionTimings;
+import io.webagent4j.action.ActionType;
+import io.webagent4j.action.IActionPlan;
 import io.webagent4j.verification.VerificationResult;
 import io.webagent4j.verification.VerificationType;
 import java.time.Duration;
@@ -11,7 +25,13 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
-class ActionPlanTest {
+/**
+ * Exercises {@link DefaultActionPlan} directly - the sole {@link IActionPlan} implementation - to
+ * prove its validation invariants and single-use {@code execute()} delegation. Package-private
+ * construction means this test lives alongside it in {@code .internal} rather than in the public
+ * {@code io.webagent4j.action} package.
+ */
+class DefaultActionPlanTest {
 
     @Test
     void aReadyPlanCannotCarryAFailure() {
@@ -55,7 +75,7 @@ class ActionPlanTest {
     @Test
     void executeDelegatesToTheSuppliedCallbackExactlyOnce() {
         AtomicInteger invocations = new AtomicInteger();
-        ActionPlan<Void> plan =
+        IActionPlan<Void> plan =
                 plan(
                         ActionPlanStatus.READY,
                         Optional.empty(),
@@ -70,11 +90,11 @@ class ActionPlanTest {
         assertThat(invocations.get()).isEqualTo(1);
     }
 
-    private static ActionPlan<Void> plan(
+    private static IActionPlan<Void> plan(
             ActionPlanStatus status,
             Optional<ActionFailure> failure,
             java.util.function.Supplier<ActionResult<Void>> executor) {
-        return new ActionPlan<>(
+        return new DefaultActionPlan<>(
                 ActionId.create(),
                 ActionType.CLICK,
                 ActionIdempotency.NON_IDEMPOTENT,

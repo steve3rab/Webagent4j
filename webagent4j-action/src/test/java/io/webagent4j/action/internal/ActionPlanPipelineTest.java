@@ -7,11 +7,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 import io.webagent4j.action.ActionFailureType;
-import io.webagent4j.action.ActionPlan;
 import io.webagent4j.action.ActionPlanStatus;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionContext;
+import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.Secret;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Proves {@link io.webagent4j.action.IPreparedAction#plan()}'s contract end to end through the
  * public action API: zero backend side effects while planning, a plan that resolves as READY only
- * when the target and every precondition are satisfied, and {@link ActionPlan#execute()} running
+ * when the target and every precondition are satisfied, and {@link IActionPlan#execute()} running
  * the backend exactly once.
  */
 class ActionPlanPipelineTest {
@@ -34,7 +34,7 @@ class ActionPlanPipelineTest {
         IActionBackend backend = mock(IActionBackend.class);
         IElement target = element(true);
 
-        ActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
+        IActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
 
         assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
         assertThat(plan.ready()).isTrue();
@@ -46,7 +46,7 @@ class ActionPlanPipelineTest {
     void isBlockedWithTargetNotFoundAndNeverTouchesTheBackend() {
         IActionBackend backend = mock(IActionBackend.class);
 
-        ActionPlan<Void> plan =
+        IActionPlan<Void> plan =
                 new DefaultActionBuilder(context(backend))
                         .click(
                                 () -> {
@@ -64,7 +64,7 @@ class ActionPlanPipelineTest {
     void isBlockedWithTargetAmbiguousAndNeverTouchesTheBackend() {
         IActionBackend backend = mock(IActionBackend.class);
 
-        ActionPlan<Void> plan =
+        IActionPlan<Void> plan =
                 new DefaultActionBuilder(context(backend))
                         .click(
                                 () -> {
@@ -83,7 +83,7 @@ class ActionPlanPipelineTest {
         IActionBackend backend = mock(IActionBackend.class);
         IElement disabled = element(false);
 
-        ActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(disabled).plan();
+        IActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(disabled).plan();
 
         assertThat(plan.status()).isEqualTo(ActionPlanStatus.BLOCKED);
         assertThat(plan.failure().orElseThrow().type())
@@ -96,7 +96,7 @@ class ActionPlanPipelineTest {
         IActionBackend backend = mock(IActionBackend.class);
         IElement target = element(true);
 
-        ActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
+        IActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
         ActionResult<Void> result = plan.execute();
 
         assertThat(result.success()).isTrue();
@@ -122,7 +122,7 @@ class ActionPlanPipelineTest {
                     return target;
                 };
 
-        ActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(reference).plan();
+        IActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(reference).plan();
         assertThat(plan.status()).isEqualTo(ActionPlanStatus.BLOCKED);
         assertThat(plan.failure().orElseThrow().type())
                 .isEqualTo(ActionFailureType.TARGET_NOT_FOUND);
@@ -147,7 +147,7 @@ class ActionPlanPipelineTest {
                                 true, true, true, true, false, false, false, false, true, false,
                                 false, false));
 
-        ActionPlan<Void> plan =
+        IActionPlan<Void> plan =
                 new DefaultActionBuilder(context(backend))
                         .typeSecret(target, Secret.of(marker))
                         .plan();

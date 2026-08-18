@@ -8,10 +8,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.webagent4j.action.ActionExecutionMode;
-import io.webagent4j.action.ActionPlan;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionContext;
+import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.IPreparedAction;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
@@ -40,7 +40,7 @@ class DryRunPlanContractTest {
         IActionBackend backend = mock(IActionBackend.class);
         IElement target = element();
 
-        ActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
+        IActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(target).plan();
         ActionResult<Void> result = plan.execute();
 
         assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.REAL);

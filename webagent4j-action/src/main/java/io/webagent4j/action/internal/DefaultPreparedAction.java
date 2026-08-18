@@ -2,9 +2,9 @@ package io.webagent4j.action.internal;
 
 import io.webagent4j.action.ActionId;
 import io.webagent4j.action.ActionOptions;
-import io.webagent4j.action.ActionPlan;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionContext;
+import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.IPreparedAction;
 import io.webagent4j.action.ObservationCapturePolicy;
 import io.webagent4j.common.RetryPolicy;
@@ -139,7 +139,7 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
     }
 
     @Override
-    public ActionPlan<R> plan() {
+    public IActionPlan<R> plan() {
         if (dryRun) {
             throw new IllegalStateException(
                     "dryRun() and plan() are mutually exclusive terminal modes: dryRun().execute()"

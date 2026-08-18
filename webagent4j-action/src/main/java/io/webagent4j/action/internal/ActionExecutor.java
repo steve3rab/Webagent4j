@@ -6,13 +6,13 @@ import io.webagent4j.action.ActionExecutionMode;
 import io.webagent4j.action.ActionFailure;
 import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionId;
-import io.webagent4j.action.ActionPlan;
 import io.webagent4j.action.ActionPlanStatus;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.ActionStage;
 import io.webagent4j.action.ActionStatus;
 import io.webagent4j.action.ActionTimings;
 import io.webagent4j.action.IActionContext;
+import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.ObservationCapturePolicy;
 import io.webagent4j.common.LocatorFailureClassifier;
 import io.webagent4j.dom.IElement;
@@ -44,8 +44,8 @@ final class ActionExecutor {
 
     /**
      * Executes the pipeline under an explicit correlation identifier, so a result produced through
-     * {@link ActionPlan#execute()} can carry the same {@link ActionId} as the {@link ActionPlan} it
-     * came from.
+     * {@link IActionPlan#execute()} can carry the same {@link ActionId} as the {@link IActionPlan}
+     * it came from.
      */
     <R> ActionResult<R> execute(
             IActionContext context,
@@ -382,20 +382,20 @@ final class ActionExecutor {
 
     /**
      * Runs deterministic target resolution and precondition evaluation without any backend side
-     * effect and returns an immutable {@link ActionPlan}.
+     * effect and returns an immutable {@link IActionPlan}, built as a {@link DefaultActionPlan}.
      *
      * <p>This reuses the exact same {@link ActionTargetResolver}, {@link PreconditionEvaluator},
      * and classification logic as {@link #execute(IActionContext, ActionCommand,
      * ActionExecutionConfig)} so that {@code plan()}, {@code dryRun()}, and a real execution can
      * never disagree about whether a target resolves or a precondition holds. The supplied {@code
-     * executor} is invoked, unchanged, by {@link ActionPlan#execute()}; it is expected to
+     * executor} is invoked, unchanged, by {@link IActionPlan#execute()}; it is expected to
      * revalidate from scratch rather than trust this snapshot.
      *
      * <p>The caller supplies the {@link ActionId} so it can build {@code executor} to run the real
-     * pipeline under that same identifier: {@code ActionPlan.actionId()} and {@code
-     * ActionPlan.execute().actionId()} must be equal.
+     * pipeline under that same identifier: {@code IActionPlan.actionId()} and {@code
+     * IActionPlan.execute().actionId()} must be equal.
      */
-    <R> ActionPlan<R> prepare(
+    <R> IActionPlan<R> prepare(
             IActionContext context,
             ActionCommand<R> command,
             ActionExecutionConfig config,
@@ -412,7 +412,7 @@ final class ActionExecutor {
                                     config.options().timeout());
         } catch (RuntimeException failure) {
             String targetDescription = describe(null);
-            return new ActionPlan<>(
+            return new DefaultActionPlan<>(
                     actionId,
                     command.type(),
                     command.idempotency(),
@@ -439,7 +439,7 @@ final class ActionExecutor {
         boolean preconditionsSatisfied =
                 preconditions.stream().allMatch(VerificationResult::success);
         if (!preconditionsSatisfied) {
-            return new ActionPlan<>(
+            return new DefaultActionPlan<>(
                     actionId,
                     command.type(),
                     command.idempotency(),
@@ -456,7 +456,7 @@ final class ActionExecutor {
                     new ActionDiagnostics(targetDescription, "", Map.of("plan", "blocked")),
                     executor);
         }
-        return new ActionPlan<>(
+        return new DefaultActionPlan<>(
                 actionId,
                 command.type(),
                 command.idempotency(),

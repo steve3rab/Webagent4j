@@ -47,14 +47,14 @@ public interface IPreparedAction<R> {
 
     /**
      * Runs target resolution and precondition evaluation without any backend side effect and
-     * returns an immutable, inspectable {@link ActionPlan}.
+     * returns an immutable, inspectable {@link IActionPlan}.
      *
      * <p>Unlike {@link #execute()} and {@link #dryRun()}, calling {@code plan()} never advances the
      * action: it only produces a snapshot. The plan can later be inspected or executed with {@link
-     * ActionPlan#execute()}, which always revalidates resolution and preconditions before any
+     * IActionPlan#execute()}, which always revalidates resolution and preconditions before any
      * backend action, so a stale plan can never cause the wrong element to be acted on; that
-     * revalidated execution shares the plan's {@link ActionPlan#actionId()}, so a result can always
-     * be correlated back to the plan that produced it.
+     * revalidated execution shares the plan's {@link IActionPlan#actionId()}, so a result can
+     * always be correlated back to the plan that produced it.
      *
      * <p>{@code dryRun()} and {@code plan()} are mutually exclusive terminal modes on the same
      * prepared action: {@code dryRun().execute()} validates and returns an {@link ActionResult}
@@ -65,5 +65,5 @@ public interface IPreparedAction<R> {
      *
      * @throws IllegalStateException if {@link #dryRun()} was already called on this prepared action
      */
-    ActionPlan<R> plan();
+    IActionPlan<R> plan();
 }
