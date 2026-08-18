@@ -9,9 +9,13 @@ location, click, URL verification, and cleanup.
 `FakeMonotonicClock` and `FakeWaitSleeper` advance the clock by exactly the requested sleep
 duration instead of really sleeping, so a test asserting a 60-second timeout completes in
 milliseconds while still exercising the engine's real interval, deadline, and stability-window
-arithmetic. Domain-level tests that need deterministic timing (`VerificationSharedBudgetTest`) use
-the same pattern by injecting a `WaitEngine` built from fake `IMonotonicClock`/`IWaitSleeper`
-implementations.
+arithmetic. Domain-level tests that need deterministic timing (`VerificationSharedBudgetTest`,
+`LocatorEngineWaitIntegrationTest`) use the same pattern by injecting a `WaitEngine` built from
+fake `IMonotonicClock`/`IWaitSleeper` implementations - `LocatorEngine` has a package-private
+constructor for exactly this purpose. `LocatorEngineWaitIntegrationTest`'s `StagedBackend` also
+demonstrates a reusable pattern for these tests: results advance once per sleep (i.e. once per
+`WaitEngine` attempt boundary) rather than once per raw backend call, since one attempt can query
+several locator strategies internally.
 
 ArchUnit checks package cycles, interface naming, and the core/Playwright boundary. JaCoCo writes
 module reports and an aggregate report under `webagent4j-integration-tests/target/site/jacoco-aggregate`.

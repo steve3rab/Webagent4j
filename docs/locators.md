@@ -279,6 +279,13 @@ best one. `single()` also requires the best semantic tier to be unique: if the n
 the configured ambiguity margin, it throws `AmbiguousLocatorException` instead of hiding the conflict
 with DOM order.
 
+When `single()` is combined with a wait - `stableFor(...)` or `waitUntilVisible()` - ambiguity is
+checked on *every individual poll*, not only the final one. The moment any poll observes two
+candidates within the ambiguity margin, resolution fails immediately with
+`AmbiguousLocatorException`: ambiguity is a fail-safe condition, never a transiently-pending state
+the DOM might resolve out of on its own, so the wait never continues hoping a second matching
+region or element will disappear again before the deadline.
+
 ## Resolution policies
 
 `LocatorResolutionPolicy` makes fallback behavior explicit:

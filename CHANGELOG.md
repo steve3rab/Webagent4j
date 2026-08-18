@@ -29,9 +29,38 @@ All notable changes to this project will be documented in this file. The format 
 - `VerificationEngine.awaitAll(IVerificationContext, List, WaitBudget, Duration)`, an overload that
   shares one deadline across every condition in the list instead of giving each one an
   independent, full timeout.
+- `WaitSample.pending(T)`, a pending sample carrying an informational last-known value - still
+  retried exactly like `WaitSample.pending()`, but preserved in `WaitResult.value()` if the wait
+  times out instead of being discarded.
 
 ### Fixed
 
+- Completed `LocatorEngine`'s migration onto the shared, deterministic `WaitEngine`: its own
+  `do`/`while` deadline, stability-timer, and sleep loop is gone, replaced by
+  `WaitEngine.await(WaitBudget, WaitPolicy, IWaitProbe)` driving a single, non-looping DOM search
+  per attempt. `LocatorResolutionWaiter`, which had no remaining callers once the loop moved, was
+  deleted rather than kept as an unused compatibility wrapper.
+- Fixed `locateSingle()` only checking ambiguity on the final candidate list returned by a wait,
+  instead of on every individual poll: a second matching candidate that appeared and then
+  disappeared again during a `stableFor(...)`/`waitUntilVisible()` wait could previously go
+  unnoticed. Ambiguity observed on any poll now fails immediately with
+  `AmbiguousLocatorException`, exactly like a genuine backend/runtime failure does, rather than
+  being treated as a transiently-pending state the wait might resolve out of on its own.
+- Fixed `ActionTargetResolver` retrying target resolution on any `RuntimeException`, including
+  ambiguity and genuine backend/runtime failures. Only a demonstrated, typed `NOT_FOUND` outcome
+  (a resolved-but-detached element counts as `NOT_FOUND` too) is retried now; ambiguity and any
+  other failure end resolution on the first attempt.
+- Fixed `ActionExecutor` computing target-resolution retries and postcondition verification
+  against independently-converted `Duration` values derived from its budget, instead of the exact
+  same shared `WaitBudget` instance: `ActionTargetResolver` and the new
+  `VerificationPoller`/`VerificationEngine` `WaitBudget` overloads now consume that one object
+  directly, with no remaining-to-fresh-budget conversion in between.
+- Fixed the action pipeline never checking, immediately before invoking the backend, whether its
+  global budget had already been exhausted by resolution and preconditions: a backend side effect
+  is now never started once the action's budget has expired, and is never retried as part of
+  wait/poll logic - a backend call already in flight when the deadline passes may still take
+  longer to return, which is a deliberately narrower and true claim than "every action finishes
+  before its timeout".
 - Fixed action postconditions each silently receiving their own independent, full timeout instead
   of sharing the action's configured budget: `ActionExecutor` now starts one monotonic
   `WaitBudget` per execution and threads its shrinking `remaining()` through both stabilization and
@@ -42,6 +71,9 @@ All notable changes to this project will be documented in this file. The format 
   `ActionTargetResolver`'s pre-execution retry loop each owning their own direct
   `Thread.sleep`/`LockSupport.parkNanos` call: all three now delegate to the shared
   `webagent4j-wait` primitive.
+- Fixed `WaitBudget.start(...)` letting `Duration.toNanos()` throw `ArithmeticException` for an
+  implausibly large timeout (for example `Duration.ofSeconds(Long.MAX_VALUE)`) instead of
+  saturating like every other overflow path in the same class.
 
 - Fixed explicit-element scopes being able to escape a previously declared parent scope in mixed
   locator chains: an explicit element declared after another scope is now proven, against the real

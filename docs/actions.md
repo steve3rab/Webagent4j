@@ -49,15 +49,24 @@ remain owned by the caller.
 ## Timeouts and retries
 
 `timeout(...)` is the overall budget for resolution, execution bookkeeping, and verification.
-`retry(...)` configures bounded target-resolution attempts. Backend execution is not blindly retried:
-a click, submit, navigation, or download may produce an irreversible side effect, so it executes at
-most once. Verification polling may continue after that single execution.
+`retry(...)` configures bounded target-resolution attempts - but only a demonstrated, typed
+`NOT_FOUND` outcome is actually retried (a resolved-but-detached element counts as `NOT_FOUND`
+too); an ambiguous target or a genuine backend/runtime failure ends resolution on the very first
+attempt, never retried. Backend execution itself is not blindly retried either: a click, submit,
+navigation, or download may produce an irreversible side effect, so it executes at most once, and
+only after an explicit check that the action's budget has not already expired - if resolution and
+preconditions alone consumed it, the backend action never runs at all. Verification polling may
+continue after that single execution.
 
-This distinction is intentional: retrying observation is safe, retrying a purchase is not.
+This distinction is intentional: retrying observation is safe, retrying a purchase is not. Put
+precisely, WebAgent4J will not start a backend side effect after its action budget has expired, and
+it will never retry the backend side effect as part of wait/poll logic - that is a narrower, and
+true, claim than "every action finishes before its timeout", which is not guaranteed: a backend
+call already in flight when the deadline passes can still take longer to return.
 
-`timeout(...)` is one shared monotonic budget, not a per-condition allowance: stabilization and
-every postcondition draw down the same shrinking deadline in sequence, so a list of postconditions
-can never silently add up to several times the configured timeout. See
+`timeout(...)` is one shared monotonic budget, not a per-condition allowance: target resolution,
+stabilization, and every postcondition draw down the same shrinking deadline in sequence, so a list
+of postconditions can never silently add up to several times the configured timeout. See
 [wait-and-stability.md](wait-and-stability.md) for the shared polling primitive behind this and
 behind locator resolution.
 
