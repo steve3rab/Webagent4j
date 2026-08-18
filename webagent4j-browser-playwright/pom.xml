@@ -74,13 +74,17 @@
           <execution>
             <!--
               This module's real coverage measurement is the cross-module aggregate report (see
-              docs/testing.md): most of the Playwright adapter only exercises meaningfully through
-              webagent4j-integration-tests' browser-driven IT suite, not through this module's own
-              unit tests. The unit tests that do live here (e.g. PlaywrightScopeResolverTest) cover
-              one class deliberately kept browser-free; they were never meant to reach 70% of this
-              whole module on their own, so the per-module BUNDLE/LINE gate is skipped here. Skipping
-              only the "check" and "report" goals - prepare-agent keeps instrumenting - so this
-              module's jacoco.exec still feeds the aggregate report normally.
+              docs/testing.md and webagent4j-integration-tests/pom.xml's
+              coverage-check-playwright-aggregate execution, which re-applies this same 70%
+              threshold to the real aggregate number): most of the Playwright adapter only exercises
+              meaningfully through webagent4j-integration-tests' browser-driven IT suite, not through
+              this module's own unit tests. The unit tests that do live here (e.g.
+              PlaywrightScopeResolverTest) cover one class deliberately kept browser-free; they were
+              never meant to reach 70% of this whole module on their own, so the per-module
+              BUNDLE/LINE "check" goal is skipped here - only that one goal, on this one execution id;
+              prepare-agent keeps instrumenting and the "report" execution (a separate id, untouched
+              by this override) still runs, so this module's jacoco.exec and its own HTML report both
+              keep working normally, and the exec still feeds the aggregate report.
             -->
             <id>coverage-check</id>
             <configuration>

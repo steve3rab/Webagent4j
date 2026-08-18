@@ -82,6 +82,25 @@
               <classpathScope>test</classpathScope>
             </configuration>
           </execution>
+          <execution>
+            <!--
+              Real, enforced replacement for the per-module coverage-check that
+              webagent4j-browser-playwright's own pom.xml skips (see the comment there): the stock
+              jacoco-maven-plugin "check" goal has no cross-module aggregate mode - it only ever
+              analyzes the current module's own compiled classes - so PlaywrightCoverageGate reads
+              the CSV this module's own "report-aggregate" execution already produces and applies the
+              same 70% LINE threshold to the real combined number. Declared after the jacoco-plugin
+              block so it runs after report-aggregate within the shared "verify" phase.
+            -->
+            <id>coverage-check-playwright-aggregate</id>
+            <goals>
+              <goal>java</goal>
+            </goals>
+            <phase>verify</phase>
+            <configuration>
+              <mainClass>io.webagent4j.integration.coverage.PlaywrightCoverageGate</mainClass>
+            </configuration>
+          </execution>
         </executions>
       </plugin>
     </plugins>
