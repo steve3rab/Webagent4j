@@ -12,6 +12,7 @@ import io.webagent4j.action.ActionPlanStatus;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionContext;
+import io.webagent4j.action.Secret;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
@@ -100,6 +101,30 @@ class ActionPlanPipelineTest {
         assertThat(result.success()).isTrue();
         assertThat(result.executed()).isTrue();
         verify(backend, times(1)).click(target);
+    }
+
+    @Test
+    void neverLeaksASecretThroughPlanDiagnosticsOrToString() {
+        String marker = "WEBAGENT4J_CONSOLIDATION_SECRET";
+        IActionBackend backend = mock(IActionBackend.class);
+        IElement target = mock(IElement.class);
+        org.mockito.Mockito.when(target.role()).thenReturn(ElementRole.TEXTBOX);
+        org.mockito.Mockito.when(target.accessibleName()).thenReturn("Password");
+        org.mockito.Mockito.when(target.state())
+                .thenReturn(
+                        new ElementState(
+                                true, true, true, true, false, false, false, false, true, false,
+                                false, false));
+
+        ActionPlan<Void> plan =
+                new DefaultActionBuilder(context(backend))
+                        .typeSecret(target, Secret.of(marker))
+                        .plan();
+
+        assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
+        assertThat(plan.targetDescription()).doesNotContain(marker);
+        assertThat(plan.diagnostics().toString()).doesNotContain(marker);
+        assertThat(plan.toString()).doesNotContain(marker);
     }
 
     private static IActionContext context(IActionBackend backend) {
