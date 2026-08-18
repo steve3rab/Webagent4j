@@ -55,6 +55,12 @@ most once. Verification polling may continue after that single execution.
 
 This distinction is intentional: retrying observation is safe, retrying a purchase is not.
 
+`timeout(...)` is one shared monotonic budget, not a per-condition allowance: stabilization and
+every postcondition draw down the same shrinking deadline in sequence, so a list of postconditions
+can never silently add up to several times the configured timeout. See
+[wait-and-stability.md](wait-and-stability.md) for the shared polling primitive behind this and
+behind locator resolution.
+
 ## Observations and semantic diff
 
 Use `captureObservations(ObservationCapturePolicy.ALWAYS)` to retain immutable observations before

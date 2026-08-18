@@ -340,6 +340,10 @@ replacement is expected between workflow steps.
 `stableFor(duration)` requires the selected backend identity and all requested state constraints to
 remain continuously satisfied for the whole interval. Detachment, replacement, disappearance, or a
 state violation resets the stability timer; non-contiguous stable periods are never added together.
+The polling, deadline, and stability-window mechanics behind `stableFor`/`waitUntilVisible`/`timeout`
+are the same shared `webagent4j-wait` primitive used by verification and action stabilization - see
+[wait-and-stability.md](wait-and-stability.md); only the domain-specific candidate search and
+identity comparison stay in the locator engine itself.
 
 ## State and interactability
 

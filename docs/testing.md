@@ -5,6 +5,14 @@ Failsafe. The Playwright integration test starts a local JDK HTTP server on a ra
 does not depend on a public website. It covers browser launch, navigation, observation, semantic
 location, click, URL verification, and cleanup.
 
+`webagent4j-wait`'s own tests (`WaitEngineTest`, `WaitBudgetTest`) run entirely on fake time: a
+`FakeMonotonicClock` and `FakeWaitSleeper` advance the clock by exactly the requested sleep
+duration instead of really sleeping, so a test asserting a 60-second timeout completes in
+milliseconds while still exercising the engine's real interval, deadline, and stability-window
+arithmetic. Domain-level tests that need deterministic timing (`VerificationSharedBudgetTest`) use
+the same pattern by injecting a `WaitEngine` built from fake `IMonotonicClock`/`IWaitSleeper`
+implementations.
+
 ArchUnit checks package cycles, interface naming, and the core/Playwright boundary. JaCoCo writes
 module reports and an aggregate report under `webagent4j-integration-tests/target/site/jacoco-aggregate`.
 Source-bearing modules with direct tests must keep at least 70% line coverage, enforced by the parent

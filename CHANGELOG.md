@@ -21,8 +21,27 @@ All notable changes to this project will be documented in this file. The format 
 - `io.webagent4j.integration.coverage.PlaywrightCoverageGate`, a real, automated, enforced aggregate
   line-coverage gate for `webagent4j-browser-playwright`, replacing the skipped per-module JaCoCo
   `check` with a threshold check against the module's real cross-module coverage.
+- `webagent4j-wait`, a new backend-neutral module carrying the one deterministic wait/stability
+  primitive (`WaitEngine`, `WaitBudget`, `WaitPolicy`, `IWaitProbe`, `IMonotonicClock`,
+  `IWaitSleeper`) shared by locator resolution, verification polling, and action
+  stabilization/postconditions - see `docs/wait-and-stability.md`. It depends only on the JDK and
+  `webagent4j-common`, and no domain module depends on it in the other direction.
+- `VerificationEngine.awaitAll(IVerificationContext, List, WaitBudget, Duration)`, an overload that
+  shares one deadline across every condition in the list instead of giving each one an
+  independent, full timeout.
 
 ### Fixed
+
+- Fixed action postconditions each silently receiving their own independent, full timeout instead
+  of sharing the action's configured budget: `ActionExecutor` now starts one monotonic
+  `WaitBudget` per execution and threads its shrinking `remaining()` through both stabilization and
+  postcondition verification, so a list of postconditions can no longer add up to several times the
+  configured timeout in the worst case.
+- Fixed `VerificationPoller` measuring its polling deadline against wall-clock time
+  (`Clock`/`Instant`) instead of a monotonic clock, and fixed it, `LocatorResolutionWaiter`, and
+  `ActionTargetResolver`'s pre-execution retry loop each owning their own direct
+  `Thread.sleep`/`LockSupport.parkNanos` call: all three now delegate to the shared
+  `webagent4j-wait` primitive.
 
 - Fixed explicit-element scopes being able to escape a previously declared parent scope in mixed
   locator chains: an explicit element declared after another scope is now proven, against the real
@@ -67,6 +86,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- `VerificationPoller`'s `Clock`-based constructor was replaced by
+  `VerificationPoller(io.webagent4j.wait.WaitEngine)`: the poller now measures its deadline
+  against a monotonic clock, never wall-clock time, so a wall-clock-based constructor could only
+  perpetuate the exact bug this change fixes. The unused `Clock` constructor had no callers outside
+  the module's own default, so there is no other public migration to document.
 - `IPreparedAction.dryRun()` and `IPreparedAction.plan()` are now mutually exclusive: calling
   `plan()` after `dryRun()` on the same prepared action throws `IllegalStateException`.
 - `ILocator`/`IFind`'s `within(Object)`/`inContext(Object)` were replaced with typed overloads,

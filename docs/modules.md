@@ -6,13 +6,14 @@ Arrows below mean "depends on."
 |---|---|---|
 | `webagent4j-bom` | none | Consumer version alignment |
 | `webagent4j-common` | none | Exceptions, timeouts, retry policy |
+| `webagent4j-wait` | common | Deterministic wait/stability primitive: monotonic deadlines, polling, stability windows |
 | `webagent4j-locator-api` | none | Immutable locator definitions and generic fluent contracts |
 | `webagent4j-dom` | common, locator-api | Backend-neutral live element and scoped query contract |
 | `webagent4j-observation-api` | dom, locator-api | Immutable semantic model, options, renderer, fingerprint, diff, capture SPI |
 | `webagent4j-observation` | browser-api, observation-api | Semantic transformation, policies, observers, diagnostics, events |
-| `webagent4j-locator` | common, dom, locator-api | Planning, discovery ports, filtering, scoring, ambiguity, diagnostics |
-| `webagent4j-verification` | dom, locator-api, observation-api | Deterministic conditions, composition, and bounded polling |
-| `webagent4j-action` | common, dom, locator-api, observation-api, verification | Commands, lifecycle orchestration, safe retries, structured results, and audit events |
+| `webagent4j-locator` | common, dom, locator-api, wait | Planning, discovery ports, filtering, scoring, ambiguity, diagnostics |
+| `webagent4j-verification` | dom, locator-api, observation-api, wait | Deterministic conditions, composition, and bounded polling |
+| `webagent4j-action` | common, dom, locator-api, observation-api, verification, wait | Commands, lifecycle orchestration, safe retries, structured results, and audit events |
 | `webagent4j-browser-api` | action, dom, locator, locator-api, observation-api | Browser/page lifecycle contracts |
 | `webagent4j-browser-playwright` | action, browser-api, dom, locator, locator-api, observation | Playwright action backend, browser lifecycle, batch observation adapter, and service provider |
 | `webagent4j-core` | browser-api | Public facade and provider discovery |

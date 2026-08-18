@@ -71,6 +71,26 @@ Resolution retries are separated from execution. Non-idempotent backend executio
 once, while stabilization and verification may safely poll read-only state. The Playwright adapter
 implements the action, locator, and observation ports without leaking its native types.
 
+`webagent4j-wait` is the one deterministic polling primitive underneath every read-only wait in the
+locator, verification, and action pipelines - see [wait-and-stability.md](wait-and-stability.md).
+It sits below every domain module, next to `webagent4j-common`, and knows nothing about DOM
+elements, locators, or actions:
+
+```text
+webagent4j-common
+        |
+        v
+ webagent4j-wait
+   /    |    \
+  /     |     \
+Locator Verification Action
+```
+
+Locator resolution, verification polling, and action stabilization/postconditions each delegate
+their deadline, polling-interval, and stability-window bookkeeping to this one engine instead of
+each running its own timing loop; only the locator, verification, and action domains still decide
+*what* is being waited for.
+
 ```text
 Browser backend
       |
@@ -89,6 +109,8 @@ Semantic Model ----> Locator / Action / future Extraction
 - `core` cannot depend on Playwright or any future concrete browser backend.
 - Public APIs cannot expose backend-native objects.
 - `common`, `dom`, and the domain contracts have no framework dependency.
+- `wait` depends only on `common` and the JDK; it cannot depend on `dom`, `locator`, `verification`,
+  `action`, `browser`, `observation`, or Playwright, and knows nothing about any of those concepts.
 - `action` and `verification` cannot depend on Playwright or another concrete browser backend.
 - Public action contracts cannot depend on action implementation packages.
 - No module depends on an AI, LLM, MCP, Spring, Jakarta EE, reactive, or dependency-injection framework.
