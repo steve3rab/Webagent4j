@@ -25,13 +25,15 @@ Playwright adapter ------> Browser API and domain contracts
 
 `webagent4j-locator-api` breaks the dependency cycle required by scoped queries: it contains generic
 fluent contracts and immutable definitions, `IElement` exposes `find()`, and the locator engine depends
-on the DOM contract for scoring. `webagent4j-observation-api` similarly contains the detached model,
-options, renderers, diff, fingerprint, and batch-capture SPI used by `IPage`. The observation engine
-depends on `IPage`, while the Playwright adapter supplies the single bounded batch capture. An action plan invokes
-the live element, evaluates explicit verification objects, and returns an `ActionResult` with audit
-events.
+on the DOM contract for scoring. It also carries `ILocatorScope<E>`, the typed contract for
+`within(E)`/`within(ILocatorScope<E>)`; `InteractionContext` (`webagent4j-browser-api`) implements it,
+so a scope is checked at compile time instead of by runtime `instanceof`. `webagent4j-observation-api`
+similarly contains the detached model, options, renderers, diff, fingerprint, and batch-capture SPI
+used by `IPage`. The observation engine depends on `IPage`, while the Playwright adapter supplies the
+single bounded batch capture. A prepared action invokes the live element, evaluates explicit
+verification objects, and returns an `ActionResult` with audit events.
 
-Every command uses one backend-neutral lifecycle:
+Every command shares one backend-neutral resolve-and-validate step before it forks three ways:
 
 ```text
 Locator
@@ -42,21 +44,28 @@ ActionTargetResolver
    v
 Preconditions
    |
-   v
-ActionBackend
+   +------ plan() -----------------------------> IActionPlan (READY / BLOCKED)
+   |                                                    |
+   |                                              IActionPlan.execute()
+   |                                              (revalidates from here)
+   |                                                    |
+   +------ dryRun() -----------------------------> ActionResult (DRY_RUN, no side effect)
    |
-   v
-Stabilization
-   |
-   v
-Observation
-   |
-   v
-Verification
-   |
-   v
-ActionResult
+   +------ execute() --> ActionBackend --> Stabilization --> Observation --> Verification --> ActionResult
 ```
+
+`plan()`, `dryRun()`, and a real `execute()` share the exact same `ActionTargetResolver` and
+precondition evaluation, so they can never disagree about whether a target resolves or a precondition
+holds. `plan()` never invokes the backend; it returns an immutable, inspectable `IActionPlan` instead
+of an `ActionResult`. Its sole implementation, `DefaultActionPlan`, is package-private, so a plan can
+only be obtained through `plan()`, never hand-built. `IActionPlan.execute()` never trusts that
+snapshot - it reruns the whole pipeline from scratch, so a stale plan can never act on a semantically
+different element, tolerate new ambiguity, or ignore a precondition that stopped holding. Structured
+locator scopes follow the same rule: a scope built with `InteractionContext.containingText(...)` is
+kept as a pending, backend-neutral definition and re-resolved fresh at every terminal operation
+(`reference().resolve()` included), never frozen into one DOM node when the fluent chain is built - so
+a context that becomes ambiguous, disappears, or is replaced by a semantically different region
+between reference creation and execution blocks the action instead of silently acting on stale state.
 
 Resolution retries are separated from execution. Non-idempotent backend execution occurs at most
 once, while stabilization and verification may safely poll read-only state. The Playwright adapter

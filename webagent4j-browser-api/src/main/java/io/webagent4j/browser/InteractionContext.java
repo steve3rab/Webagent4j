@@ -1,6 +1,7 @@
 package io.webagent4j.browser;
 
 import io.webagent4j.dom.IElement;
+import io.webagent4j.locator.api.ILocatorScope;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -13,7 +14,8 @@ import java.util.Optional;
  * model. They are intentionally small: a context is either an explicit element scope or a textual
  * descriptor that resolves to a semantic region before the main target query is executed.
  */
-public record InteractionContext(Optional<IElement> scope, List<String> containingText) {
+public record InteractionContext(Optional<IElement> scope, List<String> containingText)
+        implements ILocatorScope<IElement> {
 
     /** Creates an empty context that leaves the current page or ancestor scope unchanged. */
     public static InteractionContext context() {
@@ -48,5 +50,10 @@ public record InteractionContext(Optional<IElement> scope, List<String> containi
     /** Alias for a human-readable context label. */
     public InteractionContext named(String text) {
         return containingText(text);
+    }
+
+    @Override
+    public Optional<IElement> scopeElement() {
+        return scope;
     }
 }

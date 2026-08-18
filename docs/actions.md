@@ -88,4 +88,109 @@ observations and diff, and safe diagnostics. An interrupted action restores the 
 interrupted status. Action builders and live pages are not thread-safe; immutable results,
 observations, and verification definitions may be shared.
 
+A target-resolution failure is classified through the typed `ILocatorFailure` contract, never by
+exception class name or message text, and the classification looks through a bounded chain of wrapped
+causes. Only a failure that is itself, or wraps, a typed "not found" outcome becomes
+`TARGET_NOT_FOUND`; only a typed "ambiguous" outcome becomes `TARGET_AMBIGUOUS`. Anything else -
+including a real backend or runtime failure such as a browser crash or a disconnected backend - is
+`BACKEND_FAILURE`. A backend error is never silently reported as a missing target.
+
+## Execution mode and semantics
+
+`ActionResult.executionMode()` is a required, non-null `ActionExecutionMode`:
+
+- `REAL` - the backend was genuinely invoked, exactly once. This holds even when the backend call
+  itself threw, since the invocation happened and a side effect may already exist; combine `REAL`
+  with `success()` to know whether that side effect is known to have completed. `executed()` returns
+  `true` for `REAL` and never for the other two modes.
+- `DRY_RUN` - target resolution and preconditions were validated, but the backend was never invoked.
+  `dryRun()` returns `true` only for this mode.
+- `NOT_EXECUTED` - the pipeline stopped before the backend stage: resolution failed, the target was
+  ambiguous, or a precondition failed.
+
+The legacy `ActionResult(boolean, ...)` constructor cannot observe the true execution mode, so it
+always reports `REAL` regardless of whether `success` is `true` or `false` - this is the fail-safe
+choice, since `executed() == true` signals "already attempted, do not blindly retry", and an
+unattempted failure wrongly marked `REAL` is far less dangerous than an attempted failure wrongly
+marked `NOT_EXECUTED`. It is deprecated in favor of the canonical constructor or the explicit
+`ActionExecutionMode` overload.
+
+## Dry-run
+
+`dryRun()` runs the exact same target resolution and precondition evaluation as `execute()`, then
+returns immediately without invoking the backend:
+
+```java
+ActionResult<Void> result = page.action()
+        .click(page.find().button().named("Confirm").reference())
+        .dryRun()
+        .execute();
+
+assert result.dryRun();
+assert !result.executed();
+```
+
+A dry-run never emits `BACKEND_ACTION_STARTED` or `BACKEND_ACTION_COMPLETED`, never runs
+stabilization or postcondition polling (since both depend on a real side effect having happened), and
+emits exactly one terminal `ACTION_COMPLETED` event with result `dry-run-validated`. A precondition
+that was already going to fail still fails before dry-run is even considered - `dryRun()` only skips
+the backend stage, never preconditions.
+
+## Plans
+
+`plan()` goes one step further than `dryRun()`: instead of returning an `ActionResult`, it returns an
+immutable, backend-neutral, side-effect-free `IActionPlan<R>` that can be inspected before deciding
+whether to execute:
+
+```java
+IActionPlan<Void> plan = page.action()
+        .click(page.find().button().named("Confirm").reference())
+        .expect(Verifications.urlContains("/done"))
+        .plan();
+
+if (plan.ready()) {
+    ActionResult<Void> result = plan.execute();
+}
+```
+
+`plan()` runs the same resolution and precondition pipeline as `dryRun()` and `execute()` - it never
+invokes the backend - and produces `ActionPlanStatus.READY` only when the target resolved
+unambiguously and every precondition held at that moment; otherwise `BLOCKED`, with a structured
+`ActionFailure` reusing the same `ActionFailureType` values as `ActionResult`. `IActionPlan` is
+obtained only through `plan()`: its sole implementation is package-private, so there is no public
+constructor to build a plan by hand or bypass its execution guard.
+
+A plan is a snapshot, not a guarantee. `IActionPlan.execute()` never trusts it: it reruns the entire
+pipeline from scratch, so target resolution, ambiguity detection, and preconditions are all
+revalidated against the live DOM before any backend side effect. Consequences:
+
+- If the same semantic target survives (even as a different DOM node with the same role and
+  accessible name), `execute()` succeeds and the backend runs exactly once.
+- If the target is gone, or a semantically different element would now be the only match, `execute()`
+  fails `TARGET_NOT_FOUND` and the backend is never invoked on the wrong element.
+- If a new ambiguous duplicate appeared since `plan()`, `execute()` fails `TARGET_AMBIGUOUS`.
+- If a precondition that held at `plan()` time no longer holds, `execute()` fails
+  `PRECONDITION_FAILED`.
+- Conversely, a `BLOCKED` plan can still succeed later if the blocking condition clears before
+  `execute()` runs - revalidation looks at current state in both directions, never at the plan()-time
+  snapshot.
+
+This revalidation covers a structured locator scope too, not just the final target: see
+[Dynamic contextual resolution](locators.md#dynamic-contextual-resolution). A plan built while a
+context resolved uniquely can still be blocked, or still succeed against a semantically-equivalent
+replacement region, depending on what changed before `execute()` runs.
+
+Executing a plan runs the backend at most once, exactly like a direct `execute()` call - `plan()`
+followed by `execute()` never doubles the side effect. `IActionPlan.execute()` may itself be called at
+most once per plan instance: planning data is immutable, but the execution lifecycle is single-use and
+thread-safe, so a second call - even after the first one failed - throws `IllegalStateException`
+instead of risking a second real side effect. Build a new plan with `plan()` to try again.
+`plan.actionId()` and `plan.execute().actionId()` are always equal, so a result can be traced back to
+the plan that produced it even though `execute()` reruns the pipeline from scratch.
+
+`dryRun()` and `plan()` are mutually exclusive terminal modes on the same prepared action:
+`dryRun().execute()` validates and returns without ever producing a plan, and `plan()` always builds a
+plan whose `execute()` performs the real action. Calling `plan()` after `dryRun()` on the same prepared
+action throws `IllegalStateException` rather than silently picking one interpretation.
+
 See [Verification](verification.md) for the built-in conditions and composition rules.

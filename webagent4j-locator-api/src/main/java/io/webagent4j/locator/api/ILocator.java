@@ -1,5 +1,6 @@
 package io.webagent4j.locator.api;
 
+import io.webagent4j.common.LocatorFailureClassifier;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -17,19 +18,51 @@ public interface ILocator<E> {
     ILocator<E> named(String name);
 
     /**
-     * Narrows the query to an explicit semantic scope when the backend supports it.
+     * Narrows the query to an explicit element scope when the backend supports it.
      *
-     * <p>Contexts are applied before target matching and must remain re-resolvable against the
-     * current DOM. They are hard constraints, not a scoring bonus, so an out-of-scope or ambiguous
-     * context blocks resolution instead of silently selecting the wrong candidate.
+     * <p>The scope is applied before target matching and must remain re-resolvable against the
+     * current DOM. It is a hard constraint, not a scoring bonus, so a missing or detached scope
+     * blocks resolution instead of silently selecting the wrong candidate.
+     *
+     * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
+     * mixing this overload with the structured-scope overload in any combination, narrows each
+     * scope inside the one declared immediately before it, in exactly the sequence the calls were
+     * made - never regrouped by scope kind. This is a conjunction, not a replacement: an explicit
+     * element supplied after another scope must belong to that current scope - a backend that
+     * supports this contract proves that relationship before accepting it and fails explicitly,
+     * rather than substituting an unrelated element, if it cannot. An explicit element supplied as
+     * the very first scope in a chain needs no such proof.
      */
-    default ILocator<E> within(Object scope) {
+    default ILocator<E> within(E scope) {
         throw new UnsupportedOperationException("Scoped queries are not supported by this backend");
     }
 
-    /** Alias for {@link #within(Object)} used by callers that prefer a context-oriented API. */
-    default ILocator<E> inContext(Object context) {
-        return within(context);
+    /**
+     * Narrows the query to an explicit structured semantic scope when the backend supports it.
+     *
+     * <p>The scope is applied before target matching and must remain re-resolvable against the
+     * current DOM. It is a hard constraint, not a scoring bonus, so a missing or ambiguous scope
+     * blocks resolution instead of silently selecting the wrong candidate.
+     *
+     * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
+     * mixing this overload with the explicit-element overload in any combination, narrows each
+     * scope inside the one declared immediately before it, in exactly the sequence the calls were
+     * made - never regrouped by scope kind.
+     */
+    default ILocator<E> within(ILocatorScope<E> scope) {
+        throw new UnsupportedOperationException("Scoped queries are not supported by this backend");
+    }
+
+    /** Alias for {@code within(E)} used by callers that prefer a context-oriented API. */
+    default ILocator<E> inContext(E scope) {
+        return within(scope);
+    }
+
+    /**
+     * Alias for {@link #within(ILocatorScope)} used by callers that prefer a context-oriented API.
+     */
+    default ILocator<E> inContext(ILocatorScope<E> scope) {
+        return within(scope);
     }
 
     /** Constrains the query to an accessible name containing the supplied text. */
@@ -113,25 +146,23 @@ public interface ILocator<E> {
      * Attempts a single unambiguous resolution without converting a real locator failure into a
      * silent empty result.
      *
-     * <p>Returns an empty optional when no candidate exists before the configured timeout. An
-     * ambiguous candidate set still raises the normal explicit exception so callers can distinguish
-     * a missing match from an invalid search.
+     * <p>Returns an empty optional only when the underlying failure is a typed {@link
+     * io.webagent4j.common.ILocatorFailure} reporting a safe "not found" outcome, found either
+     * directly or wrapped by an unrelated {@code RuntimeException} within a bounded cause chain
+     * (see {@link LocatorFailureClassifier}). An ambiguous candidate set still raises the normal
+     * explicit exception so callers can distinguish a missing match from an invalid search. A
+     * failure that carries no typed locator failure in its cause chain — for example a backend
+     * disconnect or an unexpected runtime exception — is never treated as "not found" and is always
+     * rethrown.
      */
     default Optional<E> tryFind() {
         try {
             return Optional.of(single());
         } catch (RuntimeException failure) {
-            if (isNotFoundFailure(failure)) {
+            if (LocatorFailureClassifier.isNotFound(failure)) {
                 return Optional.empty();
             }
             throw failure;
         }
-    }
-
-    private static boolean isNotFoundFailure(RuntimeException failure) {
-        if (failure instanceof io.webagent4j.common.ILocatorFailure lf) {
-            return lf.isNotFound();
-        }
-        return false;
     }
 }

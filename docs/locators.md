@@ -107,6 +107,14 @@ IElement shippingContinue = page.find(
         .button()
         .named("Continue")
         .single();
+
+IElement addToCartAvailable = page.find(
+                InteractionContext.context()
+                        .containingText("Laptop B")
+                        .containingText("Available"))
+        .button()
+        .named("Ajouter")
+        .single();
 ```
 
 A context is treated as a hard scope, not a scoring bonus. It is resolved before target selection and
@@ -114,9 +122,130 @@ must fail explicitly when the scope is missing or ambiguous instead of silently 
 candidate. The existing locator pipeline remains deterministic: exact semantic resolution, required
 state constraints, candidate reduction by scope, then ranking and ambiguity detection.
 
+Each `containingText(...)` constraint is resolved by accessible name first (aria-label,
+aria-labelledby, associated landmark or heading name, etc.). Visible-text matching is used only as a
+fallback, and only when accessible-name resolution demonstrably reports a typed "not found" outcome;
+an ambiguous accessible-name match or a genuine backend/runtime failure is never retried under visible
+text and always propagates unchanged - a context ambiguity or backend failure means resolution stops,
+not that a different strategy silently takes over. Every configured `containingText(...)` constraint is
+honored, in order, each one narrowing the scope produced by the previous one: with two constraints,
+`.containingText("Laptop B").containingText("Available")` first narrows to the "Laptop B" region, then
+narrows again to "Available" strictly inside that region.
+
 Context-aware locators also work naturally with `IElement.find()`, which reuses the same location
 scope and backend. This helps resolve repeated actions inside a specific form, dialog, table row, or
 semantic landmark without relying on brittle CSS selectors.
+
+`within(...)`/`inContext(...)` are typed, not `Object`-typed: `ILocator<E>` and `IFind<E>` each expose
+`within(E)` for an explicit element scope and `within(ILocatorScope<E>)` for a structured scope with
+optional element and containing-text constraints. `InteractionContext` implements
+`ILocatorScope<IElement>`, so passing either an `IElement` or an `InteractionContext` resolves to the
+matching typed overload at compile time; there is no runtime type check or `IllegalArgumentException`
+for an unsupported scope type.
+
+## Dynamic contextual resolution
+
+An explicit element scope (`within(existingElement)`) and a structured scope
+(`within(InteractionContext.context()...)`) resolve differently on purpose, even though neither is
+applied at `within(...)` call time - see [Mixed scope ordering](#mixed-scope-ordering) below for why
+that matters. The caller handed over a concrete node for the former, so once it is reached in the
+chain there is nothing left to re-derive: it becomes the scope directly. A structured scope instead
+carries a *definition* (its `containingText(...)` constraints), and that definition is never
+collapsed into one resolved DOM node while the fluent chain is being built. It stays pending and is
+re-resolved, in order, at every terminal operation - `first()`, `single()`, `all()`, and every
+invocation of a `reference()`'s deferred `resolve()` - so the semantic region is re-evaluated against
+the live DOM each time, not reused from whatever node it happened to match earlier:
+
+```java
+IElementReference<IElement> continueButton = page.find(
+                InteractionContext.context().containingText("Shipping"))
+        .button()
+        .named("Continue")
+        .reference();
+
+// Later - possibly after the DOM changed - each of these re-resolves "Shipping" fresh:
+page.action().click(continueButton).execute();
+```
+
+This makes a stale context impossible to act on silently:
+
+- If "Shipping" still resolves to the same, or a semantically equivalent replacement, region, the
+  click reaches the correct target.
+- If a second "Shipping" region appeared since the reference was built, resolution now reports
+  `AmbiguousLocatorException` (surfaced as `ActionFailureType.TARGET_AMBIGUOUS` through an action) -
+  the two-region case is never silently resolved against whichever one matched first.
+- If "Shipping" was removed, resolution reports `LocatorNotFoundException`
+  (`ActionFailureType.TARGET_NOT_FOUND`) - it never falls through to matching "Continue" inside an
+  unrelated region that replaced it, such as a "Billing" section that happens to contain an
+  identically-named button.
+
+The same mechanism protects `IActionPlan.execute()` (see [Plans](actions.md#plans)): because it reruns
+the whole pipeline from scratch, including target resolution through the same `reference()`, a plan
+built against a context that later became ambiguous or disappeared is blocked, while a plan built
+against a context later replaced with the same semantics can still execute exactly once.
+
+Re-resolving a structured scope costs one bounded lookup per `containingText(...)` constraint, each
+under the configured resolution budget, in addition to the final target lookup - the same cost the
+scope already had at `within(...)` time, now paid again on each retry attempt and on `execute()`
+revalidation instead of once. There is currently no shared outer deadline propagated across nested
+constraint lookups, so a resolution retry policy combined with several constraints multiplies, rather
+than divides, the per-call timeout; keep constraint chains short and resolution retries bounded if
+this matters for a page under heavy load.
+
+## Mixed scope ordering
+
+Chaining multiple `within(...)` calls - explicit element scopes, structured scopes, or a mix of both
+- is strictly ordered: each scope narrows the one declared immediately before it, in exactly the
+sequence the caller wrote them in.
+
+```java
+page.find()
+        .within(productContext)
+        .within(formElement)
+        // ...
+```
+
+is not the same search as the reverse order:
+
+```java
+page.find()
+        .within(formElement)
+        .within(productContext)
+        // ...
+```
+
+The first narrows to `productContext`, then to `formElement` *inside* it - `formElement` must be a
+real descendant of `productContext` for this to resolve. The second narrows to `formElement` first,
+then looks for `productContext` *inside* `formElement` - which fails explicitly if `productContext`
+is actually an ancestor of `formElement`, rather than silently reusing whichever scope resolved first
+or regrouping the chain by scope kind (all explicit scopes first, or all structured scopes first).
+This holds however deep the chain goes, and however explicit and structured scopes are interleaved;
+it also holds for `within(...)` called again on the `ILocator` returned by a role/name selector, not
+just on the initial `IFind`. Declaration order is resolved fresh at every terminal operation, exactly
+like a single structured scope - see [Dynamic contextual resolution](#dynamic-contextual-resolution)
+above.
+
+`within(...)` is a conjunction of nested constraints, never a replacement. This is enforced, not just
+documented intent: whenever an explicit element scope is declared after another scope, it is proven -
+against the real DOM relationship, never accessible name, role, or any diagnostic label - to be a
+descendant of, or the same node as, the scope declared immediately before it. `within(A).within(B)`
+means "B, and B is inside A"; if B cannot be proven to be inside A, resolution fails explicitly
+instead of substituting an unrelated element that happens to satisfy the rest of the query. An
+explicit element declared as the very first scope in a chain needs no such proof - nothing narrowed
+it yet, so it simply becomes the first narrowing scope. This containment check runs at the same
+terminal-operation time as everything else in a pending scope chain, so a child element that was
+inside its declared parent when the reference was built, but has since been moved elsewhere in the
+DOM, is rejected when the action actually runs - not silently accepted because it once qualified.
+
+## Non-throwing lookup
+
+`tryFind()` attempts a single unambiguous resolution and returns `Optional.empty()` only for a real
+"not found" outcome - never for a genuine backend or runtime failure, which is always rethrown. The
+underlying failure is classified through the typed `ILocatorFailure` contract, looking through a
+bounded chain of wrapped causes: a `LocatorNotFoundException` wrapped by an unrelated
+`RuntimeException` still yields `Optional.empty()`, while an `AmbiguousLocatorException` or an opaque
+backend failure - wrapped or not - is always rethrown rather than silently reported as a missing
+match.
 
 ## Hard constraints and preferences
 

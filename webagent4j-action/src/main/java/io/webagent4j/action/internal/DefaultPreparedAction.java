@@ -1,8 +1,10 @@
 package io.webagent4j.action.internal;
 
+import io.webagent4j.action.ActionId;
 import io.webagent4j.action.ActionOptions;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionContext;
+import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.IPreparedAction;
 import io.webagent4j.action.ObservationCapturePolicy;
 import io.webagent4j.common.RetryPolicy;
@@ -133,18 +135,38 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
 
     @Override
     public ActionResult<R> execute() {
+        return new ActionExecutor().execute(context, command, buildConfig());
+    }
+
+    @Override
+    public IActionPlan<R> plan() {
+        if (dryRun) {
+            throw new IllegalStateException(
+                    "dryRun() and plan() are mutually exclusive terminal modes: dryRun().execute()"
+                            + " validates and returns without a plan, while plan() produces an"
+                            + " inspectable ActionPlan whose execute() always performs the real"
+                            + " action; call one or the other, not both, on the same prepared"
+                            + " action");
+        }
+        ActionExecutionConfig config = buildConfig();
+        ActionId actionId = ActionId.create();
         return new ActionExecutor()
-                .execute(
+                .prepare(
                         context,
                         command,
-                        new ActionExecutionConfig(
-                                options,
-                                List.copyOf(preconditions),
-                                List.copyOf(postconditions),
-                                (current, remaining) ->
-                                        io.webagent4j.action.StabilizationResult.none(),
-                                sensitive,
-                                dryRun));
+                        config,
+                        actionId,
+                        () -> new ActionExecutor().execute(context, command, config, actionId));
+    }
+
+    private ActionExecutionConfig buildConfig() {
+        return new ActionExecutionConfig(
+                options,
+                List.copyOf(preconditions),
+                List.copyOf(postconditions),
+                (current, remaining) -> io.webagent4j.action.StabilizationResult.none(),
+                sensitive,
+                dryRun);
     }
 
     private IVerification bind(IVerification verification) {

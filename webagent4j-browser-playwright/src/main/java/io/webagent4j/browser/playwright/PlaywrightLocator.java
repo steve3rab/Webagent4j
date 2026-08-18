@@ -1,38 +1,63 @@
 package io.webagent4j.browser.playwright;
 
-import io.webagent4j.browser.InteractionContext;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorCandidate;
 import io.webagent4j.locator.LocatorContext;
 import io.webagent4j.locator.api.IElementReference;
 import io.webagent4j.locator.api.ILocator;
+import io.webagent4j.locator.api.ILocatorScope;
 import io.webagent4j.locator.api.LocatorDefinition;
-import io.webagent4j.locator.api.TextMatch;
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 
-/** Internal lazy fluent adapter backed by the shared semantic locator engine. */
+/**
+ * Internal lazy fluent adapter backed by the shared semantic locator engine.
+ *
+ * <p>A pending scope (see {@link PlaywrightFind}) is never collapsed into a resolved {@link
+ * LocatorContext} while the fluent chain is being built - not even an explicit element scope, since
+ * applying it immediately while a structured scope declared elsewhere in the same chain stays
+ * pending would silently reorder the chain relative to how the caller wrote it. Every terminal
+ * operation - {@link #reference()}'s deferred resolution included - resolves the whole pending
+ * chain fresh, strictly in declaration order, through {@link #resolveContext()}.
+ */
 final class PlaywrightLocator implements ILocator<IElement> {
 
     private final ILocatorEngine engine;
-    private final LocatorContext context;
+    private final LocatorContext baseContext;
+    private final List<IPendingScope> pendingScopes;
     private final LocatorDefinition definition;
 
-    PlaywrightLocator(ILocatorEngine engine, LocatorContext context, LocatorDefinition definition) {
+    PlaywrightLocator(
+            ILocatorEngine engine,
+            LocatorContext baseContext,
+            List<IPendingScope> pendingScopes,
+            LocatorDefinition definition) {
         this.engine = engine;
-        this.context = context;
+        this.baseContext = baseContext;
+        this.pendingScopes = pendingScopes;
         this.definition = definition;
     }
 
     @Override
-    public ILocator<IElement> within(Object scope) {
-        return new PlaywrightLocator(engine, resolveScope(scope), definition);
+    public ILocator<IElement> within(IElement scope) {
+        Objects.requireNonNull(scope, "scope");
+        return new PlaywrightLocator(
+                engine,
+                baseContext,
+                PlaywrightScopeResolver.append(pendingScopes, new IPendingScope.Element(scope)),
+                definition);
     }
 
     @Override
-    public ILocator<IElement> inContext(Object context) {
-        return within(context);
+    public ILocator<IElement> within(ILocatorScope<IElement> scope) {
+        Objects.requireNonNull(scope, "scope");
+        return new PlaywrightLocator(
+                engine,
+                baseContext,
+                PlaywrightScopeResolver.append(pendingScopes, new IPendingScope.Structured(scope)),
+                definition);
     }
 
     @Override
@@ -132,70 +157,39 @@ final class PlaywrightLocator implements ILocator<IElement> {
 
     @Override
     public IElementReference<IElement> reference() {
-        return () -> engine.locateSingle(context, definition).element();
+        return () -> engine.locateSingle(resolveContext(), definition).element();
     }
 
     @Override
     public IElement first() {
-        return engine.locate(context, definition).element();
+        return engine.locate(resolveContext(), definition).element();
     }
 
     @Override
     public IElement single() {
-        return engine.locateSingle(context, definition).element();
+        return engine.locateSingle(resolveContext(), definition).element();
     }
 
     @Override
     public List<IElement> all() {
-        return engine.locateAll(context, definition).stream()
+        return engine.locateAll(resolveContext(), definition).stream()
                 .map(LocatorCandidate::element)
                 .toList();
     }
 
-    private ILocator<IElement> copy(LocatorDefinition next) {
-        return new PlaywrightLocator(engine, context, next);
+    /**
+     * Resolves the whole pending scope chain, strictly in declaration order, against the live DOM.
+     * Called fresh by each terminal operation, including every invocation of a {@link
+     * #reference()}'s deferred {@code resolve()} - so a target obtained long after the fluent chain
+     * was built (a retried resolution, a re-run {@code IActionPlan.execute()}) always re-derives
+     * its scopes in the order the caller declared them, instead of reusing a node captured once
+     * when the chain was assembled or regrouping explicit and structured scopes by kind.
+     */
+    private LocatorContext resolveContext() {
+        return PlaywrightScopeResolver.resolvePendingScopes(engine, baseContext, pendingScopes);
     }
 
-    private LocatorContext resolveScope(Object scope) {
-        if (scope instanceof IElement element) {
-            return context.within(element);
-        }
-        if (scope instanceof InteractionContext interactionContext) {
-            LocatorContext next = context;
-            if (interactionContext.scope().isPresent()) {
-                next = next.within(interactionContext.scope().get());
-            }
-            for (String text : interactionContext.containingText()) {
-                if (text == null || text.isBlank()) {
-                    continue;
-                }
-                // Prefer accessible name matching (aria-label, aria-labelledby, etc.) and fall back
-                // to
-                // visible text when accessible name does not match anything.
-                IElement container;
-                try {
-                    container =
-                            engine.locate(
-                                            next,
-                                            LocatorDefinition.element()
-                                                    .withAccessibleName(
-                                                            TextMatch.exactIgnoringCase(text)))
-                                    .element();
-                } catch (RuntimeException accessibleFailure) {
-                    // Try visible text as a fallback before giving up
-                    container =
-                            engine.locate(
-                                            next,
-                                            LocatorDefinition.element()
-                                                    .withVisibleText(
-                                                            TextMatch.exactIgnoringCase(text)))
-                                    .element();
-                }
-                next = next.within(container);
-                break;
-            }
-            return next;
-        }
-        throw new IllegalArgumentException("scope must be an element or InteractionContext");
+    private ILocator<IElement> copy(LocatorDefinition next) {
+        return new PlaywrightLocator(engine, baseContext, pendingScopes, next);
     }
 }

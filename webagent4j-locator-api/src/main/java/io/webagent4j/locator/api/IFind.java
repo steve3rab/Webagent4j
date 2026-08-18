@@ -6,18 +6,50 @@ public interface IFind<E> {
     ILocator<E> element();
 
     /**
-     * Narrows the current query to an explicit semantic scope when the backend supports it.
+     * Narrows the current query to an explicit element scope when the backend supports it.
      *
-     * <p>Scope objects are treated as hard constraints rather than scoring bonuses. A scope that is
-     * missing or ambiguous must fail explicitly before a target is selected.
+     * <p>The scope is treated as a hard constraint rather than a scoring bonus. A scope that is
+     * missing or detached must fail explicitly before a target is selected.
+     *
+     * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
+     * mixing this overload with {@link #within(ILocatorScope)} in any combination, narrows each
+     * scope inside the one declared immediately before it, in exactly the sequence the calls were
+     * made - never regrouped by scope kind. This is a conjunction, not a replacement: an explicit
+     * element supplied after another scope must belong to that current scope - a backend that
+     * supports this contract proves that relationship before accepting it and fails explicitly,
+     * rather than substituting an unrelated element, if it cannot. An explicit element supplied as
+     * the very first scope in a chain needs no such proof.
      */
-    default IFind<E> within(Object scope) {
+    default IFind<E> within(E scope) {
         throw new UnsupportedOperationException("Scoped queries are not supported by this backend");
     }
 
-    /** Alias for {@link #within(Object)} used by callers that prefer a context-oriented API. */
-    default IFind<E> inContext(Object context) {
-        return within(context);
+    /**
+     * Narrows the current query to an explicit structured semantic scope when the backend supports
+     * it.
+     *
+     * <p>The scope is treated as a hard constraint rather than a scoring bonus. A scope that is
+     * missing or ambiguous must fail explicitly before a target is selected.
+     *
+     * <p>Scope chaining preserves declaration order: calling {@code within(...)} more than once,
+     * mixing this overload with the explicit-element overload in any combination, narrows each
+     * scope inside the one declared immediately before it, in exactly the sequence the calls were
+     * made - never regrouped by scope kind.
+     */
+    default IFind<E> within(ILocatorScope<E> scope) {
+        throw new UnsupportedOperationException("Scoped queries are not supported by this backend");
+    }
+
+    /** Alias for {@code within(E)} used by callers that prefer a context-oriented API. */
+    default IFind<E> inContext(E scope) {
+        return within(scope);
+    }
+
+    /**
+     * Alias for {@link #within(ILocatorScope)} used by callers that prefer a context-oriented API.
+     */
+    default IFind<E> inContext(ILocatorScope<E> scope) {
+        return within(scope);
     }
 
     /** Starts a query constrained to one semantic role. */

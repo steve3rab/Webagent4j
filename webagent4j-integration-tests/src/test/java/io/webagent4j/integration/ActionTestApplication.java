@@ -5,6 +5,8 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -15,17 +17,23 @@ final class ActionTestApplication implements AutoCloseable {
     private final ExecutorService executor;
     private final String baseUrl;
     private final AtomicInteger clickCount;
+    private final Map<String, AtomicInteger> namedClickCounts;
 
     private ActionTestApplication(
-            HttpServer server, ExecutorService executor, AtomicInteger clickCount) {
+            HttpServer server,
+            ExecutorService executor,
+            AtomicInteger clickCount,
+            Map<String, AtomicInteger> namedClickCounts) {
         this.server = server;
         this.executor = executor;
         this.clickCount = clickCount;
+        this.namedClickCounts = namedClickCounts;
         baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     }
 
     static ActionTestApplication start() throws IOException {
         AtomicInteger count = new AtomicInteger();
+        Map<String, AtomicInteger> namedCounts = new ConcurrentHashMap<>();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/download/file", ActionTestApplication::download);
         server.createContext(
@@ -34,6 +42,7 @@ final class ActionTestApplication implements AutoCloseable {
                 "/test-state/reset",
                 exchange -> {
                     count.set(0);
+                    namedCounts.clear();
                     text(exchange, "reset");
                 });
         server.createContext(
@@ -49,13 +58,25 @@ final class ActionTestApplication implements AutoCloseable {
         server.createContext(
                 "/count-click",
                 exchange -> {
-                    count.incrementAndGet();
+                    String path = exchange.getRequestURI().getPath();
+                    String prefix = "/count-click";
+                    String name =
+                            path.length() > prefix.length() + 1
+                                    ? path.substring(prefix.length() + 1)
+                                    : "";
+                    if (name.isEmpty()) {
+                        count.incrementAndGet();
+                    } else {
+                        namedCounts
+                                .computeIfAbsent(name, key -> new AtomicInteger())
+                                .incrementAndGet();
+                    }
                     text(exchange, "ok");
                 });
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         server.setExecutor(executor);
         server.start();
-        return new ActionTestApplication(server, executor, count);
+        return new ActionTestApplication(server, executor, count, namedCounts);
     }
 
     String url(String route) {
@@ -64,6 +85,14 @@ final class ActionTestApplication implements AutoCloseable {
 
     int clickCount() {
         return clickCount.get();
+    }
+
+    /**
+     * Returns the independent click count recorded under a named {@code /count-click/<name>} hit.
+     */
+    int clickCount(String name) {
+        AtomicInteger recorded = namedClickCounts.get(name);
+        return recorded == null ? 0 : recorded.get();
     }
 
     @Override
@@ -141,6 +170,233 @@ final class ActionTestApplication implements AutoCloseable {
                               const fresh = document.createElement('button');
                               fresh.id='fresh'; fresh.textContent='Confirm';
                               fresh.onclick=() => result.hidden=false; old.replaceWith(fresh);
+                            }, 150)</script>
+                            """);
+            case "/actions/plan-same-target" ->
+                    document(
+                            "Plan same target",
+                            """
+                            <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('confirm');
+                              const fresh = document.createElement('button');
+                              fresh.id='fresh'; fresh.textContent='Confirm';
+                              fresh.onclick=() => fetch('/count-click'); old.replaceWith(fresh);
+                            }, 150)</script>
+                            """);
+            case "/actions/plan-wrong-target" ->
+                    document(
+                            "Plan wrong target",
+                            """
+                            <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('confirm');
+                              const wrong = document.createElement('button');
+                              wrong.id='delete'; wrong.textContent='Delete';
+                              wrong.onclick=() => fetch('/count-click'); old.replaceWith(wrong);
+                            }, 150)</script>
+                            """);
+            case "/actions/plan-ambiguity" ->
+                    document(
+                            "Plan ambiguity",
+                            """
+                            <div id="host"><button onclick="fetch('/count-click')">Confirm</button></div>
+                            <script>setTimeout(() => {
+                              const duplicate = document.createElement('button');
+                              duplicate.textContent='Confirm';
+                              duplicate.onclick=() => fetch('/count-click');
+                              host.appendChild(duplicate);
+                            }, 150)</script>
+                            """);
+            case "/actions/plan-precondition-invalidates" ->
+                    document(
+                            "Plan precondition invalidates",
+                            """
+                            <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
+                            <script>setTimeout(() => { confirm.disabled = true; }, 150)</script>
+                            """);
+            case "/actions/context-multi" ->
+                    document(
+                            "Context multi",
+                            """
+                            <section aria-label="Laptop A">
+                              <h2>Laptop A</h2>
+                              <div aria-label="Unavailable"><span>Unavailable</span>
+                                <button onclick="fetch('/count-click/laptopA-unavailable')">Ajouter</button></div>
+                              <div aria-label="Available"><span>Available</span>
+                                <button onclick="fetch('/count-click/laptopA-available')">Ajouter</button></div>
+                            </section>
+                            <section aria-label="Laptop B">
+                              <h2>Laptop B</h2>
+                              <div aria-label="Unavailable"><span>Unavailable</span>
+                                <button onclick="fetch('/count-click/laptopB-unavailable')">Ajouter</button></div>
+                              <div aria-label="Available"><span>Available</span>
+                                <button onclick="fetch('/count-click/laptopB-available')">Ajouter</button></div>
+                            </section>
+                            """);
+            case "/actions/context-ambiguous" ->
+                    document(
+                            "Context ambiguous",
+                            """
+                            <section aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-1')">Continue</button></section>
+                            <section aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-2')">Continue</button></section>
+                            """);
+            case "/actions/context-dynamic-ambiguous" ->
+                    document(
+                            "Context dynamic ambiguous",
+                            """
+                            <section id="shipping-1" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-1')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              const duplicate = document.createElement('section');
+                              duplicate.setAttribute('aria-label', 'Shipping');
+                              duplicate.innerHTML =
+                                '<button onclick="fetch(\\'/count-click/shipping-2\\')">Continue</button>';
+                              document.body.appendChild(duplicate);
+                            }, 150)</script>
+                            """);
+            case "/actions/context-dynamic-disappears" ->
+                    document(
+                            "Context dynamic disappears",
+                            """
+                            <section id="shipping-solo" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-solo')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              document.getElementById('shipping-solo').remove();
+                            }, 150)</script>
+                            """);
+            case "/actions/context-dynamic-replaced" ->
+                    document(
+                            "Context dynamic replaced",
+                            """
+                            <section id="shipping-old" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-continue')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('shipping-old');
+                              const fresh = document.createElement('section');
+                              fresh.id = 'shipping-fresh';
+                              fresh.setAttribute('aria-label', 'Shipping');
+                              fresh.innerHTML =
+                                '<button onclick="fetch(\\'/count-click/shipping-continue\\')">Continue</button>';
+                              old.replaceWith(fresh);
+                            }, 150)</script>
+                            """);
+            case "/actions/context-dynamic-semantic-change" ->
+                    document(
+                            "Context dynamic semantic change",
+                            """
+                            <section id="shipping-old" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-continue')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('shipping-old');
+                              const billing = document.createElement('section');
+                              billing.setAttribute('aria-label', 'Billing');
+                              billing.innerHTML =
+                                '<button onclick="fetch(\\'/count-click/billing-continue\\')">Continue</button>';
+                              old.replaceWith(billing);
+                            }, 150)</script>
+                            """);
+            case "/actions/context-dynamic-nested-ambiguous" ->
+                    document(
+                            "Context dynamic nested ambiguous",
+                            """
+                            <section aria-label="Laptop B">
+                              <h2>Laptop B</h2>
+                              <div id="laptopB-available" aria-label="Available"><span>Available</span>
+                                <button onclick="fetch('/count-click/laptopB-available')">Ajouter</button></div>
+                            </section>
+                            <script>setTimeout(() => {
+                              const section = document.querySelector('section[aria-label="Laptop B"]');
+                              const duplicate = document.createElement('div');
+                              duplicate.setAttribute('aria-label', 'Available');
+                              duplicate.innerHTML =
+                                '<span>Available</span><button '
+                                + 'onclick="fetch(\\'/count-click/laptopB-available-2\\')">Ajouter</button>';
+                              section.appendChild(duplicate);
+                            }, 150)</script>
+                            """);
+            case "/actions/mixed-scope-product" ->
+                    document(
+                            "Mixed scope product",
+                            """
+                            <section aria-label="Product A">
+                              <h2>Product A</h2>
+                              <div id="outer-container">
+                                <section aria-label="Available">
+                                  <button onclick="fetch('/count-click/product-a-ajouter')">Ajouter</button>
+                                </section>
+                              </div>
+                            </section>
+                            <section aria-label="Product B">
+                              <h2>Product B</h2>
+                              <div id="other-container">
+                                <section aria-label="Available">
+                                  <button onclick="fetch('/count-click/product-b-ajouter')">Ajouter</button>
+                                </section>
+                              </div>
+                            </section>
+                            """);
+            case "/actions/mixed-scope-product-dynamic" ->
+                    document(
+                            "Mixed scope product dynamic",
+                            """
+                            <section aria-label="Product A">
+                              <h2>Product A</h2>
+                              <div id="outer-container">
+                                <section aria-label="Available" id="available-old">
+                                  <button onclick="fetch('/count-click/product-a-ajouter')">Ajouter</button>
+                                </section>
+                              </div>
+                            </section>
+                            <section aria-label="Product B">
+                              <h2>Product B</h2>
+                              <div id="other-container">
+                                <section aria-label="Available">
+                                  <button onclick="fetch('/count-click/product-b-ajouter')">Ajouter</button>
+                                </section>
+                              </div>
+                            </section>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('available-old');
+                              const fresh = document.createElement('section');
+                              fresh.setAttribute('aria-label', 'Available');
+                              fresh.innerHTML =
+                                '<button onclick="fetch(\\'/count-click/product-a-ajouter\\')">Ajouter</button>';
+                              old.replaceWith(fresh);
+                            }, 150)</script>
+                            """);
+            case "/actions/mixed-scope-detached-child" ->
+                    document(
+                            "Mixed scope detached child",
+                            """
+                            <section aria-label="Product A">
+                              <h2>Product A</h2>
+                              <div id="outer-container">
+                                <button onclick="fetch('/count-click/product-a-confirm')">Confirm</button>
+                              </div>
+                            </section>
+                            <script>setTimeout(() => {
+                              document.getElementById('outer-container').remove();
+                            }, 150)</script>
+                            """);
+            case "/actions/mixed-scope-child-moved" ->
+                    document(
+                            "Mixed scope child moved",
+                            """
+                            <section aria-label="Product A">
+                              <h2>Product A</h2>
+                              <div id="panel">
+                                <button onclick="fetch('/count-click/panel-confirm')">Confirm</button>
+                              </div>
+                            </section>
+                            <section aria-label="Product B" id="product-b">
+                              <h2>Product B</h2>
+                            </section>
+                            <script>setTimeout(() => {
+                              document.getElementById('product-b').appendChild(
+                                document.getElementById('panel'));
                             }, 150)</script>
                             """);
             case "/actions/delayed-result", "/actions/retry" ->
