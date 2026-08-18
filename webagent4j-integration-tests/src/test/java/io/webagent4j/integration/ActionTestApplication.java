@@ -243,6 +243,80 @@ final class ActionTestApplication implements AutoCloseable {
                             <section aria-label="Shipping"><button
                               onclick="fetch('/count-click/shipping-2')">Continue</button></section>
                             """);
+            case "/actions/context-dynamic-ambiguous" ->
+                    document(
+                            "Context dynamic ambiguous",
+                            """
+                            <section id="shipping-1" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-1')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              const duplicate = document.createElement('section');
+                              duplicate.setAttribute('aria-label', 'Shipping');
+                              duplicate.innerHTML =
+                                '<button onclick="fetch(\\'/count-click/shipping-2\\')">Continue</button>';
+                              document.body.appendChild(duplicate);
+                            }, 150)</script>
+                            """);
+            case "/actions/context-dynamic-disappears" ->
+                    document(
+                            "Context dynamic disappears",
+                            """
+                            <section id="shipping-solo" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-solo')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              document.getElementById('shipping-solo').remove();
+                            }, 150)</script>
+                            """);
+            case "/actions/context-dynamic-replaced" ->
+                    document(
+                            "Context dynamic replaced",
+                            """
+                            <section id="shipping-old" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-continue')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('shipping-old');
+                              const fresh = document.createElement('section');
+                              fresh.id = 'shipping-fresh';
+                              fresh.setAttribute('aria-label', 'Shipping');
+                              fresh.innerHTML =
+                                '<button onclick="fetch(\\'/count-click/shipping-continue\\')">Continue</button>';
+                              old.replaceWith(fresh);
+                            }, 150)</script>
+                            """);
+            case "/actions/context-dynamic-semantic-change" ->
+                    document(
+                            "Context dynamic semantic change",
+                            """
+                            <section id="shipping-old" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-continue')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('shipping-old');
+                              const billing = document.createElement('section');
+                              billing.setAttribute('aria-label', 'Billing');
+                              billing.innerHTML =
+                                '<button onclick="fetch(\\'/count-click/billing-continue\\')">Continue</button>';
+                              old.replaceWith(billing);
+                            }, 150)</script>
+                            """);
+            case "/actions/context-dynamic-nested-ambiguous" ->
+                    document(
+                            "Context dynamic nested ambiguous",
+                            """
+                            <section aria-label="Laptop B">
+                              <h2>Laptop B</h2>
+                              <div id="laptopB-available" aria-label="Available"><span>Available</span>
+                                <button onclick="fetch('/count-click/laptopB-available')">Ajouter</button></div>
+                            </section>
+                            <script>setTimeout(() => {
+                              const section = document.querySelector('section[aria-label="Laptop B"]');
+                              const duplicate = document.createElement('div');
+                              duplicate.setAttribute('aria-label', 'Available');
+                              duplicate.innerHTML =
+                                '<span>Available</span><button '
+                                + 'onclick="fetch(\\'/count-click/laptopB-available-2\\')">Ajouter</button>';
+                              section.appendChild(duplicate);
+                            }, 150)</script>
+                            """);
             case "/actions/delayed-result", "/actions/retry" ->
                     document(
                             "Delayed result",
