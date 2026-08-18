@@ -1,6 +1,7 @@
 package io.webagent4j.action.internal;
 
 import io.webagent4j.action.ActionOptions;
+import io.webagent4j.action.ActionPlan;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionContext;
 import io.webagent4j.action.IPreparedAction;
@@ -133,18 +134,28 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
 
     @Override
     public ActionResult<R> execute() {
+        return new ActionExecutor().execute(context, command, buildConfig());
+    }
+
+    @Override
+    public ActionPlan<R> plan() {
+        ActionExecutionConfig config = buildConfig();
         return new ActionExecutor()
-                .execute(
+                .prepare(
                         context,
                         command,
-                        new ActionExecutionConfig(
-                                options,
-                                List.copyOf(preconditions),
-                                List.copyOf(postconditions),
-                                (current, remaining) ->
-                                        io.webagent4j.action.StabilizationResult.none(),
-                                sensitive,
-                                dryRun));
+                        config,
+                        () -> new ActionExecutor().execute(context, command, config));
+    }
+
+    private ActionExecutionConfig buildConfig() {
+        return new ActionExecutionConfig(
+                options,
+                List.copyOf(preconditions),
+                List.copyOf(postconditions),
+                (current, remaining) -> io.webagent4j.action.StabilizationResult.none(),
+                sensitive,
+                dryRun);
     }
 
     private IVerification bind(IVerification verification) {

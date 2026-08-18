@@ -44,4 +44,15 @@ public interface IPreparedAction<R> {
      * performed.
      */
     IPreparedAction<R> dryRun();
+
+    /**
+     * Runs target resolution and precondition evaluation without any backend side effect and
+     * returns an immutable, inspectable {@link ActionPlan}.
+     *
+     * <p>Unlike {@link #execute()} and {@link #dryRun()}, calling {@code plan()} never advances the
+     * action: it only produces a snapshot. The plan can later be inspected or executed with {@link
+     * ActionPlan#execute()}, which always revalidates resolution and preconditions before any
+     * backend action, so a stale plan can never cause the wrong element to be acted on.
+     */
+    ActionPlan<R> plan();
 }
