@@ -1,5 +1,6 @@
 package io.webagent4j.verification;
 
+import io.webagent4j.wait.WaitBudget;
 import io.webagent4j.wait.WaitEngine;
 import io.webagent4j.wait.WaitInterruptedException;
 import io.webagent4j.wait.WaitPolicy;
@@ -30,15 +31,38 @@ public final class VerificationPoller {
         this.engine = Objects.requireNonNull(engine, "engine");
     }
 
-    /** Polls one side-effect-free condition until success or the positive timeout expires. */
+    /**
+     * Polls one side-effect-free condition until success or the positive timeout expires.
+     *
+     * <p>Starts a fresh, independent {@link WaitBudget} for this call alone. Callers that must
+     * bound several conditions under one shared deadline - {@link
+     * VerificationEngine#awaitAll(IVerificationContext, java.util.List, WaitBudget, Duration)}, in
+     * particular - should use {@link #await(IVerification, IVerificationContext, WaitBudget,
+     * Duration)} instead, passing the same budget instance to every condition.
+     */
     public VerificationResult await(
             IVerification verification,
             IVerificationContext context,
             Duration timeout,
             Duration interval) {
+        requirePositive(timeout, "timeout");
+        return await(verification, context, WaitBudget.start(timeout, engine.clock()), interval);
+    }
+
+    /**
+     * Polls one side-effect-free condition against an existing {@link WaitBudget}, unchanged: no
+     * intermediate conversion to a remaining {@link Duration} and back into a new budget. Passing
+     * the exact same instance to several calls in sequence makes them share one deadline instead of
+     * each independently receiving a full, fresh timeout.
+     */
+    public VerificationResult await(
+            IVerification verification,
+            IVerificationContext context,
+            WaitBudget budget,
+            Duration interval) {
         Objects.requireNonNull(verification, "verification");
         Objects.requireNonNull(context, "context");
-        requirePositive(timeout, "timeout");
+        Objects.requireNonNull(budget, "budget");
         requirePositive(interval, "interval");
 
         VerificationResult[] latest = new VerificationResult[1];
@@ -46,7 +70,7 @@ public final class VerificationPoller {
         try {
             waitResult =
                     engine.await(
-                            timeout,
+                            budget,
                             WaitPolicy.pollingEvery(interval),
                             () -> probe(verification, context, latest));
         } catch (WaitInterruptedException interrupted) {

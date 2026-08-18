@@ -45,12 +45,15 @@ public final class VerificationEngine {
     }
 
     /**
-     * Evaluates all conditions in encounter order, sharing one {@link WaitBudget} across the whole
-     * list instead of giving each condition an independent, full timeout.
+     * Evaluates all conditions in encounter order, passing the exact same {@link WaitBudget}
+     * instance to every one of them - no per-condition conversion to a remaining {@link Duration}
+     * and back into a new budget - so they share one shrinking deadline instead of each
+     * independently receiving a full, fresh timeout.
      *
-     * <p>If the first condition consumes most of {@code budget}, later conditions receive
-     * correspondingly less time, down to a minimum of one nanosecond so a nearly-exhausted budget
-     * still gets exactly one final probe rather than being skipped outright.
+     * <p>If the first condition consumes most of {@code budget}, later conditions correspondingly
+     * see less of it in {@link WaitBudget#remaining()}; each one is still guaranteed at least one
+     * immediate probe, per {@code WaitEngine}'s own "always probe once, even against an already
+     * expired budget" contract, rather than being skipped outright.
      */
     public List<VerificationResult> awaitAll(
             IVerificationContext context,
@@ -61,10 +64,7 @@ public final class VerificationEngine {
         Objects.requireNonNull(budget, "budget");
         List<VerificationResult> results = new ArrayList<>(verifications.size());
         for (IVerification verification : verifications) {
-            Duration remaining = budget.remaining();
-            Duration bounded =
-                    remaining.compareTo(Duration.ofNanos(1)) < 0 ? Duration.ofNanos(1) : remaining;
-            results.add(poller.await(verification, context, bounded, interval));
+            results.add(poller.await(verification, context, budget, interval));
         }
         return List.copyOf(results);
     }

@@ -73,10 +73,7 @@ final class ActionExecutor {
         try {
             target =
                     new ActionTargetResolver()
-                            .resolve(
-                                    command,
-                                    config.options().resolutionRetry(),
-                                    config.options().timeout());
+                            .resolve(command, config.options().resolutionRetry(), budget);
         } catch (RuntimeException failure) {
             return failed(
                     context,
@@ -201,6 +198,41 @@ final class ActionExecutor {
                     events,
                     Optional.empty(),
                     new ActionDiagnostics(targetDescription, "", Map.of("execution", "dry-run")));
+        }
+
+        if (budget.expired()) {
+            // The action's global budget was already consumed by resolution and/or preconditions.
+            // A backend side effect must never start after its budget has expired, and it is never
+            // retried as part of this pipeline, so there is nothing left to attempt here.
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "budget-expired-before-backend-action",
+                            targetDescription,
+                            started));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    started,
+                    events,
+                    resolutionStarted,
+                    preconditionDuration,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.TIMEOUT,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.TIMEOUT,
+                    "Action budget expired before the backend action could be invoked",
+                    null);
         }
 
         R value;
@@ -407,14 +439,15 @@ final class ActionExecutor {
             ActionId actionId,
             Supplier<ActionResult<R>> executor) {
         List<VerificationType> expectedPostconditions = expectedPostconditionTypes(config);
+        // A plan-time-only budget: never stored in the returned IActionPlan/DefaultActionPlan. A
+        // real execution budget is started fresh, independently, when IActionPlan.execute() begins
+        // the real pipeline - a plan built minutes ago must not appear pre-expired at that point.
+        WaitBudget prepareBudget = WaitBudget.start(config.options().timeout(), CLOCK);
         IElement target;
         try {
             target =
                     new ActionTargetResolver()
-                            .resolve(
-                                    command,
-                                    config.options().resolutionRetry(),
-                                    config.options().timeout());
+                            .resolve(command, config.options().resolutionRetry(), prepareBudget);
         } catch (RuntimeException failure) {
             String targetDescription = describe(null);
             return new DefaultActionPlan<>(
