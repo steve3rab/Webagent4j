@@ -118,6 +118,23 @@ Context-aware locators also work naturally with `IElement.find()`, which reuses 
 scope and backend. This helps resolve repeated actions inside a specific form, dialog, table row, or
 semantic landmark without relying on brittle CSS selectors.
 
+`within(...)`/`inContext(...)` are typed, not `Object`-typed: `ILocator<E>` and `IFind<E>` each expose
+`within(E)` for an explicit element scope and `within(ILocatorScope<E>)` for a structured scope with
+optional element and containing-text constraints. `InteractionContext` implements
+`ILocatorScope<IElement>`, so passing either an `IElement` or an `InteractionContext` resolves to the
+matching typed overload at compile time; there is no runtime type check or `IllegalArgumentException`
+for an unsupported scope type.
+
+## Non-throwing lookup
+
+`tryFind()` attempts a single unambiguous resolution and returns `Optional.empty()` only for a real
+"not found" outcome - never for a genuine backend or runtime failure, which is always rethrown. The
+underlying failure is classified through the typed `ILocatorFailure` contract, looking through a
+bounded chain of wrapped causes: a `LocatorNotFoundException` wrapped by an unrelated
+`RuntimeException` still yields `Optional.empty()`, while an `AmbiguousLocatorException` or an opaque
+backend failure - wrapped or not - is always rethrown rather than silently reported as a missing
+match.
+
 ## Hard constraints and preferences
 
 Requested role, name, label, id, attribute, test id, and state predicates are mandatory. A candidate

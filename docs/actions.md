@@ -88,4 +88,89 @@ observations and diff, and safe diagnostics. An interrupted action restores the 
 interrupted status. Action builders and live pages are not thread-safe; immutable results,
 observations, and verification definitions may be shared.
 
+A target-resolution failure is classified through the typed `ILocatorFailure` contract, never by
+exception class name or message text, and the classification looks through a bounded chain of wrapped
+causes. Only a failure that is itself, or wraps, a typed "not found" outcome becomes
+`TARGET_NOT_FOUND`; only a typed "ambiguous" outcome becomes `TARGET_AMBIGUOUS`. Anything else -
+including a real backend or runtime failure such as a browser crash or a disconnected backend - is
+`BACKEND_FAILURE`. A backend error is never silently reported as a missing target.
+
+## Execution mode and semantics
+
+`ActionResult.executionMode()` is a required, non-null `ActionExecutionMode`:
+
+- `REAL` - the backend was genuinely invoked, exactly once. This holds even when the backend call
+  itself threw, since the invocation happened and a side effect may already exist; combine `REAL`
+  with `success()` to know whether that side effect is known to have completed. `executed()` returns
+  `true` for `REAL` and never for the other two modes.
+- `DRY_RUN` - target resolution and preconditions were validated, but the backend was never invoked.
+  `dryRun()` returns `true` only for this mode.
+- `NOT_EXECUTED` - the pipeline stopped before the backend stage: resolution failed, the target was
+  ambiguous, or a precondition failed.
+
+The legacy `ActionResult(boolean, ...)` constructor cannot observe the true execution mode, so it
+always reports `REAL` regardless of whether `success` is `true` or `false` - this is the fail-safe
+choice, since `executed() == true` signals "already attempted, do not blindly retry", and an
+unattempted failure wrongly marked `REAL` is far less dangerous than an attempted failure wrongly
+marked `NOT_EXECUTED`. It is deprecated in favor of the canonical constructor or the explicit
+`ActionExecutionMode` overload.
+
+## Dry-run
+
+`dryRun()` runs the exact same target resolution and precondition evaluation as `execute()`, then
+returns immediately without invoking the backend:
+
+```java
+ActionResult<Void> result = page.action()
+        .click(page.find().button().named("Confirm").reference())
+        .dryRun()
+        .execute();
+
+assert result.dryRun();
+assert !result.executed();
+```
+
+A dry-run never emits `BACKEND_ACTION_STARTED` or `BACKEND_ACTION_COMPLETED`, never runs
+stabilization or postcondition polling (since both depend on a real side effect having happened), and
+emits exactly one terminal `ACTION_COMPLETED` event with result `dry-run-validated`. A precondition
+that was already going to fail still fails before dry-run is even considered - `dryRun()` only skips
+the backend stage, never preconditions.
+
+## Plans
+
+`plan()` goes one step further than `dryRun()`: instead of returning an `ActionResult`, it returns an
+immutable, backend-neutral, side-effect-free `ActionPlan<R>` that can be inspected before deciding
+whether to execute:
+
+```java
+ActionPlan<Void> plan = page.action()
+        .click(page.find().button().named("Confirm").reference())
+        .expect(Verifications.urlContains("/done"))
+        .plan();
+
+if (plan.ready()) {
+    ActionResult<Void> result = plan.execute();
+}
+```
+
+`plan()` runs the same resolution and precondition pipeline as `dryRun()` and `execute()` - it never
+invokes the backend - and produces `ActionPlanStatus.READY` only when the target resolved
+unambiguously and every precondition held at that moment; otherwise `BLOCKED`, with a structured
+`ActionFailure` reusing the same `ActionFailureType` values as `ActionResult`.
+
+A plan is a snapshot, not a guarantee. `ActionPlan.execute()` never trusts it: it reruns the entire
+pipeline from scratch, so target resolution, ambiguity detection, and preconditions are all
+revalidated against the live DOM before any backend side effect. Consequences:
+
+- If the same semantic target survives (even as a different DOM node with the same role and
+  accessible name), `execute()` succeeds and the backend runs exactly once.
+- If the target is gone, or a semantically different element would now be the only match, `execute()`
+  fails `TARGET_NOT_FOUND` and the backend is never invoked on the wrong element.
+- If a new ambiguous duplicate appeared since `plan()`, `execute()` fails `TARGET_AMBIGUOUS`.
+- If a precondition that held at `plan()` time no longer holds, `execute()` fails
+  `PRECONDITION_FAILED`.
+
+Executing a plan runs the backend at most once, exactly like a direct `execute()` call - `plan()`
+followed by `execute()` never doubles the side effect.
+
 See [Verification](verification.md) for the built-in conditions and composition rules.
