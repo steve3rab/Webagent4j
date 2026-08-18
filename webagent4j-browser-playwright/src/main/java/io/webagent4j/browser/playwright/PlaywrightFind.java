@@ -9,28 +9,49 @@ import io.webagent4j.locator.api.ILocator;
 import io.webagent4j.locator.api.ILocatorScope;
 import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.locator.api.TextMatch;
+import java.util.List;
+import java.util.Objects;
 
-/** Internal fluent entry point delegating every terminal operation to the shared locator engine. */
+/**
+ * Internal fluent entry point delegating every terminal operation to the shared locator engine.
+ *
+ * <p>An explicit element scope ({@link #within(IElement)}) is applied eagerly: the caller handed
+ * over a concrete node, so there is nothing left to re-resolve. A structured scope ({@link
+ * #within(ILocatorScope)}) is instead kept as a pending, backend-neutral definition and resolved
+ * fresh at every terminal operation - see {@link PlaywrightLocator} - so a semantic region such as
+ * "the section labelled Shipping" is never frozen into a single DOM node captured once at chain-
+ * build time.
+ */
 final class PlaywrightFind implements IFind<IElement> {
 
     private final ILocatorEngine engine;
     private final LocatorContext context;
+    private final List<ILocatorScope<IElement>> pendingScopes;
 
     PlaywrightFind(ILocatorEngine engine, LocatorContext context) {
+        this(engine, context, List.of());
+    }
+
+    private PlaywrightFind(
+            ILocatorEngine engine,
+            LocatorContext context,
+            List<ILocatorScope<IElement>> pendingScopes) {
         this.engine = engine;
         this.context = context;
+        this.pendingScopes = pendingScopes;
     }
 
     @Override
     public IFind<IElement> within(IElement scope) {
         return new PlaywrightFind(
-                engine, PlaywrightScopeResolver.resolveElementScope(context, scope));
+                engine, PlaywrightScopeResolver.resolveElementScope(context, scope), pendingScopes);
     }
 
     @Override
     public IFind<IElement> within(ILocatorScope<IElement> scope) {
+        Objects.requireNonNull(scope, "scope");
         return new PlaywrightFind(
-                engine, PlaywrightScopeResolver.resolveStructuredScope(engine, context, scope));
+                engine, context, PlaywrightScopeResolver.append(pendingScopes, scope));
     }
 
     @Override
@@ -196,6 +217,6 @@ final class PlaywrightFind implements IFind<IElement> {
     }
 
     private ILocator<IElement> locator(LocatorDefinition definition) {
-        return new PlaywrightLocator(engine, context, definition);
+        return new PlaywrightLocator(engine, context, pendingScopes, definition);
     }
 }

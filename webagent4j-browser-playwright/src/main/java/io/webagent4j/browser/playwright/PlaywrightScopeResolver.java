@@ -7,12 +7,20 @@ import io.webagent4j.locator.LocatorContext;
 import io.webagent4j.locator.api.ILocatorScope;
 import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.locator.api.TextMatch;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 /**
  * Shared typed-scope resolution logic reused by {@link PlaywrightFind} and {@link
  * PlaywrightLocator}.
+ *
+ * <p>A structured scope ({@link ILocatorScope}) is never resolved here at chain-build time by its
+ * callers: {@link PlaywrightFind} and {@link PlaywrightLocator} only append it to a pending list
+ * via {@link #append(List, ILocatorScope)} and defer the actual call to {@link
+ * #resolveStructuredScope} until a terminal operation runs, so the same scope definition can be
+ * re-evaluated against the live DOM on every retry or replay instead of being frozen into one
+ * concrete node.
  */
 final class PlaywrightScopeResolver {
 
@@ -24,6 +32,14 @@ final class PlaywrightScopeResolver {
     static LocatorContext resolveElementScope(LocatorContext context, IElement scope) {
         Objects.requireNonNull(scope, "scope");
         return context.within(scope);
+    }
+
+    /** Returns a new immutable pending-scope list with {@code scope} appended. */
+    static List<ILocatorScope<IElement>> append(
+            List<ILocatorScope<IElement>> pending, ILocatorScope<IElement> scope) {
+        List<ILocatorScope<IElement>> next = new ArrayList<>(pending);
+        next.add(scope);
+        return List.copyOf(next);
     }
 
     /**
