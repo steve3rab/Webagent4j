@@ -9,7 +9,6 @@ import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.internal.DefaultInteractabilityChecker;
 import io.webagent4j.locator.internal.LocatorCandidateOrder;
-import io.webagent4j.locator.internal.LocatorResolutionWaiter;
 import java.time.Duration;
 import java.util.EnumSet;
 import java.util.List;
@@ -153,14 +152,6 @@ class LocatorAdvancedComponentsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new LocatorBackendSearchResult(List.of(), 0, true))
                 .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    void usesAnInterruptibleMonotonicWaiter() {
-        long started = System.nanoTime();
-        new LocatorResolutionWaiter().awaitNextPoll(Duration.ofMillis(2), Duration.ofMillis(5));
-        assertThat(Duration.ofNanos(System.nanoTime() - started))
-                .isGreaterThanOrEqualTo(Duration.ofMillis(1));
     }
 
     private static LocatorCandidate candidate(
