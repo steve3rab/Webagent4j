@@ -317,6 +317,67 @@ final class ActionTestApplication implements AutoCloseable {
                               section.appendChild(duplicate);
                             }, 150)</script>
                             """);
+            case "/actions/mixed-scope-product" ->
+                    document(
+                            "Mixed scope product",
+                            """
+                            <section aria-label="Product A">
+                              <h2>Product A</h2>
+                              <div id="outer-container">
+                                <section aria-label="Available">
+                                  <button onclick="fetch('/count-click/product-a-ajouter')">Ajouter</button>
+                                </section>
+                              </div>
+                            </section>
+                            <section aria-label="Product B">
+                              <h2>Product B</h2>
+                              <div id="other-container">
+                                <section aria-label="Available">
+                                  <button onclick="fetch('/count-click/product-b-ajouter')">Ajouter</button>
+                                </section>
+                              </div>
+                            </section>
+                            """);
+            case "/actions/mixed-scope-product-dynamic" ->
+                    document(
+                            "Mixed scope product dynamic",
+                            """
+                            <section aria-label="Product A">
+                              <h2>Product A</h2>
+                              <div id="outer-container">
+                                <section aria-label="Available" id="available-old">
+                                  <button onclick="fetch('/count-click/product-a-ajouter')">Ajouter</button>
+                                </section>
+                              </div>
+                            </section>
+                            <section aria-label="Product B">
+                              <h2>Product B</h2>
+                              <div id="other-container">
+                                <section aria-label="Available">
+                                  <button onclick="fetch('/count-click/product-b-ajouter')">Ajouter</button>
+                                </section>
+                              </div>
+                            </section>
+                            <script>setTimeout(() => {
+                              const old = document.getElementById('available-old');
+                              const fresh = document.createElement('section');
+                              fresh.setAttribute('aria-label', 'Available');
+                              fresh.innerHTML =
+                                '<button onclick="fetch(\\'/count-click/product-a-ajouter\\')">Ajouter</button>';
+                              old.replaceWith(fresh);
+                            }, 150)</script>
+                            """);
+            case "/actions/mixed-scope-wrong-target" ->
+                    document(
+                            "Mixed scope wrong target",
+                            """
+                            <div id="containerX">
+                              <button onclick="fetch('/count-click/btn-direct')">Confirm</button>
+                              <section aria-label="Group">
+                                <button onclick="fetch('/count-click/btn-in-group')">Confirm</button>
+                              </section>
+                            </div>
+                            """);
             case "/actions/delayed-result", "/actions/retry" ->
                     document(
                             "Delayed result",
