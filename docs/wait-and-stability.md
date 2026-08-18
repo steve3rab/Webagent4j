@@ -70,14 +70,17 @@ flakier for no safety benefit.
 
 `LocatorEngine` no longer owns a competing temporal coordinator. Its own `do`/`while` deadline,
 stability-timer, and sleep loop is gone; `WaitEngine.await(WaitBudget, WaitPolicy, IWaitProbe)` is
-now the one loop driving resolution. `LocatorEngine` keeps exactly the domain decisions:
-`searchOnce` is a single, immediate, non-looping DOM search that becomes the probe (`probeOnce`),
-candidate scoring and filtering are unchanged, and a `WaitSample.satisfied(candidates,
-stabilityKey)`'s `stabilityKey` is a structured, order-preserving `List<String>` of each
-candidate's deterministic identity - never accessible name, role, or any other diagnostic label.
-`LocatorResolutionWaiter` - the old primitive that parked the thread between polls - had no
-remaining callers once the loop moved into `WaitEngine` and was deleted outright rather than kept
-as an unused compatibility wrapper.
+now the one loop driving resolution, started against `waitEngine.clock()` - the same clock the
+engine polls and sleeps with, so an injected fake clock (used by every deterministic wait test)
+actually governs the budget's expiry too, instead of a separate `IMonotonicClock.systemClock()`
+silently timing the deadline against real wall-clock time while the rest of the wait ran on fake
+time. `LocatorEngine` keeps exactly the domain decisions: `searchOnce` is a single, immediate,
+non-looping DOM search that becomes the probe (`probeOnce`), candidate scoring and filtering are
+unchanged, and a `WaitSample.satisfied(candidates, stabilityKey)`'s `stabilityKey` is a structured,
+order-preserving `List<String>` of each candidate's deterministic identity - never accessible name,
+role, or any other diagnostic label. `LocatorResolutionWaiter` - the old primitive that parked the
+thread between polls - had no remaining callers once the loop moved into `WaitEngine` and was
+deleted outright rather than kept as an unused compatibility wrapper.
 
 For `locateSingle()` specifically, every individual poll's candidate list is checked for ambiguity,
 not only the final one: **ambiguity is a fail-safe condition, never a transiently-pending state**.
@@ -87,6 +90,25 @@ ambiguous on its own, and it never silently narrows to whichever candidate happe
 A genuine backend/runtime failure during any poll propagates the same way, unchanged and
 un-reinterpreted; `locate()`/`locateAll()`, which do not require uniqueness, do not perform this
 check, matching their pre-existing, unchanged selection semantics.
+
+`ILocatorEngine.locate()`/`locateSingle()`/`locateAll()` now come in two forms: a `LocatorContext`
+overload (a default method, for a caller that already has one fixed context to search) and an
+`ILiveLocatorContext` overload (`baseline()` for the stable, DOM-independent backend/config a wait
+needs up front, `resolve()` called fresh on every polling attempt). `LocatorEngine`'s probe calls
+`resolve()` once per attempt, not once for the whole wait, so a structured semantic scope this
+context depends on - see `PlaywrightScopeResolver` in `webagent4j-browser-playwright` - is
+re-evaluated against the current DOM throughout the wait, not only when it begins. A typed
+"not found" failure resolving the live context (the scope does not currently exist) is treated
+exactly like an absent target - `WaitSample.pending()`, retried on the next poll; an ambiguous or
+backend/runtime failure resolving it propagates immediately, unconditionally, regardless of
+`locate()` vs. `locateSingle()`: **context ambiguity is always a fail-safe condition**, not
+something only `locateSingle()`'s target-ambiguity check cares about. Each structured-scope
+container lookup this triggers is itself bounded to one immediate, non-waiting probe (a 1ns
+timeout, relying on the engine's own "always at least one immediate probe, even against an
+already-expired budget" guarantee) precisely so that resolving the scope chain inside one outer
+poll attempt never starts a second, nested full-timeout wait - the outer `WaitBudget` remains the
+only deadline governing the whole logical wait, however many scopes the chain has to re-resolve on
+each attempt.
 
 ### Verification (`webagent4j-verification`)
 
@@ -144,8 +166,12 @@ false: a backend call already in flight when the deadline passes can still take 
 Locator scoring, fuzzy matching, `tryFind()`, the typed locator-failure taxonomy, `dryRun()`
 semantics, `ActionExecutionMode`, `IActionPlan`'s single-use guard and ID correlation, the
 aggregate Playwright coverage gate, and the mixed-scope/explicit-scope-containment invariants from
-earlier work are all unchanged. Structured locator scopes are still resolved once per terminal
-operation, not re-resolved on every individual poll tick inside that operation's own stability or
-timeout wait - closing that narrower gap would require rebuilding `PlaywrightScopeResolver`'s
-nested context search as a genuinely non-waiting, single-attempt primitive first, to avoid nesting
-one poll loop inside another; it remains future work, not part of this migration.
+earlier work are all unchanged.
+
+A structured locator scope is now re-resolved fresh on every individual polling attempt of the
+target's own stability or timeout wait, not once per terminal operation as before - see
+`ILiveLocatorContext` above. What remains unchanged, and is not claimed here, is anything about the
+*ranking* or *matching* logic used to resolve that scope: the same accessible-name-then-visible-text
+fallback, the same `containingText(...)` ordering and hard-constraint semantics, and the same
+containment proof for an explicit element scope, all execute identically whether triggered once or
+many times over the course of a wait.

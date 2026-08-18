@@ -32,9 +32,36 @@ All notable changes to this project will be documented in this file. The format 
 - `WaitSample.pending(T)`, a pending sample carrying an informational last-known value - still
   retried exactly like `WaitSample.pending()`, but preserved in `WaitResult.value()` if the wait
   times out instead of being discarded.
+- `ILiveLocatorContext`, plus matching overloads of `ILocatorEngine.locate()`/`locateSingle()`/
+  `locateAll()`: `baseline()` supplies the stable backend/configuration a wait needs before it has
+  resolved anything, and `resolve()` is called fresh on every polling attempt instead of once
+  before the wait begins, so a structured semantic scope a live context depends on is re-evaluated
+  against the current DOM throughout a wait, not only when it starts. The existing `LocatorContext`
+  overloads are now default methods delegating to a fixed (never-changing) live context, so every
+  existing caller that already has one resolved context to search keeps working unchanged.
 
 ### Fixed
 
+- Fixed `LocatorEngine` starting its `WaitBudget` against a separate `IMonotonicClock.systemClock()`
+  instead of `waitEngine.clock()` - the same clock the rest of the wait polls and sleeps with. A
+  `LocatorEngine` built with an injected fake clock (every deterministic wait test) previously still
+  measured its deadline against real wall-clock time, so a wait that should time out instantly under
+  fake time would instead busy-loop until real time actually passed the configured timeout.
+- Fixed a structured semantic scope (`InteractionContext.containingText(...)`) being resolved only
+  once per terminal operation instead of on every individual polling attempt of that operation's own
+  wait: `PlaywrightLocator` now supplies an `ILiveLocatorContext` whose `resolve()` re-runs the whole
+  pending scope chain fresh on each poll, so a scope that becomes ambiguous, disappears, or is
+  replaced mid-wait is observed on the very next poll instead of only at the moment the wait started
+  or ended. Each structured-scope container lookup this triggers is itself bounded to one immediate,
+  non-waiting probe, so re-resolving the scope chain inside one outer poll attempt never starts a
+  second, nested full-timeout wait - the whole logical wait remains governed by the one outer
+  `WaitBudget`.
+- Fixed context ambiguity only being a fail-safe condition for the final target, not for a structured
+  scope the target depends on: a `containingText(...)` constraint that matches two regions on any
+  poll now fails immediately with `AmbiguousLocatorException`, unconditionally - including through
+  `locate()`/`locateAll()`, not only `locateSingle()` - and even when the target itself would still
+  be unique if the ambiguous context were ignored (a duplicate region with no matching target inside
+  it does not make the context safe).
 - Completed `LocatorEngine`'s migration onto the shared, deterministic `WaitEngine`: its own
   `do`/`while` deadline, stability-timer, and sleep loop is gone, replaced by
   `WaitEngine.await(WaitBudget, WaitPolicy, IWaitProbe)` driving a single, non-looping DOM search

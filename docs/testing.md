@@ -17,6 +17,32 @@ demonstrates a reusable pattern for these tests: results advance once per sleep 
 `WaitEngine` attempt boundary) rather than once per raw backend call, since one attempt can query
 several locator strategies internally.
 
+`LocatorEngineWaitIntegrationTest.aNeverSatisfiedWaitTimesOutByFakeTimeInsteadOfBusyLoopingOnRealWallClockTime`
+is a regression test for one specific, previously real bug: `LocatorEngine` starting its
+`WaitBudget` against a real system clock instead of `waitEngine.clock()`, the same fake clock the
+rest of the wait ran on. That mismatch would not make a fake-time test wrong so much as slow - the
+budget's real deadline would never see the fake clock's advances, so the engine would busy-loop
+until real wall-clock time itself happened to pass the configured timeout. The test turns this into
+a fast, deterministic failure by asserting the wait's real wall-clock duration stays under a second
+despite a nominal five-second timeout, rather than merely being suspicious of a slow test run.
+
+Dynamic-context wait coverage lives in two layers, on purpose. `LocatorEngineWaitIntegrationTest`
+exercises `LocatorEngine` itself on fake time, so it should not also exercise a second, independent
+temporal coordinator's timing - structured semantic scope resolution belongs to
+`webagent4j-browser-playwright`, and `PlaywrightScopeResolver`'s own unit tests
+(`PlaywrightScopeResolverTest`) already cover its fallback/ambiguity/backend-failure classification
+in isolation with a mocked `ILocatorEngine`. Proving the *combination* - a structured scope
+genuinely re-resolved fresh on every poll of a real, wall-clock-timed wait, against a real browser -
+needs a real DOM that changes mid-wait, which only an IT-level browser fixture can provide:
+`DynamicContextAmbiguityDuringWaitIT`, `DynamicContextDisappearanceDuringWaitIT`, and
+`DynamicContextReplacementDuringWaitIT` each start a `stableFor(...)` wait before a fixture page's
+`setTimeout` mutates the DOM partway through it (see `ActionTestApplication`'s
+`context-dynamic-ambiguous`/`-target-unique`/`-disappears`/`-replaced` routes), and assert on the
+resulting exception (or lack of one) plus independent server-side click counters - real wall-clock
+timing here is unavoidable and acceptable, bounded by short, generous, non-flaky durations (a
+150ms DOM mutation inside a 300ms stability window and an 800ms-2s overall timeout), consistent
+with every other Playwright-backed IT in this suite.
+
 ArchUnit checks package cycles, interface naming, and the core/Playwright boundary. JaCoCo writes
 module reports and an aggregate report under `webagent4j-integration-tests/target/site/jacoco-aggregate`.
 Source-bearing modules with direct tests must keep at least 70% line coverage, enforced by the parent

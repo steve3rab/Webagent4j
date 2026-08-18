@@ -61,11 +61,14 @@ of an `ActionResult`. Its sole implementation, `DefaultActionPlan`, is package-p
 only be obtained through `plan()`, never hand-built. `IActionPlan.execute()` never trusts that
 snapshot - it reruns the whole pipeline from scratch, so a stale plan can never act on a semantically
 different element, tolerate new ambiguity, or ignore a precondition that stopped holding. Structured
-locator scopes follow the same rule: a scope built with `InteractionContext.containingText(...)` is
-kept as a pending, backend-neutral definition and re-resolved fresh at every terminal operation
-(`reference().resolve()` included), never frozen into one DOM node when the fluent chain is built - so
-a context that becomes ambiguous, disappears, or is replaced by a semantically different region
-between reference creation and execution blocks the action instead of silently acting on stale state.
+locator scopes follow the same rule, one level deeper: a scope built with
+`InteractionContext.containingText(...)` is kept as a pending, backend-neutral definition and
+re-resolved fresh on every individual polling attempt of a terminal operation's own wait
+(`reference().resolve()` included), never frozen into one DOM node when the fluent chain is built and
+never resolved only once before that wait begins - so a context that becomes ambiguous, disappears,
+or is replaced by a semantically different region at any point between reference creation and
+execution - including mid-wait, not only before or after it - blocks the action instead of silently
+acting on stale state.
 
 Resolution retries are separated from execution. Non-idempotent backend execution occurs at most
 once, while stabilization and verification may safely poll read-only state. The Playwright adapter
