@@ -39,7 +39,19 @@ final class ActionExecutor {
 
     <R> ActionResult<R> execute(
             IActionContext context, ActionCommand<R> command, ActionExecutionConfig config) {
-        ActionId actionId = ActionId.create();
+        return execute(context, command, config, ActionId.create());
+    }
+
+    /**
+     * Executes the pipeline under an explicit correlation identifier, so a result produced through
+     * {@link ActionPlan#execute()} can carry the same {@link ActionId} as the {@link ActionPlan} it
+     * came from.
+     */
+    <R> ActionResult<R> execute(
+            IActionContext context,
+            ActionCommand<R> command,
+            ActionExecutionConfig config,
+            ActionId actionId) {
         Instant started = Instant.now();
         List<ActionEvent> events = new ArrayList<>();
         events.add(event(actionId, command, ActionStage.ACTION_STARTED, "started", "", started));
@@ -378,13 +390,17 @@ final class ActionExecutor {
      * never disagree about whether a target resolves or a precondition holds. The supplied {@code
      * executor} is invoked, unchanged, by {@link ActionPlan#execute()}; it is expected to
      * revalidate from scratch rather than trust this snapshot.
+     *
+     * <p>The caller supplies the {@link ActionId} so it can build {@code executor} to run the real
+     * pipeline under that same identifier: {@code ActionPlan.actionId()} and {@code
+     * ActionPlan.execute().actionId()} must be equal.
      */
     <R> ActionPlan<R> prepare(
             IActionContext context,
             ActionCommand<R> command,
             ActionExecutionConfig config,
+            ActionId actionId,
             Supplier<ActionResult<R>> executor) {
-        ActionId actionId = ActionId.create();
         List<VerificationType> expectedPostconditions = expectedPostconditionTypes(config);
         IElement target;
         try {

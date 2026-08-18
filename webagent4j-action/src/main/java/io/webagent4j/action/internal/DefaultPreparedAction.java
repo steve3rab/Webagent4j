@@ -1,5 +1,6 @@
 package io.webagent4j.action.internal;
 
+import io.webagent4j.action.ActionId;
 import io.webagent4j.action.ActionOptions;
 import io.webagent4j.action.ActionPlan;
 import io.webagent4j.action.ActionResult;
@@ -139,13 +140,23 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
 
     @Override
     public ActionPlan<R> plan() {
+        if (dryRun) {
+            throw new IllegalStateException(
+                    "dryRun() and plan() are mutually exclusive terminal modes: dryRun().execute()"
+                            + " validates and returns without a plan, while plan() produces an"
+                            + " inspectable ActionPlan whose execute() always performs the real"
+                            + " action; call one or the other, not both, on the same prepared"
+                            + " action");
+        }
         ActionExecutionConfig config = buildConfig();
+        ActionId actionId = ActionId.create();
         return new ActionExecutor()
                 .prepare(
                         context,
                         command,
                         config,
-                        () -> new ActionExecutor().execute(context, command, config));
+                        actionId,
+                        () -> new ActionExecutor().execute(context, command, config, actionId));
     }
 
     private ActionExecutionConfig buildConfig() {

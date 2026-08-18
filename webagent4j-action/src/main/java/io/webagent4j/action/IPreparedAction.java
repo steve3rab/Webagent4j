@@ -52,7 +52,18 @@ public interface IPreparedAction<R> {
      * <p>Unlike {@link #execute()} and {@link #dryRun()}, calling {@code plan()} never advances the
      * action: it only produces a snapshot. The plan can later be inspected or executed with {@link
      * ActionPlan#execute()}, which always revalidates resolution and preconditions before any
-     * backend action, so a stale plan can never cause the wrong element to be acted on.
+     * backend action, so a stale plan can never cause the wrong element to be acted on; that
+     * revalidated execution shares the plan's {@link ActionPlan#actionId()}, so a result can always
+     * be correlated back to the plan that produced it.
+     *
+     * <p>{@code dryRun()} and {@code plan()} are mutually exclusive terminal modes on the same
+     * prepared action: {@code dryRun().execute()} validates and returns an {@link ActionResult}
+     * without ever producing a plan, while {@code plan()} always produces a plan whose {@code
+     * execute()} performs the real action regardless of any earlier {@code dryRun()} call. Calling
+     * {@code plan()} after {@code dryRun()} on the same prepared action throws {@link
+     * IllegalStateException} rather than silently picking one interpretation.
+     *
+     * @throws IllegalStateException if {@link #dryRun()} was already called on this prepared action
      */
     ActionPlan<R> plan();
 }

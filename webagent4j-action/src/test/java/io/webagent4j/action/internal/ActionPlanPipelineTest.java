@@ -18,6 +18,7 @@ import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.locator.api.ElementRole;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -100,6 +101,36 @@ class ActionPlanPipelineTest {
 
         assertThat(result.success()).isTrue();
         assertThat(result.executed()).isTrue();
+        verify(backend, times(1)).click(target);
+    }
+
+    @Test
+    void aBlockedPlanCanSucceedLaterIfTheBlockingConditionClears() {
+        // WebAgent4J's revalidation model is dynamic: a plan is a snapshot of one moment, not a
+        // promise about the future. A BLOCKED plan is therefore allowed to succeed once its target
+        // actually appears, exactly like a READY plan is allowed to fail once its target disappears
+        // - execute() always trusts current state, never the plan()-time snapshot, in either
+        // direction.
+        IActionBackend backend = mock(IActionBackend.class);
+        AtomicBoolean appeared = new AtomicBoolean(false);
+        IElement target = element(true);
+        io.webagent4j.locator.api.IElementReference<IElement> reference =
+                () -> {
+                    if (!appeared.get()) {
+                        throw new LocatorNotFoundException("missing");
+                    }
+                    return target;
+                };
+
+        ActionPlan<Void> plan = new DefaultActionBuilder(context(backend)).click(reference).plan();
+        assertThat(plan.status()).isEqualTo(ActionPlanStatus.BLOCKED);
+        assertThat(plan.failure().orElseThrow().type())
+                .isEqualTo(ActionFailureType.TARGET_NOT_FOUND);
+
+        appeared.set(true);
+        ActionResult<Void> result = plan.execute();
+
+        assertThat(result.success()).isTrue();
         verify(backend, times(1)).click(target);
     }
 

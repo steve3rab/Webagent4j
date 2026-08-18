@@ -5,6 +5,7 @@ import io.webagent4j.verification.VerificationType;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 /**
@@ -22,8 +23,16 @@ import java.util.function.Supplier;
  * <p>A plan is a snapshot, not a guarantee. Page state can change between {@code plan()} and {@link
  * #execute()}, so {@code execute()} never trusts the snapshot: it revalidates target resolution,
  * ambiguity, and preconditions from scratch before any backend side effect. This means a plan can
- * never cause the wrong element to be acted on, and the backend action still executes at most once
- * overall, whether an action is run directly or through {@code plan().execute()}.
+ * never cause the wrong element to be acted on.
+ *
+ * <p>The planning data captured above is immutable, but a plan's execution lifecycle is not: an
+ * {@code ActionPlan} may be executed at most once. This matters because a plan can represent a
+ * non-idempotent operation (submit an order, delete an account, pay, confirm a transfer), and a
+ * caller or future agent accidentally calling {@code execute()} twice must never be able to produce
+ * two side effects. The single-use guard is thread-safe: only one concurrent caller of {@link
+ * #execute()} ever reaches the backend, and every other call - concurrent or sequential, before or
+ * after the first one returns or throws - fails with {@link IllegalStateException} without invoking
+ * the backend again. The first call counts as the one attempt even if it fails.
  *
  * @param <R> the result type produced by {@link #execute()}
  */
@@ -40,6 +49,7 @@ public final class ActionPlan<R> {
     private final Optional<ActionFailure> failure;
     private final ActionDiagnostics diagnostics;
     private final Supplier<ActionResult<R>> executor;
+    private final AtomicBoolean executionStarted = new AtomicBoolean();
 
     /** Builds an immutable plan snapshot; obtain one through {@link IPreparedAction#plan()}. */
     @SuppressWarnings("checkstyle:ParameterNumber")
@@ -76,7 +86,12 @@ public final class ActionPlan<R> {
         }
     }
 
-    /** Returns the correlation identifier for this plan and, if executed, its resulting action. */
+    /**
+     * Returns the correlation identifier for this plan. If {@link #execute()} is called, the
+     * returned {@code ActionResult.actionId()} is always equal to this value, so a result can be
+     * traced back to the plan that produced it even though {@code execute()} revalidates everything
+     * from scratch.
+     */
     public ActionId actionId() {
         return actionId;
     }
@@ -142,10 +157,19 @@ public final class ActionPlan<R> {
      * detection, and preconditions are all revalidated against current page state before any
      * backend side effect. A plan that was {@link ActionPlanStatus#READY} when built can still fail
      * here if page state changed since; a plan that was {@link ActionPlanStatus#BLOCKED} can still
-     * succeed if the blocking condition cleared. Either way the backend action executes at most
-     * once.
+     * succeed if the blocking condition cleared.
+     *
+     * <p>This may be called at most once per {@code ActionPlan} instance, and the backend executes
+     * at most once as a result. A second call - even after the first one failed - throws {@link
+     * IllegalStateException} instead of invoking the backend again; build a new plan with {@code
+     * plan()} to try again.
+     *
+     * @throws IllegalStateException if this plan has already been executed
      */
     public ActionResult<R> execute() {
+        if (!executionStarted.compareAndSet(false, true)) {
+            throw new IllegalStateException("ActionPlan has already been executed");
+        }
         return executor.get();
     }
 }
