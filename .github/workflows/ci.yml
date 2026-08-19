@@ -25,7 +25,7 @@ jobs:
           ./mvnw --batch-mode --no-transfer-progress -Pci-playwright-deps clean verify
       - name: Verify core robustness subset
         run: >-
-          ./mvnw --batch-mode --no-transfer-progress -Probustness,ci-playwright-deps
+          ./mvnw --batch-mode --no-transfer-progress -Probustness
           -pl webagent4j-robustness-tests -am -Dscenario=CLEAN-001
           -Dit.test=RobustnessBenchmarkIT
           -Dfailsafe.failIfNoSpecifiedTests=false verify

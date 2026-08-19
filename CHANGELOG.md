@@ -52,6 +52,22 @@ All notable changes to this project will be documented in this file. The format 
 - Enabled the previously `if: false`-disabled `.github/workflows/dependency-review.yml` check, so it
   performs a real dependency review on pull requests instead of reporting a misleading, no-op green
   check.
+- Added `PlaywrightCoverageGateTest.resolvesAnExplicitAbsolutePathIndependentlyOfTheProcessWorkingDirectory`,
+  proving the property the `coverage-check-playwright-aggregate` fix above actually depends on: an
+  explicit path argument is resolved as-is, never relative to the process's current working
+  directory.
+- Removed a redundant `ci-playwright-deps` activation from `.github/workflows/ci.yml`'s second
+  `mvnw` invocation ("Verify core robustness subset"): both steps run on the same job/runner, and
+  the first step's `webagent4j-integration-tests`-scoped `install-deps chromium` already installs
+  the OS packages the second step needs, since apt state persists for the rest of the job - the
+  second activation just re-ran an already-satisfied `apt-get install`.
+- Documented, in `docs/testing.md`, why CI's "Playwright Host validation warning" (~35 missing
+  libraries, e.g. `libgtk-4.so.1`, the `libgst*`/`libflite*` sets) is expected and benign for this
+  Chromium-only suite rather than something to silence: it traces (via the Playwright driver's own
+  bundled dependency tables) entirely to WebKit's dependency group, and originates from a
+  driver-internal, zero-argument auto-install check the Java driver runs on first browser launch -
+  separate from, and in addition to, this project's own Chromium-scoped `install`/`install-deps`
+  steps, which are confirmed correctly scoped and not the source of the warning.
 
 ### Added
 

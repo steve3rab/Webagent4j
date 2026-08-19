@@ -94,7 +94,51 @@ by default) whose own `exec-maven-plugin` execution runs
 installer, not a hand-maintained apt package list. `.github/workflows/ci.yml` activates this profile
 explicitly (`-Pci-playwright-deps`); a normal local `./mvnw clean verify` on any OS never activates
 it and never needs `sudo`. `.github/workflows/nightly.yml`'s Linux legs do the same; its macOS and
-Windows legs do not, since `install-deps` is Linux-only.
+Windows legs do not, since `install-deps` is Linux-only. `ci.yml`'s "verify" job runs both its
+`mvnw` invocations on the same runner instance, so installed apt packages persist from the first
+step to the second: only the first step (`Verify standard reactor`) activates the profile, since it
+already installs everything the second step (`Verify core robustness subset`, a separate `-pl
+webagent4j-robustness-tests` Maven invocation on the same runner) needs - re-activating it there
+would just re-run the identical, already-satisfied `apt-get install`.
+
+### A benign, expected "Playwright Host validation warning" for WebKit
+
+CI logs a `Playwright Host validation warning` naming ~35 missing shared libraries
+(`libgtk-4.so.1`, `libgraphene-1.0.so.0`, the `libgst*` GStreamer set, ~13 `libflite*` speech
+libraries, `libavif.so.16`, `libmanette-0.2.so.0`, `libGLESv2.so.2`, `libx264.so`, and others) the
+first time a test launches a browser (`SensitiveValueObservationIT`), even though `install-deps
+chromium` ran moments earlier and every one of the 79 integration tests passes. This is expected,
+not a defect, and is not silenced here because the alternative - installing those packages - would
+be pure waste for a Chromium-only test suite:
+
+- Playwright's own driver bundle (`coreBundle.js`) keeps a separate, much shorter list of Linux
+  packages per browser engine (verified by extracting `driver-bundle-1.60.0.jar` and reading its
+  `ubuntu24.04-x64` dependency table directly): Chromium's list has 20 entries and does not contain
+  any of the libraries this warning names. Every single one of them instead maps, through the same
+  file's own `lib2package` table, to a package that appears only in the **WebKit** dependency list
+  (e.g. `libgtk-4.so.1` -> `libgtk-4-1`, `libflite_cmulex.so.1` -> `libflite1`, `libGLESv2.so.2` and
+  `libx264.so` are WebKit's own explicit `dlopen` dependencies). This project never launches WebKit.
+- The warning's own stack trace (`installBrowsers` -> `Registry.validateHostRequirementsForExecutablesIfNeeded`
+  -> `Registry._validateHostRequirements` -> `validateDependenciesLinux`, at `coreBundle.js:64433`)
+  shows it comes from the CLI `install` command's own validation step, called internally by the
+  Playwright Java driver the first time a browser launches in the JVM - separately from, and in
+  addition to, this project's own `install chromium` (`pre-integration-test`, always active) and
+  `install-deps chromium` (`ci-playwright-deps` profile) executions. Both of those two explicit,
+  project-controlled invocations correctly resolve to Chromium only: `coreBundle.js`'s own
+  `resolveBrowsers(["chromium"], ...)` returns only `chromium`, `chromium-headless-shell`, and
+  `ffmpeg`, and never touches WebKit's dependency group - confirmed by reading that function
+  directly, not inferred. The driver's internal auto-check that produces this warning instead calls
+  `resolveBrowsers` with **no** browser name filter, which resolves to *every* download-by-default
+  browser (Chromium, Firefox, WebKit, ffmpeg) regardless of which one the test actually launches.
+- The warning is caught and only logged (`console.error`, with `e.name` relabeled to "Playwright
+  Host validation warning"), never re-thrown, which is why it does not fail the build.
+- Because it is WebKit-only and this suite never launches WebKit, the correct fix is to leave it
+  documented rather than to install ~35 additional packages (GStreamer, Flite, GTK4, etc.) via
+  `sudo apt` for a browser engine nothing here exercises - that would be pure unrequested surface
+  area, not a fix for anything actually broken. If a future change adds real WebKit-driven tests,
+  extend `ci-playwright-deps`'s `install-deps` invocation to include `webkit` (Playwright's own
+  supported mechanism already handles this - no hand-maintained package list needed) rather than
+  suppressing the warning.
 
 ArchUnit checks package cycles, interface naming, and the core/Playwright boundary. JaCoCo writes
 module reports and an aggregate report under `webagent4j-integration-tests/target/site/jacoco-aggregate`.
