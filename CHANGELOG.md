@@ -31,6 +31,16 @@ All notable changes to this project will be documented in this file. The format 
     `replaceProductAAvailableRegion()`/`addDuplicateConfirmButton()`/
     `replaceConfirmButtonWithFreshNode()`/`replaceConfirmButtonWithUnrelatedDeleteButton()` fixture
     functions in `ActionTestApplication`, invoked explicitly instead of raced against a timer).
+- Fixed `PlaywrightCoverageGate`'s aggregate-coverage `exec-maven-plugin` execution
+  (`coverage-check-playwright-aggregate`) failing with "JaCoCo aggregate CSV not found" on every
+  real run - this had never been reached before this mission's other CI fixes, since the Failsafe
+  stage always failed first. Root cause: `exec-maven-plugin`'s `java` goal runs its main class
+  in-process, in the same JVM as the whole reactor build, with no working-directory parameter to
+  set - `PlaywrightCoverageGate`'s relative default path resolved against the JVM's own `user.dir`
+  (the repository root `mvn` was launched from), not this module's own `target/` directory. Fixed
+  by passing the CSV path explicitly as an absolute `${project.build.directory}/...` argument;
+  `PlaywrightCoverageGate.main(String[])` already supported an explicit path argument, so no Java
+  code changed.
 - Fixed GitHub Actions CI ("CI / Java 21 / Linux") not installing the Linux OS packages Chromium
   needs to launch (only the browser binary itself was installed), causing "missing dependencies to
   run browsers" failures. Added an opt-in `ci-playwright-deps` Maven profile to

@@ -91,6 +91,14 @@
               the CSV this module's own "report-aggregate" execution already produces and applies the
               same 70% LINE threshold to the real combined number. Declared after the jacoco-plugin
               block so it runs after report-aggregate within the shared "verify" phase.
+
+              The CSV path is passed explicitly as an absolute path (${project.build.directory}/...)
+              rather than left to PlaywrightCoverageGate's relative-path default: exec-maven-plugin's
+              "java" goal runs the main class in-process, in the same JVM as the reactor build, and
+              never forks a new process for it - there is no working-directory parameter for this
+              goal to set, so a relative Path resolves against the JVM's own user.dir (the directory
+              `mvn` itself was launched from, i.e. the repository root in a multi-module reactor
+              build), not this module's basedir. An absolute argument sidesteps that entirely.
             -->
             <id>coverage-check-playwright-aggregate</id>
             <goals>
@@ -99,6 +107,9 @@
             <phase>verify</phase>
             <configuration>
               <mainClass>io.webagent4j.integration.coverage.PlaywrightCoverageGate</mainClass>
+              <arguments>
+                <argument>${project.build.directory}/site/jacoco-aggregate/jacoco.csv</argument>
+              </arguments>
             </configuration>
           </execution>
         </executions>
