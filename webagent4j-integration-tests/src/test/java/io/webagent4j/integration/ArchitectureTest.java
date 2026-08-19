@@ -59,6 +59,20 @@ class ArchitectureTest {
     }
 
     @Test
+    void framePublicApiNeverLeaksNativePlaywrightTypes() {
+        noClasses()
+                .that()
+                .haveSimpleNameStartingWith("IFrame")
+                .or()
+                .haveSimpleName("FrameDefinition")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
     void semanticObservationRemainsIndependentFromPlaywright() {
         noClasses()
                 .that()

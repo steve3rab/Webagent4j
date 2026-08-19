@@ -6,6 +6,37 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Frame / iframe support)
+
+- `IPage#frame()` / `IFrame#frame()`, returning a new `IFrameLocator`: a backend-neutral, immutable
+  frame query with `withId`/`named`/`withTitle`/`withUrl`/`timeout`/`stableFor` criteria and
+  `single()`/`first()`/`all()`/`tryFind()` terminal operations - the same 0/1/N -> not-found/success/
+  ambiguous classification, bounded-wait semantics, and no-DOM-order-tie-breaker guarantees element
+  locators already have. A frame is modeled as a document boundary, never a descendant DOM element;
+  no native Playwright `Frame`, `FrameLocator`, or `Page` type is exposed through the public API.
+- `IFrame`: a re-resolvable live frame handle exposing `find()`, `action()`, `observe()`/
+  `observe(ObservationOptions)` (scoped only to that frame's own document), `url()`, `title()`,
+  `navigate(String)`, and `frame()` for traversal nested strictly inside that frame's own document.
+  `IFrame implements IActionContext, IObservationSource`, so `dryRun()`, `plan()`/`IActionPlan`,
+  postcondition verification, and `tryFind()` all work identically inside a frame as they already do
+  at the page level, including full revalidation of the frame boundary itself (not just the target
+  inside it) before `IActionPlan.execute()` touches the backend.
+- `FrameDefinition`, an immutable record mirroring `LocatorDefinition`'s copy-on-write pattern for
+  frame criteria.
+- Nested frame traversal, cross-origin iframe support (without weakening browser security), and
+  transparent following of a removed-and-replaced `<iframe>` matching the same semantic identity.
+- Extended `IPendingScope` (`webagent4j-browser-playwright`) with a `Frame` case, reusing the
+  existing pending-scope/live-resolution architecture rather than a parallel frame engine; a
+  prerequisite frame hop inside a longer chain stays bounded to a one-shot probe, never a nested
+  full-timeout wait.
+- Widened `IObservationEngine`/`ObservationEngine` from `IPage` to the pre-existing
+  `IObservationSource` supertype, letting `IFrame.observe()` reuse the same observation engine
+  without duplicating it; existing `IPage`-based callers are unaffected.
+- 24 new Playwright integration tests (`FrameResolutionIT`, `FrameAmbiguityIT`, `FrameNestedIT`,
+  `FrameLifecycleIT`, `FrameActionPlanIT`, `FrameDryRunAndTryFindIT`, `FrameNavigationIT`,
+  `FrameCrossOriginIT`) and 10 new deterministic robustness scenarios (`FrameRobustnessIT`,
+  FRAME-001..FRAME-010).
+
 ### Fixed (CI stabilization)
 
 - Fixed three intermittent/deterministic integration-test failures exposed by CI (all traced to test

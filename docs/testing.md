@@ -43,6 +43,40 @@ timing here is unavoidable and acceptable, bounded by short, generous, non-flaky
 150ms DOM mutation inside a 300ms stability window and an 800ms-2s overall timeout), consistent
 with every other Playwright-backed IT in this suite.
 
+## Frame/iframe traversal coverage
+
+Frame support has its own fixture, `FrameTestApplication`, and its own family of ITs
+(`FrameResolutionIT`, `FrameAmbiguityIT`, `FrameNestedIT`, `FrameLifecycleIT`, `FrameActionPlanIT`,
+`FrameDryRunAndTryFindIT`, `FrameNavigationIT`, `FrameCrossOriginIT`), separate from
+`ActionTestApplication`'s element-only routes: a frame is a document boundary, and several scenarios
+(ambiguity, replacement, detachment) need more than one live document open at once, which the
+existing fixture's single-document model does not represent. `FrameCrossOriginIT` starts a *second*
+independent `FrameTestApplication` on its own loopback port and embeds it as a cross-origin iframe -
+still no public internet dependency, and Playwright's default cross-origin isolation stays fully in
+effect.
+
+Frame ambiguity introduced while a wait is actively polling (`FrameAmbiguityIT`) needed a new
+`IFrameLocator#stableFor(Duration)` - the same stability guarantee `ILocator#stableFor(Duration)`
+already gives element locators, applied to the frame boundary itself - since, unlike a structured
+element scope, a uniquely-resolving frame criterion has nothing forcing its wait to keep polling
+through a later-introduced duplicate otherwise. A frame that disappears while a target inside it is
+being waited for does not need this: the frame's own pending-scope hop is re-resolved fresh on every
+poll of the *element*-level wait already, so its removal surfaces as a typed not-found the moment the
+next poll re-resolves the chain - no separate frame-level wait or stability requirement needed for
+that case.
+
+Ten additional deterministic, local-only scenarios (FRAME-001..FRAME-010) live in
+`webagent4j-robustness-tests`' `FrameRobustnessIT`, adjacent to (not folded into) the fixed
+hundred-scenario `RobustnessCorpus`: that corpus's `RobustnessScenario` model and its
+`scenarios.size() != 100` invariant are element-only and were never designed for a document-boundary
+concept, matching how `WebAgentCoreRobustnessIT`, `SemanticConsistencyIT`, and the other robustness
+dimensions already live as their own sibling scenario sets rather than inside the corpus. It covers
+duplicate-name ambiguity, wrong-frame protection with pixel-identical controls in two different
+frames, a stable `id` criterion resolving correctly amid name/title decoys, a decoy whose title
+mimics another frame's `name` criterion (and vice versa) without ever cross-satisfying it, nested
+frames, absence (of the frame itself and of a target inside an existing one), delayed insertion, and
+same-identity replacement.
+
 ## Deterministic fixture mutations, not sleeps, for T0/T1 tests
 
 A recurring pattern in this suite is: assert state at T0, mutate the fixture page, assert state at

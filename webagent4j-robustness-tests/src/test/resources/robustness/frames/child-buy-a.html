@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head><title>Product A</title></head>
+  <body><main><p id="status">Ready</p>
+    <button data-target="frame-004-product-a">Buy</button>
+    <script>
+      document.querySelectorAll('button[data-target]').forEach(button => button.addEventListener('click', async () => {
+        const t = button.dataset.target;
+        await fetch('/track?target=' + encodeURIComponent(t), {method: 'POST'});
+        document.getElementById('status').textContent = 'Executed ' + t;
+      }));
+    </script>
+  </main></body>
+</html>

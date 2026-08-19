@@ -5,8 +5,17 @@ behavior depends on machine-readable browser semantics and current backend capab
 
 ## Document boundaries
 
-- Page and element scopes are supported. Frame scope exists in the model, but there is no public
-  iframe traversal terminal operation yet.
+- Page, element, and frame scopes are all supported through the public API: `IPage#frame()` /
+  `IFrame#frame()` return an `IFrameLocator` with the same `single()`/`first()`/`all()`/`tryFind()`
+  terminal operations, 0/1/N classification, and bounded-wait semantics element locators already
+  have. Frame resolution is backend-neutral - no native Playwright `Frame`, `FrameLocator`, or `Page`
+  type is exposed - and cross-origin iframes work the same as same-origin ones, without weakening
+  browser security. See [locators.md](locators.md#frames) for the full contract.
+- Frame criteria are limited to `id`, `name`, `title`, and URL (exact/case-insensitive/contains/
+  starts-with/ends-with/regex); there is no CSS/XPath frame selector and no fuzzy frame-name
+  matching, mirroring the same deliberate absence of a "huge selector DSL" the element locator API
+  already avoids. Only exact and case-insensitive-exact criteria are supported for `id`/`name`/
+  `title` themselves.
 - Playwright semantic selectors can traverse supported open shadow roots. Closed shadow roots are not
   inspectable, and explicit XPath has Playwright's usual shadow-DOM limitations.
 - Native and correctly authored ARIA controls work best. Custom controls require a valid role,

@@ -1,6 +1,5 @@
 package io.webagent4j.observation;
 
-import io.webagent4j.browser.IPage;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.observation.internal.ContentObserver;
 import io.webagent4j.observation.internal.DialogObserver;
@@ -15,6 +14,7 @@ import io.webagent4j.observation.internal.ObservedElements;
 import io.webagent4j.observation.internal.PageMetadataObserver;
 import io.webagent4j.observation.internal.SemanticTreeBuilder;
 import io.webagent4j.observation.internal.TableObserver;
+import io.webagent4j.observation.spi.IObservationSource;
 import io.webagent4j.observation.spi.PageSnapshot;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -91,13 +91,13 @@ public final class ObservationEngine implements IObservationEngine {
     }
 
     @Override
-    public Observation observe(IPage page) {
-        return observe(page, ObservationOptions.defaults());
+    public Observation observe(IObservationSource source) {
+        return observe(source, ObservationOptions.defaults());
     }
 
     @Override
-    public Observation observe(IPage page, ObservationOptions options) {
-        Objects.requireNonNull(page, "page");
+    public Observation observe(IObservationSource source, ObservationOptions options) {
+        Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         ensureNotInterrupted();
         long startedNanos = System.nanoTime();
@@ -110,7 +110,7 @@ public final class ObservationEngine implements IObservationEngine {
                 options.budget().maxElements());
         PageSnapshot snapshot;
         try {
-            snapshot = page.captureObservation(options);
+            snapshot = source.captureObservation(options);
         } catch (RuntimeException failure) {
             ObservationBackendException wrapped =
                     new ObservationBackendException("Observation backend capture failed", failure);

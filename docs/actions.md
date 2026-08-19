@@ -209,3 +209,36 @@ plan whose `execute()` performs the real action. Calling `plan()` after `dryRun(
 action throws `IllegalStateException` rather than silently picking one interpretation.
 
 See [Verification](verification.md) for the built-in conditions and composition rules.
+
+## Frames
+
+`IFrame` implements the same `action()` entry point `IPage` does, so every action described above -
+including `dryRun()`, `plan()`, and postcondition verification - works identically inside a resolved
+frame:
+
+```java
+IFrame checkout = page.frame().named("checkout").single();
+checkout.action()
+        .click(checkout.find().button().named("Pay").reference())
+        .expect(Verifications.textVisible("Payment complete"))
+        .execute()
+        .throwIfFailed();
+```
+
+`plan()`'s revalidation guarantee extends to the frame boundary itself, not only the target inside
+it: `IActionPlan.execute()` re-resolves both the frame's own criterion and the element inside it
+fresh against live state before touching the backend. Concretely:
+
+- If the frame is removed before `execute()` runs, it fails `TARGET_NOT_FOUND` and the backend is
+  never invoked.
+- If the frame is removed and replaced by a new `<iframe>` matching the same semantic criterion,
+  `execute()` re-resolves the target inside the *new* document and executes against it - never a
+  stale reference to the old one.
+- If a second frame matching the same criterion appears before `execute()` runs, it fails
+  `TARGET_AMBIGUOUS`, exactly like target or context ambiguity does.
+
+`tryFind()` behaves the same way inside a frame as it does for elements: `page.frame().named(...).
+tryFind()` and `frame.find()...tryFind()` both return `Optional.empty()` only for a genuine typed
+not-found outcome - whether that is the frame itself or a target inside it - and still raise the
+normal exception for ambiguity or a backend failure. See [Frames](locators.md#frames) for frame
+resolution semantics.

@@ -48,14 +48,27 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             """;
 
-    private final Page page;
+    private final Locator documentRoot;
     private final ILocatorEngine engine;
-    private final LocatorContext pageContext;
+    private final LocatorContext rootContext;
 
+    /** Creates a backend rooted at the top-level page document. */
     PlaywrightLocatorBackend(Page page, ILocatorEngine engine, LocatorConfig config) {
-        this.page = page;
+        this(page.locator("html"), engine, config, LocatorScope.page());
+    }
+
+    /**
+     * Creates a backend rooted at a frame's own document instead of the top-level page: {@code
+     * documentRoot} is a lazily-resolving {@link Locator} (for example {@code
+     * frameLocator.locator("html")}) so every query issued through this backend re-resolves the
+     * frame's current document fresh on each real Playwright call, never reusing a handle captured
+     * against a document that has since been replaced or navigated away from.
+     */
+    PlaywrightLocatorBackend(
+            Locator documentRoot, ILocatorEngine engine, LocatorConfig config, LocatorScope scope) {
+        this.documentRoot = documentRoot;
         this.engine = engine;
-        this.pageContext = LocatorContext.page(this, config);
+        this.rootContext = new LocatorContext(this, scope, config);
     }
 
     @Override
@@ -82,10 +95,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             LocatorConfig config,
             Duration timeout,
             int candidateLimit) {
-        Locator root =
-                scope.root()
-                        .map(PlaywrightLocatorBackend::unwrap)
-                        .orElseGet(() -> page.locator("html"));
+        Locator root = scope.root().map(PlaywrightLocatorBackend::unwrap).orElse(documentRoot);
         Locator resolved = resolve(root, query, config);
         int discoveredCount = resolved.count();
         int count = Math.min(discoveredCount, candidateLimit);
@@ -114,11 +124,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     IFind<IElement> findOnPage() {
-        return new PlaywrightFind(engine, pageContext);
+        return new PlaywrightFind(engine, rootContext);
     }
 
     IFind<IElement> findOnPage(LocatorConfig config) {
-        return new PlaywrightFind(engine, LocatorContext.page(this, config));
+        return new PlaywrightFind(engine, new LocatorContext(this, rootContext.scope(), config));
     }
 
     IFind<IElement> findWithin(IElement element, LocatorScope parentScope, LocatorConfig config) {
@@ -127,7 +137,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     LocatorContext context() {
-        return pageContext;
+        return rootContext;
     }
 
     private Locator resolve(Locator root, LocatorBackendQuery query, LocatorConfig config) {
@@ -222,7 +232,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 || text.type() == TextMatchType.CASE_INSENSITIVE_EXACT;
     }
 
-    private static String attributeSelector(String name, String value) {
+    static String attributeSelector(String name, String value) {
         String safeName = name.replaceAll("[^A-Za-z0-9_:-]", "");
         if (safeName.isEmpty()) {
             throw new LocatorException("Attribute name is not CSS-safe: " + name);
@@ -234,7 +244,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 + "\"]";
     }
 
-    private static Locator unwrap(IElement element) {
+    static Locator unwrap(IElement element) {
         if (element instanceof PlaywrightElement playwrightElement) {
             return playwrightElement.locator();
         }

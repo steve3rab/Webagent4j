@@ -5,8 +5,8 @@ import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionBuilder;
 import io.webagent4j.action.internal.DefaultActionBuilder;
 import io.webagent4j.browser.BrowserOptions;
+import io.webagent4j.browser.IFrameLocator;
 import io.webagent4j.browser.IPage;
-import io.webagent4j.common.BrowserException;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorConfig;
@@ -19,16 +19,11 @@ import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationEngine;
 import io.webagent4j.observation.ObservationOptions;
 import io.webagent4j.observation.spi.PageSnapshot;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.Locale;
+import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 /** Internal Playwright page adapter. */
 final class PlaywrightPage implements IPage {
-
-    private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
 
     private final Page page;
     private final BrowserOptions options;
@@ -69,7 +64,7 @@ final class PlaywrightPage implements IPage {
 
     @Override
     public void navigate(String url) {
-        validateUrl(url);
+        PlaywrightUrlValidator.requireAbsoluteHttp(url);
         page.navigate(
                 url,
                 new Page.NavigateOptions()
@@ -166,18 +161,14 @@ final class PlaywrightPage implements IPage {
         }
     }
 
-    private static void validateUrl(String url) {
-        if (url == null || url.isBlank()) {
-            throw new IllegalArgumentException("url cannot be blank");
-        }
-        try {
-            URI uri = new URI(url);
-            if (!uri.isAbsolute()
-                    || !ALLOWED_SCHEMES.contains(uri.getScheme().toLowerCase(Locale.ROOT))) {
-                throw new IllegalArgumentException("only absolute HTTP(S) URLs are supported");
-            }
-        } catch (URISyntaxException exception) {
-            throw new BrowserException("Invalid navigation URL: " + url, exception);
-        }
+    @Override
+    public IFrameLocator frame() {
+        return new PlaywrightFrameLocator(
+                locatorEngine,
+                locatorBackend.context(),
+                List.of(),
+                locatorBackend.context().config(),
+                options,
+                actionBackend);
     }
 }

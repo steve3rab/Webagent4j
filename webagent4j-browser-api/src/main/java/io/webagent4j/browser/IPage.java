@@ -77,6 +77,15 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
     /** Starts a single action plan with optional postconditions. */
     IActionBuilder action();
 
+    /**
+     * Starts a frame query scoped to this page's own top-level document.
+     *
+     * <p>A frame is a separate document/browsing context, never a plain descendant DOM element: see
+     * {@link IFrame} for the full contract, including re-resolution, ambiguity, detachment, and
+     * replacement semantics.
+     */
+    IFrameLocator frame();
+
     /** Closes this page while keeping its owning browser open. */
     @Override
     void close();

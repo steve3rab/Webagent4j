@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head><title>Frame robustness scenarios</title></head>
+  <body><main>
+    <!-- FRAME-001: simple unique frame -->
+    <iframe id="checkout-simple" name="checkout-simple" src="/fixture/frames/child-checkout.html"></iframe>
+
+    <!-- FRAME-002: stable id criterion amid misleadingly named/titled decoys -->
+    <iframe id="dashboard-stable" name="unrelated-name" title="Unrelated title" src="/fixture/frames/child-stable.html"></iframe>
+    <iframe name="dashboard-decoy-name" title="Dashboard decoy title" src="/fixture/frames/child-decoy.html"></iframe>
+
+    <!-- FRAME-003: two frames sharing the same name - must be ambiguous -->
+    <iframe name="payment-dup" src="/fixture/frames/child-empty.html"></iframe>
+    <iframe name="payment-dup" src="/fixture/frames/child-empty.html"></iframe>
+
+    <!-- FRAME-004: identical-looking Buy buttons in two frames - wrong-frame protection -->
+    <iframe name="product-a-frame" src="/fixture/frames/child-buy-a.html"></iframe>
+    <iframe name="product-b-frame" src="/fixture/frames/child-buy-b.html"></iframe>
+
+    <!-- FRAME-005: nested frames -->
+    <iframe name="outer-frame" src="/fixture/frames/child-nested-outer.html"></iframe>
+
+    <!-- FRAME-006: frame present, target absent inside -->
+    <iframe name="empty-target-frame" src="/fixture/frames/child-empty.html"></iframe>
+
+    <!-- FRAME-007: intentionally no frame named "totally-missing-frame" exists on this page -->
+
+    <!-- FRAME-010: misleading name/title combination - name and title must never cross-satisfy each other's criterion -->
+    <iframe name="billing" title="Account overview" src="/fixture/frames/child-billing.html"></iframe>
+    <iframe name="account-decoy" title="billing" src="/fixture/frames/child-account-decoy.html"></iframe>
+  </main></body>
+</html>
