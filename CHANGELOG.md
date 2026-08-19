@@ -51,9 +51,24 @@ All notable changes to this project will be documented in this file. The format 
   reuses the existing `webagent4j-wait` `WaitEngine`/`WaitBudget`/`WaitPolicy` primitives (one more
   caller of the shared wait architecture, not a second resolution engine), preserves the existing
   one-shot-versus-real-timeout split for a prerequisite frame hop, keeps bounded waits, `stableFor`,
-  live re-resolution, nested frames, and typed classification exactly as before, and tolerates a
-  candidate whose content document has become momentarily unavailable mid-poll (excluded from that
-  poll rather than converting a real backend error into a false success).
+  live re-resolution, nested frames, and typed classification exactly as before.
+- **A genuine backend or runtime failure encountered while inspecting a URL candidate is no longer
+  absorbed as "this candidate does not match".** The URL-filtering step previously caught every
+  `RuntimeException` around a candidate's URL check and treated all of them alike as "vanished",
+  which could silently turn a disconnected browser or a closed context into a typed
+  `LocatorNotFoundException` - or an empty `tryFind()` result - instead of surfacing the real
+  failure. It now distinguishes three outcomes: the `<iframe>` element itself vanishing between
+  discovery and inspection is Playwright's typed `TimeoutError` (bounded to a short explicit
+  timeout, mirroring `PlaywrightLocatorBackend`'s existing candidate-vanishing idiom) and is
+  correctly treated as "not currently matching" so the wait keeps polling; a content document that
+  is present but not yet available or `Frame#isDetached()` is likewise a normal "not currently
+  matching" state, with no exception involved; anything else now propagates unchanged, exactly like
+  every other genuine backend failure elsewhere in this codebase.
+- **A `FUZZY` URL criterion is now rejected explicitly instead of silently degrading to
+  `CONTAINS`.** `FrameDefinition#withUrl(TextMatch)` (and its canonical constructor) now raises a
+  `LocatorException` ("Frame URL matching does not support FUZZY") as soon as a `FUZZY` criterion is
+  supplied, before any browser access is attempted. Frame URL matching supports exact,
+  case-insensitive exact, contains, starts-with, ends-with, and regex only - never fuzzy.
 - **`IFrameLocator#first()` and `#all()` removed.** `first()` was a redundant alias for `single()`,
   and `all()` returned the same `IFrame` handle repeated N times with no individual stable identity -
   a misleading contract for a document boundary, which has no scoring dimension to rank candidates
@@ -75,9 +90,15 @@ All notable changes to this project will be documented in this file. The format 
   retaining url-based identity, nested frame with a url criterion) and `FrameLocateLiveResolutionIT`
   (5 real-browser scenarios: `locate()` after replacement, `locate()` NOT_FOUND on disappearance
   mid-wait, `locate()` AMBIGUOUS on a duplicate appearing during `stableFor`, nested-frame `locate()`,
-  no wrong target leaking from a sibling frame), plus 12 new unit tests (25 total) in
+  no wrong target leaking from a sibling frame), plus 14 new unit tests (27 total) in
   `PlaywrightFrameScopeResolverTest` covering every `TextMatch` type against the `url` criterion and
   the disambiguation/ambiguity/not-found matrix at the mocked-engine level.
+- 5 further tests covering the backend-failure-propagation and `FUZZY`-rejection fixes: a
+  `TimeoutError`-vanished candidate and a genuine backend failure during URL inspection (each
+  proving the opposite outcome of the other) in `PlaywrightFrameScopeResolverTest` (now 27 total); a
+  new `PlaywrightFrameLocatorTest` proving `tryFind()` never converts a URL-inspection backend
+  failure into an empty `Optional`; and two new `FrameDefinitionTest` cases (now 10 total) proving
+  `withUrl(TextMatch)` and the canonical constructor both reject `FUZZY` explicitly.
 
 ### Fixed (CI stabilization)
 

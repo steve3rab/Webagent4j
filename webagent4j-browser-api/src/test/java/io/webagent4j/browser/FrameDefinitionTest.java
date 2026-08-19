@@ -1,10 +1,13 @@
 package io.webagent4j.browser;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import io.webagent4j.common.LocatorException;
 import io.webagent4j.locator.api.TextMatch;
+import io.webagent4j.locator.api.TextMatchType;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
@@ -89,6 +92,32 @@ class FrameDefinitionTest {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> definition.stableFor(Duration.ofSeconds(-1)))
                 .withMessage("stability must be positive");
+    }
+
+    @Test
+    void withUrlRejectsFuzzyExplicitlyInsteadOfSilentlyFallingBackToAnotherMode() {
+        FrameDefinition definition = FrameDefinition.frame();
+
+        assertThatExceptionOfType(LocatorException.class)
+                .isThrownBy(
+                        () -> definition.withUrl(new TextMatch(TextMatchType.FUZZY, "checkout")))
+                .withMessage("Frame URL matching does not support FUZZY");
+    }
+
+    @Test
+    void theCanonicalConstructorAlsoRejectsAFuzzyUrlCriterion() {
+        assertThatExceptionOfType(LocatorException.class)
+                .isThrownBy(
+                        () ->
+                                new FrameDefinition(
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.of(
+                                                new TextMatch(TextMatchType.FUZZY, "checkout")),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty()))
+                .withMessage("Frame URL matching does not support FUZZY");
     }
 
     @Test

@@ -14,6 +14,7 @@ import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.FrameLocator;
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.TimeoutError;
 import io.webagent4j.browser.FrameDefinition;
 import io.webagent4j.common.LocatorException;
 import io.webagent4j.dom.IElement;
@@ -173,7 +174,8 @@ class PlaywrightFrameScopeResolverTest {
         LocatorContext context = pageContext();
         Locator iframeLocator = mock(Locator.class);
         ElementHandle handle = mock(ElementHandle.class);
-        when(iframeLocator.elementHandle()).thenReturn(handle);
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenReturn(handle);
         when(handle.contentFrame()).thenReturn(null);
         IElement iframe =
                 new PlaywrightElement(
@@ -197,6 +199,84 @@ class PlaywrightFrameScopeResolverTest {
                                         definition,
                                         SHORT_TIMEOUT))
                 .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    /**
+     * The {@code <iframe>} element itself vanishing between {@code locateAll} discovery and this
+     * inspection is a normal detachment race, not a backend failure: Playwright's own typed signal
+     * for "this locator resolved to nothing within the given timeout" is {@link TimeoutError},
+     * which {@link PlaywrightScopeResolver#resolveFrameElement} must absorb as "does not currently
+     * match" so the wait keeps polling, exactly like {@link
+     * #aDetachedContentDocumentFailsTheUrlCriterionInsteadOfThrowingOrMatching} does for a content
+     * document that is present but not yet available - contrast with {@link
+     * #aGenuineBackendFailureDuringUrlInspectionPropagatesUnchangedRatherThanBecomingNotFound},
+     * where any other exception must propagate instead.
+     */
+    @Test
+    void aCandidateElementThatVanishesWithATimeoutErrorIsExcludedFromThisPollNotPropagated() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenThrow(new TimeoutError("Timeout exceeded while resolving element handle"));
+        IElement vanished =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(vanished)));
+        FrameDefinition definition =
+                FrameDefinition.frame().withUrl(TextMatch.exact("https://example.com/checkout"));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameElement(
+                                        engine,
+                                        ILiveLocatorContext.fixed(context),
+                                        definition,
+                                        SHORT_TIMEOUT))
+                .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    /**
+     * A genuine backend or runtime failure encountered while inspecting a URL candidate - a
+     * disconnected browser, a closed context, or any other opaque failure that is not the typed
+     * {@link TimeoutError} race {@link
+     * #aCandidateElementThatVanishesWithATimeoutErrorIsExcludedFromThisPollNotPropagated} covers -
+     * must propagate unchanged: never silently treated as "this candidate does not match", never
+     * converted into a {@link LocatorNotFoundException}, and never absorbed into an empty result.
+     */
+    @Test
+    void aGenuineBackendFailureDuringUrlInspectionPropagatesUnchangedRatherThanBecomingNotFound() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        RuntimeException backendFailure = new IllegalStateException("browser disconnected");
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenThrow(backendFailure);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+        FrameDefinition definition =
+                FrameDefinition.frame().withUrl(TextMatch.exact("https://example.com/checkout"));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameElement(
+                                        engine,
+                                        ILiveLocatorContext.fixed(context),
+                                        definition,
+                                        Duration.ofMillis(250)))
+                .isSameAs(backendFailure);
     }
 
     @Test
@@ -548,7 +628,8 @@ class PlaywrightFrameScopeResolverTest {
         Locator iframeLocator = mock(Locator.class);
         ElementHandle handle = mock(ElementHandle.class);
         Frame frame = mock(Frame.class);
-        when(iframeLocator.elementHandle()).thenReturn(handle);
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenReturn(handle);
         when(handle.contentFrame()).thenReturn(frame);
         when(frame.url()).thenReturn(url);
         return new PlaywrightElement(
@@ -584,7 +665,8 @@ class PlaywrightFrameScopeResolverTest {
         Frame frame = mock(Frame.class);
         FrameLocator frameLocator = mock(FrameLocator.class);
         Locator documentRoot = mock(Locator.class);
-        when(iframeLocator.elementHandle()).thenReturn(handle);
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenReturn(handle);
         when(handle.contentFrame()).thenReturn(frame);
         when(frame.url()).thenReturn(url);
         when(iframeLocator.contentFrame()).thenReturn(frameLocator);

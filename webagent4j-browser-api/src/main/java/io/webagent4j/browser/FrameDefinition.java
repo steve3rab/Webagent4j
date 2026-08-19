@@ -1,6 +1,8 @@
 package io.webagent4j.browser;
 
+import io.webagent4j.common.LocatorException;
 import io.webagent4j.locator.api.TextMatch;
+import io.webagent4j.locator.api.TextMatchType;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
@@ -18,7 +20,10 @@ import java.util.Optional;
  * @param id exact {@code <iframe>} element id
  * @param name criterion against the HTML {@code name} attribute
  * @param title criterion against the {@code title} attribute
- * @param url criterion against the frame's current document URL
+ * @param url criterion against the frame's current document URL - {@code EXACT}, {@code
+ *     CASE_INSENSITIVE_EXACT}, {@code CONTAINS}, {@code STARTS_WITH}, {@code ENDS_WITH}, and {@code
+ *     REGEX} are supported; {@code FUZZY} is rejected explicitly rather than silently treated as
+ *     {@code CONTAINS} or any other mode
  * @param timeout resolution timeout override
  * @param stability required continuous stability duration before resolution succeeds
  */
@@ -36,6 +41,7 @@ public record FrameDefinition(
         name = Objects.requireNonNull(name, "name");
         title = Objects.requireNonNull(title, "title");
         url = Objects.requireNonNull(url, "url");
+        url.ifPresent(FrameDefinition::requireSupportedUrlMatchType);
         timeout = Objects.requireNonNull(timeout, "timeout");
         timeout.ifPresent(value -> requirePositive(value, "timeout"));
         stability = Objects.requireNonNull(stability, "stability");
@@ -124,6 +130,17 @@ public record FrameDefinition(
     private static void requirePositive(Duration value, String label) {
         if (value.isZero() || value.isNegative()) {
             throw new IllegalArgumentException(label + " must be positive");
+        }
+    }
+
+    /**
+     * Rejects a {@code FUZZY} URL criterion explicitly rather than letting it silently degrade into
+     * {@code CONTAINS}, a regex, or any scoring behavior: frame URL matching only ever supports the
+     * deterministic {@link TextMatchType} modes documented on {@link #url()}.
+     */
+    private static void requireSupportedUrlMatchType(TextMatch match) {
+        if (match.type() == TextMatchType.FUZZY) {
+            throw new LocatorException("Frame URL matching does not support FUZZY");
         }
     }
 }

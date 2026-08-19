@@ -17,10 +17,16 @@ behavior depends on machine-readable browser semantics and current backend capab
   ones, without weakening browser security. See [locators.md](locators.md#frames) for the full
   contract.
 - Frame criteria are limited to `id`, `name`, `title`, and URL (exact/case-insensitive/contains/
-  starts-with/ends-with/regex); there is no CSS/XPath frame selector and no fuzzy frame-name
-  matching, mirroring the same deliberate absence of a "huge selector DSL" the element locator API
-  already avoids. Only exact and case-insensitive-exact criteria are supported for `id`/`name`/
-  `title` themselves.
+  starts-with/ends-with/regex); there is no CSS/XPath frame selector and no fuzzy matching anywhere
+  in a frame query, mirroring the same deliberate absence of a "huge selector DSL" the element
+  locator API already avoids. Only exact and case-insensitive-exact criteria are supported for
+  `id`/`name`/`title` themselves; a `FUZZY` URL criterion is rejected explicitly - never silently
+  treated as `CONTAINS` or any other mode.
+- A genuine backend or runtime failure encountered while inspecting a frame candidate's URL (a
+  disconnected browser, a closed context, or any other opaque failure) always propagates unchanged.
+  It is never absorbed into a typed "not found" outcome or an empty `tryFind()` result; only a
+  candidate's own `<iframe>` element vanishing between discovery and inspection - a normal
+  detachment race - is treated as "does not currently match" this poll.
 - Playwright semantic selectors can traverse supported open shadow roots. Closed shadow roots are not
   inspectable, and explicit XPath has Playwright's usual shadow-DOM limitations.
 - Native and correctly authored ARIA controls work best. Custom controls require a valid role,

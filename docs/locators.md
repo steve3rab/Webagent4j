@@ -428,8 +428,11 @@ which frame is meant, so two frames sharing the same `name` are not forced into 
 before a distinguishing `url` criterion ever gets a chance to narrow them down. There is still no
 DOM-order tie breaker at any point, so two frames that remain indistinguishable after every declared
 criterion are always `AMBIGUOUS`, never resolved to "the first one". `id`/`name`/`title` only support
-exact and case-insensitive-exact matching; `url` supports the full `TextMatch` vocabulary (exact,
-case-insensitive, contains, starts-with, ends-with, regex).
+exact and case-insensitive-exact matching; `url` supports exact, case-insensitive exact, contains,
+starts-with, ends-with, and regex. `FUZZY` is explicitly rejected for `url` - never silently treated
+as `CONTAINS`, a regex, or any scoring behavior - with a `LocatorException` raised as soon as a
+`FUZZY` criterion is supplied to `FrameDefinition#withUrl(TextMatch)`, before any browser access is
+attempted.
 
 Once resolved, an `IFrame` exposes `find()` for element queries scoped to that frame's own document,
 `action()` for frame-scoped actions (see [actions.md](actions.md#frames)), `observe()`/

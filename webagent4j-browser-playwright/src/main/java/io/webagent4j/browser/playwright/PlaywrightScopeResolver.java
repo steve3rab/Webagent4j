@@ -4,6 +4,7 @@ import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.FrameLocator;
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.TimeoutError;
 import io.webagent4j.browser.FrameDefinition;
 import io.webagent4j.common.LocatorException;
 import io.webagent4j.common.LocatorFailureClassifier;
@@ -294,12 +295,14 @@ final class PlaywrightScopeResolver {
     }
 
     /**
-     * Filters id/name/title candidates by {@link FrameDefinition#url()}, when present, tolerating a
-     * candidate whose content document has become momentarily unavailable (a race between discovery
-     * and this check, most often a frame mid-removal) by excluding it from this poll rather than
-     * letting a raw backend exception abort the whole resolution - the next poll re-discovers
-     * candidates from scratch, so a genuinely present frame is never lost, only a vanished one is
-     * correctly treated as not currently matching.
+     * Filters id/name/title candidates by {@link FrameDefinition#url()}, when present. A candidate
+     * whose underlying {@code <iframe>} element has vanished between discovery ({@code locateAll})
+     * and this check - a normal detachment race, most often a frame mid-removal - is excluded from
+     * this poll rather than aborting the whole resolution: the next poll re-discovers candidates
+     * from scratch, so a genuinely present frame is never lost. A genuine backend or runtime
+     * failure (a disconnected browser, a closed context, or any other opaque failure) is never
+     * treated as "this candidate does not match" - see {@link #matchesUrl} for exactly which
+     * conditions are absorbed as a detachment race versus propagated unchanged.
      */
     private static List<LocatorCandidate> filterByUrl(
             List<LocatorCandidate> candidates, FrameDefinition definition) {
@@ -309,19 +312,11 @@ final class PlaywrightScopeResolver {
         TextMatch match = definition.url().orElseThrow();
         List<LocatorCandidate> filtered = new ArrayList<>();
         for (LocatorCandidate candidate : candidates) {
-            if (matchesUrlSafely(candidate.element(), match)) {
+            if (matchesUrl(candidate.element(), match)) {
                 filtered.add(candidate);
             }
         }
         return List.copyOf(filtered);
-    }
-
-    private static boolean matchesUrlSafely(IElement element, TextMatch match) {
-        try {
-            return matchesUrl(element, match);
-        } catch (RuntimeException vanished) {
-            return false;
-        }
     }
 
     /** Builds the {@link LocatorResult} a successful {@link #resolveFrameElement} call returns. */
@@ -434,23 +429,59 @@ final class PlaywrightScopeResolver {
         return backend.context();
     }
 
+    /**
+     * Bound for {@link Locator#elementHandle(Locator.ElementHandleOptions)} when inspecting a
+     * candidate's continued presence - the same short-timeout idiom {@link
+     * PlaywrightLocatorBackend#find} already uses for a candidate that vanishes between {@code
+     * count()} and its own identity check, so a genuinely removed {@code <iframe>} fails this one
+     * lookup fast rather than blocking on Playwright's multi-second default actionability wait.
+     */
+    private static final double URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS = 200;
+
+    /**
+     * Evaluates one URL candidate against {@code match}, distinguishing three outcomes rather than
+     * treating every exception alike:
+     *
+     * <ul>
+     *   <li>the {@code <iframe>} element itself was removed between discovery and this call -
+     *       Playwright's own typed signal for "this locator resolved to nothing within the given
+     *       timeout" is {@link TimeoutError}, bounded here to {@link
+     *       #URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS} so the race window stays short; caught and
+     *       treated as "does not currently match", never propagated;
+     *   <li>the element is present but its content document is not (a fresh iframe not yet loaded,
+     *       or one whose frame is {@link Frame#isDetached()}) - also "does not currently match", no
+     *       exception involved at all;
+     *   <li>anything else - a disconnected browser, a closed context, or any other opaque backend
+     *       or runtime failure - is a genuine failure that must propagate unchanged, never absorbed
+     *       as "not found".
+     * </ul>
+     */
     private static boolean matchesUrl(IElement iframeElement, TextMatch match) {
         Locator iframeLocator = PlaywrightLocatorBackend.unwrap(iframeElement);
-        ElementHandle handle = iframeLocator.elementHandle();
+        ElementHandle handle;
+        try {
+            handle =
+                    iframeLocator.elementHandle(
+                            new Locator.ElementHandleOptions()
+                                    .setTimeout(URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS));
+        } catch (TimeoutError vanished) {
+            return false;
+        }
         Frame frame = handle.contentFrame();
-        if (frame == null) {
+        if (frame == null || frame.isDetached()) {
             return false;
         }
         String url = frame.url();
         return switch (match.type()) {
             case EXACT -> url.equals(match.value());
             case CASE_INSENSITIVE_EXACT -> url.equalsIgnoreCase(match.value());
-            case CONTAINS, FUZZY ->
+            case CONTAINS ->
                     url.toLowerCase(java.util.Locale.ROOT)
                             .contains(match.value().toLowerCase(java.util.Locale.ROOT));
             case STARTS_WITH -> url.startsWith(match.value());
             case ENDS_WITH -> url.endsWith(match.value());
             case REGEX -> url.matches(match.value());
+            case FUZZY -> throw new LocatorException("Frame URL matching does not support FUZZY");
         };
     }
 
