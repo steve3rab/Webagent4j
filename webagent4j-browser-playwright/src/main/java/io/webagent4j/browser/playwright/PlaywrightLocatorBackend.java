@@ -2,6 +2,7 @@ package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.AriaRole;
 import io.webagent4j.common.LocatorException;
 import io.webagent4j.dom.IElement;
@@ -136,9 +137,13 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * so a candidate that vanishes between {@link Locator#count()} and this call fails fast instead
      * of blocking on Playwright's own multi-second default actionability wait - which would both
      * silently multiply the caller's configured {@link io.webagent4j.wait.WaitEngine} budget and
-     * leak a raw {@link com.microsoft.playwright.TimeoutError} across the backend-neutral boundary.
-     * Returns {@code null}, rather than throwing, when the candidate could not be evaluated in
-     * time.
+     * leak a raw {@link TimeoutError} across the backend-neutral boundary. Returns {@code null},
+     * rather than throwing, only for that one typed "did not resolve within {@link
+     * #EVALUATE_TIMEOUT_MILLIS}" signal - the normal shape of "this candidate vanished between
+     * {@link Locator#count()} and this call". Any other {@link RuntimeException} - a disconnected
+     * browser, a closed context/page, or any other opaque backend or runtime failure - is a genuine
+     * failure, not a vanished candidate, and must propagate unchanged rather than being silently
+     * turned into an absent candidate.
      */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> identifyOrNull(Locator item) {
@@ -148,7 +153,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             IDENTITY_SCRIPT,
                             null,
                             new Locator.EvaluateOptions().setTimeout(EVALUATE_TIMEOUT_MILLIS));
-        } catch (RuntimeException vanished) {
+        } catch (TimeoutError vanished) {
             return null;
         }
     }

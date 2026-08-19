@@ -150,6 +150,26 @@ All notable changes to this project will be documented in this file. The format 
   browser; confirmed via CI history that this test passed before the `LocatorEngine` fix above and
   failed immediately after it, with no other change in between.
 
+### Fixed (fail-closed candidate-identity inspection)
+
+- **A genuine backend or runtime failure encountered while evaluating a discovered candidate's
+  identity is no longer silently absorbed as "this candidate vanished".** `PlaywrightLocatorBackend`'s
+  `identifyOrNull(Locator)` - introduced to make a candidate that vanishes between `Locator#count()`
+  and this call fail fast instead of blocking on Playwright's multi-second default actionability
+  wait - caught every `RuntimeException` alike and returned `null` for all of them, treating a
+  disconnected browser, a closed context/page, or any other opaque backend failure exactly the same
+  as an ordinary detachment race. It now catches only Playwright's typed `TimeoutError` - its actual
+  signal for "did not resolve within the bounded inspection timeout" - and lets every other
+  `RuntimeException` propagate unchanged, matching the same fail-closed idiom already used elsewhere
+  in this class (`matchesUrl`'s candidate-vanishing check) and this codebase generally.
+- 2 new unit tests in `PlaywrightLocatorBackendTest` (new file): a candidate whose identity
+  evaluation raises `TimeoutError` is excluded from that poll with no exception propagated, and a
+  genuine backend failure (`IllegalStateException`) during the same call propagates as the exact
+  same instance rather than becoming an empty result. `ILocator#tryFind()`'s existing
+  backend-failure-propagation tests (`ILocatorTryFindTest`) already cover, generically, that any
+  such failure reaching a terminal locator operation is never reported as "not found" - this closes
+  the gap at the one place upstream of that contract that could previously have masked it.
+
 ### Fixed (CI stabilization)
 
 - Fixed three intermittent/deterministic integration-test failures exposed by CI (all traced to test
