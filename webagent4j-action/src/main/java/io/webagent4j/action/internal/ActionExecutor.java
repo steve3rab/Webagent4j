@@ -26,6 +26,8 @@ import io.webagent4j.verification.VerificationEngine;
 import io.webagent4j.verification.VerificationInterruptedException;
 import io.webagent4j.verification.VerificationResult;
 import io.webagent4j.verification.VerificationType;
+import io.webagent4j.wait.IMonotonicClock;
+import io.webagent4j.wait.WaitBudget;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -36,6 +38,8 @@ import java.util.function.Supplier;
 
 /** Executes the ordered resolve, validate, execute-once, stabilize, observe, verify pipeline. */
 final class ActionExecutor {
+
+    private static final IMonotonicClock CLOCK = IMonotonicClock.systemClock();
 
     <R> ActionResult<R> execute(
             IActionContext context, ActionCommand<R> command, ActionExecutionConfig config) {
@@ -53,6 +57,7 @@ final class ActionExecutor {
             ActionExecutionConfig config,
             ActionId actionId) {
         Instant started = Instant.now();
+        WaitBudget budget = WaitBudget.start(config.options().timeout(), CLOCK);
         List<ActionEvent> events = new ArrayList<>();
         events.add(event(actionId, command, ActionStage.ACTION_STARTED, "started", "", started));
         IElement target;
@@ -68,10 +73,7 @@ final class ActionExecutor {
         try {
             target =
                     new ActionTargetResolver()
-                            .resolve(
-                                    command,
-                                    config.options().resolutionRetry(),
-                                    config.options().timeout());
+                            .resolve(command, config.options().resolutionRetry(), budget);
         } catch (RuntimeException failure) {
             return failed(
                     context,
@@ -198,6 +200,41 @@ final class ActionExecutor {
                     new ActionDiagnostics(targetDescription, "", Map.of("execution", "dry-run")));
         }
 
+        if (budget.expired()) {
+            // The action's global budget was already consumed by resolution and/or preconditions.
+            // A backend side effect must never start after its budget has expired, and it is never
+            // retried as part of this pipeline, so there is nothing left to attempt here.
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "budget-expired-before-backend-action",
+                            targetDescription,
+                            started));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    started,
+                    events,
+                    resolutionStarted,
+                    preconditionDuration,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.TIMEOUT,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.TIMEOUT,
+                    "Action budget expired before the backend action could be invoked",
+                    null);
+        }
+
         R value;
         Instant executionStarted = Instant.now();
         events.add(
@@ -252,7 +289,7 @@ final class ActionExecutor {
                         "started",
                         targetDescription,
                         started));
-        config.stabilization().await(context, remaining(config, started));
+        config.stabilization().await(context, budget.remaining());
         Duration stabilizationDuration = Duration.between(stabilizationStarted, Instant.now());
         events.add(
                 event(
@@ -279,7 +316,7 @@ final class ActionExecutor {
                             .awaitAll(
                                     context,
                                     config.postconditions(),
-                                    remaining(config, started),
+                                    budget,
                                     config.options().verificationInterval());
         } catch (VerificationInterruptedException failure) {
             Thread.currentThread().interrupt();
@@ -402,14 +439,15 @@ final class ActionExecutor {
             ActionId actionId,
             Supplier<ActionResult<R>> executor) {
         List<VerificationType> expectedPostconditions = expectedPostconditionTypes(config);
+        // A plan-time-only budget: never stored in the returned IActionPlan/DefaultActionPlan. A
+        // real execution budget is started fresh, independently, when IActionPlan.execute() begins
+        // the real pipeline - a plan built minutes ago must not appear pre-expired at that point.
+        WaitBudget prepareBudget = WaitBudget.start(config.options().timeout(), CLOCK);
         IElement target;
         try {
             target =
                     new ActionTargetResolver()
-                            .resolve(
-                                    command,
-                                    config.options().resolutionRetry(),
-                                    config.options().timeout());
+                            .resolve(command, config.options().resolutionRetry(), prepareBudget);
         } catch (RuntimeException failure) {
             String targetDescription = describe(null);
             return new DefaultActionPlan<>(
@@ -605,12 +643,6 @@ final class ActionExecutor {
                         || policy == ObservationCapturePolicy.ON_FAILURE
                 ? context.observe()
                 : null;
-    }
-
-    private static Duration remaining(ActionExecutionConfig config, Instant started) {
-        Duration elapsed = Duration.between(started, Instant.now());
-        Duration remaining = config.options().timeout().minus(elapsed);
-        return remaining.isNegative() || remaining.isZero() ? Duration.ofNanos(1) : remaining;
     }
 
     private static String describe(IElement target) {

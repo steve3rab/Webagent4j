@@ -9,4 +9,9 @@ public class LocatorException extends WebAgentException {
     public LocatorException(String message) {
         super(message);
     }
+
+    /** Creates a locator exception with a diagnostic message and its underlying cause. */
+    public LocatorException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

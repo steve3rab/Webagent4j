@@ -9,6 +9,7 @@ WebAgent4J is a Java 21 foundation for deterministic web automation. Start with
 - [Semantic locators](locators.md)
 - [Observations](observation.md)
 - [Actions](actions.md) and [verification](verification.md)
+- [Wait and stability](wait-and-stability.md)
 - [Testing](testing.md), [robustness](robustness.md), [known limitations](limitations.md), and
   [contributing](contribution.md)
 - [Roadmap](roadmap.md)

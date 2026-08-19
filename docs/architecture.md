@@ -61,15 +61,38 @@ of an `ActionResult`. Its sole implementation, `DefaultActionPlan`, is package-p
 only be obtained through `plan()`, never hand-built. `IActionPlan.execute()` never trusts that
 snapshot - it reruns the whole pipeline from scratch, so a stale plan can never act on a semantically
 different element, tolerate new ambiguity, or ignore a precondition that stopped holding. Structured
-locator scopes follow the same rule: a scope built with `InteractionContext.containingText(...)` is
-kept as a pending, backend-neutral definition and re-resolved fresh at every terminal operation
-(`reference().resolve()` included), never frozen into one DOM node when the fluent chain is built - so
-a context that becomes ambiguous, disappears, or is replaced by a semantically different region
-between reference creation and execution blocks the action instead of silently acting on stale state.
+locator scopes follow the same rule, one level deeper: a scope built with
+`InteractionContext.containingText(...)` is kept as a pending, backend-neutral definition and
+re-resolved fresh on every individual polling attempt of a terminal operation's own wait
+(`reference().resolve()` included), never frozen into one DOM node when the fluent chain is built and
+never resolved only once before that wait begins - so a context that becomes ambiguous, disappears,
+or is replaced by a semantically different region at any point between reference creation and
+execution - including mid-wait, not only before or after it - blocks the action instead of silently
+acting on stale state.
 
 Resolution retries are separated from execution. Non-idempotent backend execution occurs at most
 once, while stabilization and verification may safely poll read-only state. The Playwright adapter
 implements the action, locator, and observation ports without leaking its native types.
+
+`webagent4j-wait` is the one deterministic polling primitive underneath every read-only wait in the
+locator, verification, and action pipelines - see [wait-and-stability.md](wait-and-stability.md).
+It sits below every domain module, next to `webagent4j-common`, and knows nothing about DOM
+elements, locators, or actions:
+
+```text
+webagent4j-common
+        |
+        v
+ webagent4j-wait
+   /    |    \
+  /     |     \
+Locator Verification Action
+```
+
+Locator resolution, verification polling, and action stabilization/postconditions each delegate
+their deadline, polling-interval, and stability-window bookkeeping to this one engine instead of
+each running its own timing loop; only the locator, verification, and action domains still decide
+*what* is being waited for.
 
 ```text
 Browser backend
@@ -89,6 +112,8 @@ Semantic Model ----> Locator / Action / future Extraction
 - `core` cannot depend on Playwright or any future concrete browser backend.
 - Public APIs cannot expose backend-native objects.
 - `common`, `dom`, and the domain contracts have no framework dependency.
+- `wait` depends only on `common` and the JDK; it cannot depend on `dom`, `locator`, `verification`,
+  `action`, `browser`, `observation`, or Playwright, and knows nothing about any of those concepts.
 - `action` and `verification` cannot depend on Playwright or another concrete browser backend.
 - Public action contracts cannot depend on action implementation packages.
 - No module depends on an AI, LLM, MCP, Spring, Jakarta EE, reactive, or dependency-injection framework.

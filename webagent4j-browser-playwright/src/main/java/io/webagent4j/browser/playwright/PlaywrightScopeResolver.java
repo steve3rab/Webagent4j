@@ -11,6 +11,7 @@ import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.locator.api.ILocatorScope;
 import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.locator.api.TextMatch;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -161,6 +162,18 @@ final class PlaywrightScopeResolver {
     }
 
     /**
+     * The timeout every container lookup here is bounded to: exactly one immediate DOM check, no
+     * internal retrying of its own. A structured scope is always resolved from inside an outer
+     * {@code WaitEngine}-driven poll (see {@code PlaywrightLocator}'s live context), which already
+     * supplies the retry cadence for the whole logical wait; a container lookup that retried on its
+     * own too would start a second, nested full-timeout wait inside a single outer poll attempt and
+     * silently multiply the caller's configured timeout. {@link ILocatorEngine#locateSingle} still
+     * guarantees exactly one immediate probe even against an already-expired budget, so a
+     * momentarily-absent or newly-ambiguous container is still detected on this one attempt.
+     */
+    private static final Duration ONE_SHOT_TIMEOUT = Duration.ofNanos(1);
+
+    /**
      * Resolves one unambiguous container matching {@code text}, preferring accessible-name evidence
      * (aria-label, aria-labelledby, etc.) and falling back to visible text only when
      * accessible-name resolution demonstrably reports a safe "not found" outcome.
@@ -175,7 +188,8 @@ final class PlaywrightScopeResolver {
             return engine.locateSingle(
                             context,
                             LocatorDefinition.element()
-                                    .withAccessibleName(TextMatch.exactIgnoringCase(text)))
+                                    .withAccessibleName(TextMatch.exactIgnoringCase(text))
+                                    .withTimeout(ONE_SHOT_TIMEOUT))
                     .element();
         } catch (RuntimeException accessibleFailure) {
             if (!LocatorFailureClassifier.isNotFound(accessibleFailure)) {
@@ -184,7 +198,8 @@ final class PlaywrightScopeResolver {
             return engine.locateSingle(
                             context,
                             LocatorDefinition.element()
-                                    .withVisibleText(TextMatch.exactIgnoringCase(text)))
+                                    .withVisibleText(TextMatch.exactIgnoringCase(text))
+                                    .withTimeout(ONE_SHOT_TIMEOUT))
                     .element();
         }
     }

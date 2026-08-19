@@ -257,6 +257,19 @@ final class ActionTestApplication implements AutoCloseable {
                               document.body.appendChild(duplicate);
                             }, 150)</script>
                             """);
+            case "/actions/context-dynamic-ambiguous-target-unique" ->
+                    document(
+                            "Context dynamic ambiguous target unique",
+                            """
+                            <section id="shipping-1" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-1')">Continue</button></section>
+                            <script>setTimeout(() => {
+                              const duplicate = document.createElement('section');
+                              duplicate.setAttribute('aria-label', 'Shipping');
+                              duplicate.innerHTML = '<span>No Continue here</span>';
+                              document.body.appendChild(duplicate);
+                            }, 150)</script>
+                            """);
             case "/actions/context-dynamic-disappears" ->
                     document(
                             "Context dynamic disappears",

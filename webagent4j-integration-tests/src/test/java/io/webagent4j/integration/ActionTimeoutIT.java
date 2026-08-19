@@ -22,6 +22,9 @@ class ActionTimeoutIT {
                             .execute();
             assertThat(result.status()).isEqualTo(ActionStatus.TIMEOUT);
             assertThat(page.title()).isEqualTo("Click actions");
+            // Independent server-side oracle, not just the ActionResult: the click backend action
+            // ran exactly once - postcondition polling never re-executes it, timeout or not.
+            assertThat(support.clickCount()).isEqualTo(1);
         }
     }
 }

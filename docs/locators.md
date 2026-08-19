@@ -154,7 +154,14 @@ carries a *definition* (its `containingText(...)` constraints), and that definit
 collapsed into one resolved DOM node while the fluent chain is being built. It stays pending and is
 re-resolved, in order, at every terminal operation - `first()`, `single()`, `all()`, and every
 invocation of a `reference()`'s deferred `resolve()` - so the semantic region is re-evaluated against
-the live DOM each time, not reused from whatever node it happened to match earlier:
+the live DOM each time, not reused from whatever node it happened to match earlier. This goes one
+level deeper than "once per terminal-operation call": when a terminal operation itself waits
+(`stableFor(...)`, `waitUntilVisible()`, or simply the implicit retrying every `single()` already
+does), the structured scope is re-resolved fresh on *every individual poll* of that wait, not once
+before it begins - see [wait-and-stability.md](wait-and-stability.md#locator-webagent4j-locator).
+A context that becomes ambiguous mid-wait, disappears mid-wait, or is replaced by a live node with
+the same semantics mid-wait is observed and handled on the very next poll, not only at the moment
+the wait started or the moment it finished:
 
 ```java
 IElementReference<IElement> continueButton = page.find(
@@ -184,13 +191,14 @@ the whole pipeline from scratch, including target resolution through the same `r
 built against a context that later became ambiguous or disappeared is blocked, while a plan built
 against a context later replaced with the same semantics can still execute exactly once.
 
-Re-resolving a structured scope costs one bounded lookup per `containingText(...)` constraint, each
-under the configured resolution budget, in addition to the final target lookup - the same cost the
-scope already had at `within(...)` time, now paid again on each retry attempt and on `execute()`
-revalidation instead of once. There is currently no shared outer deadline propagated across nested
-constraint lookups, so a resolution retry policy combined with several constraints multiplies, rather
-than divides, the per-call timeout; keep constraint chains short and resolution retries bounded if
-this matters for a page under heavy load.
+Re-resolving a structured scope costs one bounded lookup per `containingText(...)` constraint, in
+addition to the final target lookup - the same cost the scope already had at `within(...)` time, now
+paid again on every polling attempt instead of once. Each of those constraint lookups is itself
+bounded to a single immediate DOM check - never a second, independent multi-attempt wait of its own
+- so a chain of several constraints, re-resolved on every poll of an outer `stableFor(...)` or
+`timeout(...)` wait, still costs one full pass of immediate lookups per poll rather than compounding
+into several independent timeouts: the whole logical wait remains bounded by the one outer
+`WaitBudget`, however many constraints the chain has.
 
 ## Mixed scope ordering
 
@@ -279,6 +287,21 @@ best one. `single()` also requires the best semantic tier to be unique: if the n
 the configured ambiguity margin, it throws `AmbiguousLocatorException` instead of hiding the conflict
 with DOM order.
 
+When `single()` is combined with a wait - `stableFor(...)` or `waitUntilVisible()` - ambiguity is
+checked on *every individual poll*, not only the final one. The moment any poll observes two
+candidates within the ambiguity margin, resolution fails immediately with
+`AmbiguousLocatorException`: ambiguity is a fail-safe condition, never a transiently-pending state
+the DOM might resolve out of on its own, so the wait never continues hoping a second matching
+region or element will disappear again before the deadline.
+
+This applies to a structured `within(...)` context exactly the same way, and independently of
+whether the *target* itself would be ambiguous: if a `containingText(...)` constraint matches two
+regions on some poll, resolution fails immediately with `AmbiguousLocatorException` even when the
+final target - the button, the field - happens to exist inside only one of them and would therefore
+be unique if the context were ignored. A context is a hard scope, and a hard scope that becomes
+ambiguous is never "safely" resolved by falling back to whichever target search still turns out
+unique; it fails the same way a genuinely ambiguous target does.
+
 ## Resolution policies
 
 `LocatorResolutionPolicy` makes fallback behavior explicit:
@@ -340,6 +363,10 @@ replacement is expected between workflow steps.
 `stableFor(duration)` requires the selected backend identity and all requested state constraints to
 remain continuously satisfied for the whole interval. Detachment, replacement, disappearance, or a
 state violation resets the stability timer; non-contiguous stable periods are never added together.
+The polling, deadline, and stability-window mechanics behind `stableFor`/`waitUntilVisible`/`timeout`
+are the same shared `webagent4j-wait` primitive used by verification and action stabilization - see
+[wait-and-stability.md](wait-and-stability.md); only the domain-specific candidate search and
+identity comparison stay in the locator engine itself.
 
 ## State and interactability
 

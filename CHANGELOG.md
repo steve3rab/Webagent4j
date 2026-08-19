@@ -21,8 +21,86 @@ All notable changes to this project will be documented in this file. The format 
 - `io.webagent4j.integration.coverage.PlaywrightCoverageGate`, a real, automated, enforced aggregate
   line-coverage gate for `webagent4j-browser-playwright`, replacing the skipped per-module JaCoCo
   `check` with a threshold check against the module's real cross-module coverage.
+- `webagent4j-wait`, a new backend-neutral module carrying the one deterministic wait/stability
+  primitive (`WaitEngine`, `WaitBudget`, `WaitPolicy`, `IWaitProbe`, `IMonotonicClock`,
+  `IWaitSleeper`) shared by locator resolution, verification polling, and action
+  stabilization/postconditions - see `docs/wait-and-stability.md`. It depends only on the JDK and
+  `webagent4j-common`, and no domain module depends on it in the other direction.
+- `VerificationEngine.awaitAll(IVerificationContext, List, WaitBudget, Duration)`, an overload that
+  shares one deadline across every condition in the list instead of giving each one an
+  independent, full timeout.
+- `WaitSample.pending(T)`, a pending sample carrying an informational last-known value - still
+  retried exactly like `WaitSample.pending()`, but preserved in `WaitResult.value()` if the wait
+  times out instead of being discarded.
+- `ILiveLocatorContext`, plus matching overloads of `ILocatorEngine.locate()`/`locateSingle()`/
+  `locateAll()`: `baseline()` supplies the stable backend/configuration a wait needs before it has
+  resolved anything, and `resolve()` is called fresh on every polling attempt instead of once
+  before the wait begins, so a structured semantic scope a live context depends on is re-evaluated
+  against the current DOM throughout a wait, not only when it starts. The existing `LocatorContext`
+  overloads are now default methods delegating to a fixed (never-changing) live context, so every
+  existing caller that already has one resolved context to search keeps working unchanged.
 
 ### Fixed
+
+- Fixed `LocatorEngine` starting its `WaitBudget` against a separate `IMonotonicClock.systemClock()`
+  instead of `waitEngine.clock()` - the same clock the rest of the wait polls and sleeps with. A
+  `LocatorEngine` built with an injected fake clock (every deterministic wait test) previously still
+  measured its deadline against real wall-clock time, so a wait that should time out instantly under
+  fake time would instead busy-loop until real time actually passed the configured timeout.
+- Fixed a structured semantic scope (`InteractionContext.containingText(...)`) being resolved only
+  once per terminal operation instead of on every individual polling attempt of that operation's own
+  wait: `PlaywrightLocator` now supplies an `ILiveLocatorContext` whose `resolve()` re-runs the whole
+  pending scope chain fresh on each poll, so a scope that becomes ambiguous, disappears, or is
+  replaced mid-wait is observed on the very next poll instead of only at the moment the wait started
+  or ended. Each structured-scope container lookup this triggers is itself bounded to one immediate,
+  non-waiting probe, so re-resolving the scope chain inside one outer poll attempt never starts a
+  second, nested full-timeout wait - the whole logical wait remains governed by the one outer
+  `WaitBudget`.
+- Fixed context ambiguity only being a fail-safe condition for the final target, not for a structured
+  scope the target depends on: a `containingText(...)` constraint that matches two regions on any
+  poll now fails immediately with `AmbiguousLocatorException`, unconditionally - including through
+  `locate()`/`locateAll()`, not only `locateSingle()` - and even when the target itself would still
+  be unique if the ambiguous context were ignored (a duplicate region with no matching target inside
+  it does not make the context safe).
+- Completed `LocatorEngine`'s migration onto the shared, deterministic `WaitEngine`: its own
+  `do`/`while` deadline, stability-timer, and sleep loop is gone, replaced by
+  `WaitEngine.await(WaitBudget, WaitPolicy, IWaitProbe)` driving a single, non-looping DOM search
+  per attempt. `LocatorResolutionWaiter`, which had no remaining callers once the loop moved, was
+  deleted rather than kept as an unused compatibility wrapper.
+- Fixed `locateSingle()` only checking ambiguity on the final candidate list returned by a wait,
+  instead of on every individual poll: a second matching candidate that appeared and then
+  disappeared again during a `stableFor(...)`/`waitUntilVisible()` wait could previously go
+  unnoticed. Ambiguity observed on any poll now fails immediately with
+  `AmbiguousLocatorException`, exactly like a genuine backend/runtime failure does, rather than
+  being treated as a transiently-pending state the wait might resolve out of on its own.
+- Fixed `ActionTargetResolver` retrying target resolution on any `RuntimeException`, including
+  ambiguity and genuine backend/runtime failures. Only a demonstrated, typed `NOT_FOUND` outcome
+  (a resolved-but-detached element counts as `NOT_FOUND` too) is retried now; ambiguity and any
+  other failure end resolution on the first attempt.
+- Fixed `ActionExecutor` computing target-resolution retries and postcondition verification
+  against independently-converted `Duration` values derived from its budget, instead of the exact
+  same shared `WaitBudget` instance: `ActionTargetResolver` and the new
+  `VerificationPoller`/`VerificationEngine` `WaitBudget` overloads now consume that one object
+  directly, with no remaining-to-fresh-budget conversion in between.
+- Fixed the action pipeline never checking, immediately before invoking the backend, whether its
+  global budget had already been exhausted by resolution and preconditions: a backend side effect
+  is now never started once the action's budget has expired, and is never retried as part of
+  wait/poll logic - a backend call already in flight when the deadline passes may still take
+  longer to return, which is a deliberately narrower and true claim than "every action finishes
+  before its timeout".
+- Fixed action postconditions each silently receiving their own independent, full timeout instead
+  of sharing the action's configured budget: `ActionExecutor` now starts one monotonic
+  `WaitBudget` per execution and threads its shrinking `remaining()` through both stabilization and
+  postcondition verification, so a list of postconditions can no longer add up to several times the
+  configured timeout in the worst case.
+- Fixed `VerificationPoller` measuring its polling deadline against wall-clock time
+  (`Clock`/`Instant`) instead of a monotonic clock, and fixed it, `LocatorResolutionWaiter`, and
+  `ActionTargetResolver`'s pre-execution retry loop each owning their own direct
+  `Thread.sleep`/`LockSupport.parkNanos` call: all three now delegate to the shared
+  `webagent4j-wait` primitive.
+- Fixed `WaitBudget.start(...)` letting `Duration.toNanos()` throw `ArithmeticException` for an
+  implausibly large timeout (for example `Duration.ofSeconds(Long.MAX_VALUE)`) instead of
+  saturating like every other overflow path in the same class.
 
 - Fixed explicit-element scopes being able to escape a previously declared parent scope in mixed
   locator chains: an explicit element declared after another scope is now proven, against the real
@@ -67,6 +145,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- `VerificationPoller`'s `Clock`-based constructor was replaced by
+  `VerificationPoller(io.webagent4j.wait.WaitEngine)`: the poller now measures its deadline
+  against a monotonic clock, never wall-clock time, so a wall-clock-based constructor could only
+  perpetuate the exact bug this change fixes. The unused `Clock` constructor had no callers outside
+  the module's own default, so there is no other public migration to document.
 - `IPreparedAction.dryRun()` and `IPreparedAction.plan()` are now mutually exclusive: calling
   `plan()` after `dryRun()` on the same prepared action throws `IllegalStateException`.
 - `ILocator`/`IFind`'s `within(Object)`/`inContext(Object)` were replaced with typed overloads,

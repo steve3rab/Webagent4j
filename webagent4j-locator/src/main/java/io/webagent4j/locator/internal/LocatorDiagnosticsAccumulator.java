@@ -27,7 +27,7 @@ public final class LocatorDiagnosticsAccumulator {
 
     private final LocatorDefinition definition;
     private final LocatorConfig config;
-    private final LocatorScope scope;
+    private LocatorScope scope;
     private final long startedNanos;
     private final List<StrategyExecution> executed = new ArrayList<>();
     private final List<SkippedStrategy> skipped = new ArrayList<>();
@@ -44,6 +44,15 @@ public final class LocatorDiagnosticsAccumulator {
         this.config = Objects.requireNonNull(config, "config");
         this.scope = Objects.requireNonNull(scope, "scope");
         this.startedNanos = System.nanoTime();
+    }
+
+    /**
+     * Updates the scope this accumulator reports, reflecting the most recently, successfully
+     * resolved live context - relevant when the resolved scope can change between polling attempts
+     * (a structured semantic scope re-resolved fresh on every attempt).
+     */
+    public void scope(LocatorScope scope) {
+        this.scope = Objects.requireNonNull(scope, "scope");
     }
 
     /** Records one executed strategy. */
