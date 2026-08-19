@@ -84,24 +84,42 @@ public interface IFrame extends IActionContext, IObservationSource {
     LocatorResult locate(LocatorDefinition definition, LocatorConfig config);
 
     /**
-     * Resolves {@code request}'s source against this frame's current document and reads, converts,
-     * and validates its data - re-resolving this frame's own pending-scope chain fresh on every
-     * poll exactly like {@link #locate} already does, so a frame that disappears, is replaced, or
-     * becomes ambiguous mid-wait is caught the same way.
+     * Resolves {@code request}'s source against this frame's current document to one unambiguous
+     * element and reads, converts, and validates its data - re-resolving this frame's own
+     * pending-scope chain fresh on every poll exactly like {@link #locate} already does, so a frame
+     * that disappears, is replaced, or becomes ambiguous mid-wait is caught the same way.
+     *
+     * <p>The default implementation reports that this backend does not support extraction; a
+     * backend that does (the Playwright adapter) overrides it. Adding this default, rather than an
+     * abstract method, keeps every existing {@link IFrame} implementation source-compatible.
      */
-    <T> ExtractionResult<T> extract(ExtractionRequest<T> request);
+    default <T> ExtractionResult<T> extract(ExtractionRequest<T> request) {
+        throw new UnsupportedOperationException("Extraction is not supported by this backend");
+    }
 
     /**
-     * Resolves every element {@code request}'s source matches inside this frame, in deterministic
-     * score and DOM order, and reads, converts, and validates each one's data.
+     * Resolves every element {@code request}'s source matches inside this frame, and reads,
+     * converts, and validates each one's data in DOM order.
+     *
+     * <p>The default implementation reports that this backend does not support extraction; a
+     * backend that does (the Playwright adapter) overrides it. Adding this default, rather than an
+     * abstract method, keeps every existing {@link IFrame} implementation source-compatible.
      */
-    <T> ExtractionResult<List<T>> extractList(ExtractionRequest<T> request);
+    default <T> ExtractionResult<List<T>> extractList(ExtractionRequest<T> request) {
+        throw new UnsupportedOperationException("Extraction is not supported by this backend");
+    }
 
     /**
      * Resolves {@code source} to one accessible HTML table inside this frame and reads its
      * structure.
+     *
+     * <p>The default implementation reports that this backend does not support extraction; a
+     * backend that does (the Playwright adapter) overrides it. Adding this default, rather than an
+     * abstract method, keeps every existing {@link IFrame} implementation source-compatible.
      */
-    ExtractionResult<ExtractedTable> extractTable(LocatorDefinition source);
+    default ExtractionResult<ExtractedTable> extractTable(LocatorDefinition source) {
+        throw new UnsupportedOperationException("Extraction is not supported by this backend");
+    }
 
     /** Starts a single action plan targeting elements inside this frame. */
     IActionBuilder action();

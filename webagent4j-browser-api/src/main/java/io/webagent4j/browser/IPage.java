@@ -79,25 +79,44 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
     LocatorResult locate(LocatorDefinition definition, LocatorConfig config);
 
     /**
-     * Resolves {@code request}'s source against this page's current document and reads, converts,
-     * and validates its data - reusing the exact same locator resolution {@link #locate} does, not
-     * a second DOM search. See {@link ExtractionRequest} for the full raw-&gt;convert-&gt;validate
-     * pipeline and {@link io.webagent4j.extraction.api.AExtractionException} for the failure
-     * taxonomy: a not-found or ambiguous source still raises the normal {@code
-     * LocatorNotFoundException}/{@code AmbiguousLocatorException}, never silently reinterpreted.
+     * Resolves {@code request}'s source against this page's current document to one unambiguous
+     * element and reads, converts, and validates its data - reusing the exact same locator
+     * resolution {@link #locate} does, not a second DOM search. See {@link ExtractionRequest} for
+     * the full raw-&gt;convert-&gt;validate pipeline and {@link
+     * io.webagent4j.extraction.api.AExtractionException} for the failure taxonomy: a not-found or
+     * ambiguous source still raises the normal {@code LocatorNotFoundException}/{@code
+     * AmbiguousLocatorException}, never silently reinterpreted or resolved to a best-ranked guess.
+     *
+     * <p>The default implementation reports that this backend does not support extraction; a
+     * backend that does (the Playwright adapter) overrides it. Adding this default, rather than an
+     * abstract method, keeps every existing {@link IPage} implementation source-compatible.
      */
-    <T> ExtractionResult<T> extract(ExtractionRequest<T> request);
+    default <T> ExtractionResult<T> extract(ExtractionRequest<T> request) {
+        throw new UnsupportedOperationException("Extraction is not supported by this backend");
+    }
 
     /**
      * Resolves every element {@code request}'s source matches against this page's current document,
-     * in deterministic score and DOM order, and reads, converts, and validates each one's data.
+     * and reads, converts, and validates each one's data in DOM order.
+     *
+     * <p>The default implementation reports that this backend does not support extraction; a
+     * backend that does (the Playwright adapter) overrides it. Adding this default, rather than an
+     * abstract method, keeps every existing {@link IPage} implementation source-compatible.
      */
-    <T> ExtractionResult<List<T>> extractList(ExtractionRequest<T> request);
+    default <T> ExtractionResult<List<T>> extractList(ExtractionRequest<T> request) {
+        throw new UnsupportedOperationException("Extraction is not supported by this backend");
+    }
 
     /**
      * Resolves {@code source} to one accessible HTML table on this page and reads its structure.
+     *
+     * <p>The default implementation reports that this backend does not support extraction; a
+     * backend that does (the Playwright adapter) overrides it. Adding this default, rather than an
+     * abstract method, keeps every existing {@link IPage} implementation source-compatible.
      */
-    ExtractionResult<ExtractedTable> extractTable(LocatorDefinition source);
+    default ExtractionResult<ExtractedTable> extractTable(LocatorDefinition source) {
+        throw new UnsupportedOperationException("Extraction is not supported by this backend");
+    }
 
     /** Starts a single action plan with optional postconditions. */
     IActionBuilder action();

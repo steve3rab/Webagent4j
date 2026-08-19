@@ -18,6 +18,7 @@ import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.ILiveLocatorContext;
 import io.webagent4j.locator.ILocatorBackend;
 import io.webagent4j.locator.ILocatorEngine;
+import io.webagent4j.locator.LocatorAllResult;
 import io.webagent4j.locator.LocatorCandidate;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorContext;
@@ -160,6 +161,55 @@ class ExtractionEngineTest {
                 .isThrownBy(() -> extraction.extract(context(), ExtractionRequest.text(SOURCE)));
     }
 
+    /**
+     * Proves {@link ExtractionEngine#extract} resolves through {@link ILocatorEngine#locateSingle},
+     * not {@link ILocatorEngine#locate}: this fake engine's {@code locate} would silently return a
+     * valid best-ranked candidate, so this test would start passing for the wrong reason - or fail
+     * to catch a regression - if {@code extract} were ever changed back to call {@code locate}
+     * instead of {@code locateSingle}.
+     */
+    @Test
+    void extractResolvesThroughLocateSingleSoAnAmbiguousSourceIsNeverSilentlyBestRanked() {
+        IElement element = element("Laptop B", Map.of(), "");
+        AmbiguousLocatorException ambiguous =
+                new AmbiguousLocatorException("two candidates matched");
+        ILocatorEngine engine = new LocateSucceedsLocateSingleFailsEngine(element, ambiguous);
+        ExtractionEngine extraction = new ExtractionEngine(engine);
+
+        assertThatExceptionOfType(AmbiguousLocatorException.class)
+                .isThrownBy(() -> extraction.extract(context(), ExtractionRequest.text(SOURCE)))
+                .isSameAs(ambiguous);
+    }
+
+    /**
+     * Same regression proof as {@link
+     * #extractResolvesThroughLocateSingleSoAnAmbiguousSourceIsNeverSilentlyBestRanked} for {@link
+     * ExtractionEngine#extractTable}: two equally valid tables must raise {@code
+     * AmbiguousLocatorException}, never silently resolve to whichever one {@code locate} would have
+     * ranked first.
+     */
+    @Test
+    void extractTableResolvesThroughLocateSingleSoAnAmbiguousTableIsNeverSilentlyBestRanked() {
+        IElement table = tableElement(List.of(), List.of());
+        AmbiguousLocatorException ambiguous = new AmbiguousLocatorException("two tables matched");
+        ILocatorEngine engine = new LocateSucceedsLocateSingleFailsEngine(table, ambiguous);
+        ExtractionEngine extraction = new ExtractionEngine(engine);
+
+        assertThatExceptionOfType(AmbiguousLocatorException.class)
+                .isThrownBy(() -> extraction.extractTable(context(), SOURCE))
+                .isSameAs(ambiguous);
+    }
+
+    @Test
+    void extractPropagatesANullConverterResultAsAConversionFailure() {
+        IElement element = element("42", Map.of(), "");
+        ExtractionEngine extraction = new ExtractionEngine(fakeEngine(element));
+        ExtractionRequest<String> request = ExtractionRequest.text(SOURCE).convert(raw -> null);
+
+        assertThatExceptionOfType(ExtractionConversionException.class)
+                .isThrownBy(() -> extraction.extract(context(), request));
+    }
+
     @Test
     void anOpaqueBackendFailurePropagatesUnchangedRatherThanBeingAbsorbed() {
         RuntimeException backendFailure = new IllegalStateException("browser disconnected");
@@ -183,6 +233,77 @@ class ExtractionEngineTest {
 
         assertThat(result.value()).containsExactly("Laptop B", "Mouse");
         assertThat(result.rawValue()).isEmpty();
+    }
+
+    /**
+     * The fake engine here deliberately returns its two candidates in rank order B-then-A, with
+     * {@code domOrder} set to the opposite: this test would fail if {@code extractList} simply
+     * iterated {@code locateAll}'s returned order instead of explicitly sorting by {@code
+     * domOrder()} first - proving list extraction's documented DOM-order guarantee is real, not an
+     * accident of whatever order the CSS engine happens to report.
+     */
+    @Test
+    void extractListReturnsValuesInDomOrderNotTheEnginesRankOrder() {
+        IElement rankedFirstButLaterInTheDom = element("B", Map.of(), "");
+        IElement rankedSecondButEarlierInTheDom = element("A", Map.of(), "");
+        LocatorCandidate rankedFirst = candidate(rankedFirstButLaterInTheDom, 20);
+        LocatorCandidate rankedSecond = candidate(rankedSecondButEarlierInTheDom, 10);
+        ILocatorEngine engine = fakeCandidatesEngine(List.of(rankedFirst, rankedSecond));
+        ExtractionEngine extraction = new ExtractionEngine(engine);
+
+        ExtractionResult<List<String>> result =
+                extraction.extractList(context(), ExtractionRequest.text(SOURCE));
+
+        assertThat(result.value()).containsExactly("A", "B");
+    }
+
+    /**
+     * Proves {@code extractList}'s provenance carries the scope path actually live-resolved for
+     * this search ({@link ILocatorEngine#locateAllWithScopePath}), not the caller's starting
+     * baseline scope - relevant inside a frame, where the baseline predates any pending frame
+     * scopes being resolved. This fake deliberately returns a different scope path than {@link
+     * #context()}'s baseline so the test would fail if {@code extractList} fell back to the
+     * baseline instead.
+     */
+    @Test
+    void extractListProvenanceUsesTheLiveResolvedScopePathNotTheBaseline() {
+        IElement element = element("Laptop B", Map.of(), "");
+        LocatorCandidate onlyCandidate = candidate(element, 0);
+        List<String> liveResolvedScopePath = List.of("Page", "Frame[name=checkout]");
+        ILocatorEngine engine =
+                new ILocatorEngine() {
+                    @Override
+                    public LocatorResult locate(
+                            ILiveLocatorContext context, LocatorDefinition definition) {
+                        throw new UnsupportedOperationException("not used by this test");
+                    }
+
+                    @Override
+                    public LocatorResult locateSingle(
+                            ILiveLocatorContext context, LocatorDefinition definition) {
+                        throw new UnsupportedOperationException("not used by this test");
+                    }
+
+                    @Override
+                    public List<LocatorCandidate> locateAll(
+                            ILiveLocatorContext context, LocatorDefinition definition) {
+                        return List.of(onlyCandidate);
+                    }
+
+                    @Override
+                    public LocatorAllResult locateAllWithScopePath(
+                            ILiveLocatorContext context, LocatorDefinition definition) {
+                        return new LocatorAllResult(List.of(onlyCandidate), liveResolvedScopePath);
+                    }
+                };
+        ExtractionEngine extraction = new ExtractionEngine(engine);
+
+        ExtractionResult<List<String>> result =
+                extraction.extractList(context(), ExtractionRequest.text(SOURCE));
+
+        assertThat(result.provenance().scopePath()).isEqualTo(liveResolvedScopePath);
+        assertThat(result.provenance().scopePath())
+                .isNotEqualTo(context().baseline().scope().path());
     }
 
     @Test
@@ -254,10 +375,10 @@ class ExtractionEngineTest {
         return element;
     }
 
-    /** A table row element exposing {@code cells} under the {@code "th, td"} selector. */
+    /** A table row element exposing {@code cells} under extractTable's exact cell selector. */
     private static IElement tableElementWithCells(List<IElement> cells) {
         IElement row = mock(IElement.class);
-        stubCss(row, Map.of("th, td", cells));
+        stubCss(row, Map.of("> th, > td", cells));
         return row;
     }
 
@@ -267,8 +388,8 @@ class ExtractionEngineTest {
         stubCss(
                 table,
                 Map.of(
-                        "thead th, thead td", headerCells,
-                        "tr:not(thead tr)", rows));
+                        "> thead > tr > th, > thead > tr > td", headerCells,
+                        "> tbody > tr, > tr, > tfoot > tr", rows));
         return table;
     }
 
@@ -333,6 +454,59 @@ class ExtractionEngineTest {
         };
     }
 
+    private static ILocatorEngine fakeCandidatesEngine(List<LocatorCandidate> candidates) {
+        return new ILocatorEngine() {
+            @Override
+            public LocatorResult locate(ILiveLocatorContext context, LocatorDefinition definition) {
+                throw new UnsupportedOperationException("not used by list extraction");
+            }
+
+            @Override
+            public LocatorResult locateSingle(
+                    ILiveLocatorContext context, LocatorDefinition definition) {
+                throw new UnsupportedOperationException("not used by list extraction");
+            }
+
+            @Override
+            public List<LocatorCandidate> locateAll(
+                    ILiveLocatorContext context, LocatorDefinition definition) {
+                return candidates;
+            }
+        };
+    }
+
+    /**
+     * A fake {@link ILocatorEngine} whose {@code locate} silently succeeds with a best-ranked
+     * candidate while {@code locateSingle} raises {@code ambiguous} - used to prove a scalar
+     * extraction resolves through {@code locateSingle}, never {@code locate}.
+     */
+    private static final class LocateSucceedsLocateSingleFailsEngine implements ILocatorEngine {
+        private final IElement element;
+        private final RuntimeException ambiguous;
+
+        LocateSucceedsLocateSingleFailsEngine(IElement element, RuntimeException ambiguous) {
+            this.element = element;
+            this.ambiguous = ambiguous;
+        }
+
+        @Override
+        public LocatorResult locate(ILiveLocatorContext context, LocatorDefinition definition) {
+            return result(definition, element);
+        }
+
+        @Override
+        public LocatorResult locateSingle(
+                ILiveLocatorContext context, LocatorDefinition definition) {
+            throw ambiguous;
+        }
+
+        @Override
+        public List<LocatorCandidate> locateAll(
+                ILiveLocatorContext context, LocatorDefinition definition) {
+            throw new UnsupportedOperationException("not used by this test");
+        }
+    }
+
     private static final class FailingLocatorEngine implements ILocatorEngine {
         private final RuntimeException failure;
 
@@ -372,13 +546,17 @@ class ExtractionEngineTest {
     }
 
     private static LocatorCandidate candidate(IElement element) {
+        return candidate(element, 0);
+    }
+
+    private static LocatorCandidate candidate(IElement element, int domOrder) {
         return new LocatorCandidate(
                 "identity-" + System.identityHashCode(element),
                 element,
                 LocatorStrategyType.ACCESSIBLE_NAME,
                 1.0,
                 1.0,
-                0,
+                domOrder,
                 List.of(),
                 true,
                 true,

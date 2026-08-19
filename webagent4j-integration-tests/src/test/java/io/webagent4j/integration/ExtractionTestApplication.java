@@ -51,7 +51,7 @@ final class ExtractionTestApplication implements AutoCloseable {
         return switch (path) {
             case "/extract/simple-text" -> document("<h1>Total</h1><p id=\"amount\">42 USD</p>");
             case "/extract/unicode-text" ->
-                    document("<h1 id=\"title\">Caf&eacute;&nbsp;&nbsp; M&uuml;nch&euml;n</h1>");
+                    document("<h1 id=\"title\">Caf&eacute;&nbsp;&nbsp; M&uuml;nchen</h1>");
             case "/extract/attribute" ->
                     document("<a id=\"product-link\" href=\"/products/laptop-b\">Laptop B</a>");
             case "/extract/dynamic-value" ->
@@ -90,6 +90,25 @@ final class ExtractionTestApplication implements AutoCloseable {
                                     + "<tbody>"
                                     + "<tr><td>Laptop B</td><td>999</td></tr>"
                                     + "</tbody></table>");
+            case "/extract/nested-table" ->
+                    document(
+                            "<table id=\"outer\">"
+                                    + "<thead><tr><th>Name</th><th>Price</th></tr></thead>"
+                                    + "<tbody>"
+                                    + "<tr><td>Laptop B</td><td>"
+                                    + "<table id=\"inner\">"
+                                    + "<thead><tr><th>Currency</th><th>Amount</th></tr></thead>"
+                                    + "<tbody><tr><td>USD</td><td>999</td></tr></tbody>"
+                                    + "</table>"
+                                    + "</td></tr>"
+                                    + "<tr><td>Mouse</td><td>19</td></tr>"
+                                    + "</tbody></table>");
+            case "/extract/ambiguous-table" ->
+                    document(
+                            "<table><thead><tr><th>Name</th></tr></thead>"
+                                    + "<tbody><tr><td>Laptop B</td></tr></tbody></table>"
+                                    + "<table><thead><tr><th>Name</th></tr></thead>"
+                                    + "<tbody><tr><td>Mouse</td></tr></tbody></table>");
             case "/extract/missing-source" -> document("<p>No matching heading here</p>");
             case "/extract/ambiguous-source" ->
                     document("<button>Confirm</button><button>Confirm</button>");
@@ -117,6 +136,19 @@ final class ExtractionTestApplication implements AutoCloseable {
                                     + "<iframe name=\"product-b\" src=\"/extract/iframe-child/product-b\"></iframe>");
             case "/extract/iframe-child/product-a" -> document("<p id=\"amount\">111 USD</p>");
             case "/extract/iframe-child/product-b" -> document("<p id=\"amount\">222 USD</p>");
+            case "/extract/iframe-list" ->
+                    document(
+                            "<iframe name=\"catalog\" src=\"/extract/iframe-child/list\"></iframe>");
+            case "/extract/iframe-child/list" ->
+                    document("<ul><li>Laptop B</li><li>Mouse</li></ul>");
+            case "/extract/iframe-nested-list" ->
+                    document(
+                            "<iframe name=\"outer-catalog\" src=\"/extract/iframe-outer-child-list\">"
+                                    + "</iframe>");
+            case "/extract/iframe-outer-child-list" ->
+                    document(
+                            "<iframe name=\"inner-catalog\" src=\"/extract/iframe-child/list\">"
+                                    + "</iframe>");
             case "/extract/iframe-replacement" ->
                     document(
                             "<iframe name=\"checkout\" src=\"/extract/iframe-child/checkout\"></iframe>"

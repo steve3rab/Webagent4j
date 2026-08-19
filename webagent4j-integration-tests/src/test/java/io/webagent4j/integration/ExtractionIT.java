@@ -41,9 +41,17 @@ class ExtractionIT {
         }
     }
 
-    /** EXT-002: Unicode text with embedded non-breaking spaces survives extraction intact. */
+    /**
+     * EXT-002: Unicode text survives extraction intact - TEXT extraction is exactly whatever {@code
+     * IElement#text()} already returns (including its own existing whitespace normalization), never
+     * a second, independent normalizer applied by extraction itself. This deliberately asserts with
+     * {@code contains} rather than an exact match: {@code IElement#text()}'s Java-side whitespace
+     * collapsing does not treat a non-breaking space as ordinary whitespace the way an accessible-
+     * name normalizer would, so an exact-match assertion here would encode that low-level detail
+     * rather than the actual extraction contract under test.
+     */
     @Test
-    void extractsNormalizedUnicodeText() throws Exception {
+    void extractsUnicodeTextUsingIElementTextsOwnNormalization() throws Exception {
         try (var support = ExtractionTestSupport.start();
                 var page = support.open("/extract/unicode-text")) {
             ExtractionResult<String> result =
@@ -209,6 +217,85 @@ class ExtractionIT {
                                     .convert(IValueConverter.toInteger()));
 
             assertThat(result.value()).isEqualTo(1);
+        }
+    }
+
+    /**
+     * EXT-012: {@code extractTable} resolves through {@code locateSingle}, exactly like scalar
+     * {@code extract} - two equally valid tables raise {@code AmbiguousLocatorException}, never
+     * silently resolving to whichever one ranks first.
+     */
+    @Test
+    void anAmbiguousTableSourceRaisesAmbiguousLocatorException() throws Exception {
+        try (var support = ExtractionTestSupport.start();
+                var page = support.open("/extract/ambiguous-table")) {
+            assertThatExceptionOfType(AmbiguousLocatorException.class)
+                    .isThrownBy(
+                            () ->
+                                    page.extractTable(
+                                            LocatorDefinition.css("table")
+                                                    .withTimeout(SHORT_TIMEOUT)));
+        }
+    }
+
+    /**
+     * EXT-013: a table nested inside one of an outer table's cells never contributes its own
+     * headers or rows to the outer table's extraction - every selector extractTable uses is
+     * anchored to the outer table's own direct children, never an unbounded descendant search.
+     */
+    @Test
+    void extractingATableNeverAbsorbsANestedTablesHeadersOrRows() throws Exception {
+        try (var support = ExtractionTestSupport.start();
+                var page = support.open("/extract/nested-table")) {
+            ExtractionResult<ExtractedTable> result =
+                    page.extractTable(LocatorDefinition.element().withId("outer"));
+
+            ExtractedTable table = result.value();
+            assertThat(table.headers()).containsExactly("Name", "Price");
+            assertThat(table.rows()).hasSize(2);
+            assertThat(table.cell(0, "Name")).contains("Laptop B");
+            assertThat(table.cell(1, "Name")).contains("Mouse");
+        }
+    }
+
+    /**
+     * EXT-014: list extraction's provenance carries the scope path actually resolved inside a frame
+     * - a frame document is its own independent scope chain root (see {@code LocatorScope#frame}),
+     * so this is {@code Frame[name="catalog"]}, never the page's own {@code Page} baseline.
+     */
+    @Test
+    void extractListInsideAFrameReportsTheFramesScopePath() throws Exception {
+        try (var support = ExtractionTestSupport.start();
+                var page = support.open("/extract/iframe-list")) {
+            IFrame catalog = page.frame().named("catalog").single();
+
+            ExtractionResult<List<String>> result =
+                    catalog.extractList(ExtractionRequest.text(LocatorDefinition.css("ul li")));
+
+            assertThat(result.value()).containsExactly("Laptop B", "Mouse");
+            assertThat(result.provenance().scopePath()).containsExactly("Frame[name=\"catalog\"]");
+        }
+    }
+
+    /**
+     * EXT-015: list extraction's provenance inside a nested frame reports that innermost frame's
+     * own scope ({@code Frame[name="inner-catalog"]}) - never the outer frame's identity and never
+     * the page's own baseline, since each frame document is resolved as its own independent scope
+     * chain root rather than a descendant appended to its parent's path.
+     */
+    @Test
+    void extractListInsideANestedFrameReportsTheInnermostFramesScopePath() throws Exception {
+        try (var support = ExtractionTestSupport.start();
+                var page = support.open("/extract/iframe-nested-list")) {
+            IFrame outer = page.frame().named("outer-catalog").single();
+            IFrame inner = outer.frame().named("inner-catalog").single();
+
+            ExtractionResult<List<String>> result =
+                    inner.extractList(ExtractionRequest.text(LocatorDefinition.css("ul li")));
+
+            assertThat(result.value()).containsExactly("Laptop B", "Mouse");
+            assertThat(result.provenance().scopePath())
+                    .containsExactly("Frame[name=\"inner-catalog\"]");
         }
     }
 }

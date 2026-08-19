@@ -150,25 +150,6 @@ class IPageDefaultMethodsTest {
         }
 
         @Override
-        public <T> io.webagent4j.extraction.api.ExtractionResult<T> extract(
-                io.webagent4j.extraction.api.ExtractionRequest<T> request) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <T> io.webagent4j.extraction.api.ExtractionResult<java.util.List<T>> extractList(
-                io.webagent4j.extraction.api.ExtractionRequest<T> request) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public io.webagent4j.extraction.api.ExtractionResult<
-                        io.webagent4j.extraction.api.ExtractedTable>
-                extractTable(LocatorDefinition source) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
         public IActionBuilder action() {
             throw new UnsupportedOperationException();
         }

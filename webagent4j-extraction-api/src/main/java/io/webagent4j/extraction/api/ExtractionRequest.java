@@ -17,10 +17,12 @@ import java.util.Optional;
  * LocatorDefinition#stability()} govern the wait, exactly as they already do for {@code
  * IFrame#locate}: extraction introduces no separate timeout concept.
  *
- * <p>The pipeline is always raw -&gt; convert -&gt; validate: {@link #convert(IValueConverter)}
- * changes the request's result type and therefore always discards any previously attached validator
- * (a validator typed for the old result type can never apply to the new one); attach {@link
- * #validate(IExtractionValidator)} again afterward.
+ * <p>A converter is always present - {@link #text}/{@link #attribute}/{@link #value} start with
+ * {@link IValueConverter#identity()} - so an extraction engine never has to fall back to an
+ * unchecked cast for a request with no converter attached. The pipeline is always raw -&gt; convert
+ * -&gt; validate: {@link #convert(IValueConverter)} changes the request's result type and therefore
+ * always discards any previously attached validator (a validator typed for the old result type can
+ * never apply to the new one); attach {@link #validate(IExtractionValidator)} again afterward.
  *
  * @param <T> the converted extraction result's type
  */
@@ -28,7 +30,7 @@ public record ExtractionRequest<T>(
         LocatorDefinition source,
         ExtractionReadType readType,
         Optional<String> attributeName,
-        Optional<IValueConverter<T>> converter,
+        IValueConverter<T> converter,
         Optional<IExtractionValidator<T>> validator) {
 
     /** Validates internal consistency between {@link #readType()} and {@link #attributeName()}. */
@@ -47,13 +49,17 @@ public record ExtractionRequest<T>(
         }
     }
 
-    /** Requests the source element's normalized visible text. */
+    /**
+     * Requests the source element's visible text, exactly as {@code IElement#text()} returns it -
+     * extraction reuses that method's existing whitespace-normalization semantics and applies no
+     * second, independent text normalizer of its own.
+     */
     public static ExtractionRequest<String> text(LocatorDefinition source) {
         return new ExtractionRequest<>(
                 source,
                 ExtractionReadType.TEXT,
                 Optional.empty(),
-                Optional.empty(),
+                IValueConverter.identity(),
                 Optional.empty());
     }
 
@@ -64,7 +70,7 @@ public record ExtractionRequest<T>(
                 source,
                 ExtractionReadType.ATTRIBUTE,
                 Optional.of(name),
-                Optional.empty(),
+                IValueConverter.identity(),
                 Optional.empty());
     }
 
@@ -74,7 +80,7 @@ public record ExtractionRequest<T>(
                 source,
                 ExtractionReadType.VALUE,
                 Optional.empty(),
-                Optional.empty(),
+                IValueConverter.identity(),
                 Optional.empty());
     }
 
@@ -86,7 +92,7 @@ public record ExtractionRequest<T>(
     public <R> ExtractionRequest<R> convert(IValueConverter<R> converter) {
         Objects.requireNonNull(converter, "converter");
         return new ExtractionRequest<>(
-                source, readType, attributeName, Optional.of(converter), Optional.empty());
+                source, readType, attributeName, converter, Optional.empty());
     }
 
     /** Returns a copy that additionally validates the converted value with {@code validator}. */
@@ -94,5 +100,29 @@ public record ExtractionRequest<T>(
         Objects.requireNonNull(validator, "validator");
         return new ExtractionRequest<>(
                 source, readType, attributeName, converter, Optional.of(validator));
+    }
+
+    /**
+     * Applies this request's converter and, when present, its validator to an already-read raw
+     * value, in the mandated raw -&gt; convert -&gt; validate order. A converter that returns
+     * {@code null} is treated as a conversion failure - a successful {@link ExtractionResult} must
+     * never carry a {@code null} value - rather than letting a {@code null} silently reach a
+     * validator or a caller.
+     *
+     * @throws ExtractionConversionException if {@code converter} fails or returns {@code null}
+     * @throws ExtractionValidationException if the converted value fails {@link #validator()}
+     */
+    public T convertAndValidate(String raw) {
+        Objects.requireNonNull(raw, "raw");
+        T value = converter.convert(raw);
+        if (value == null) {
+            throw new ExtractionConversionException(
+                    raw,
+                    Object.class,
+                    new NullPointerException(
+                            "converter produced a null value for \"" + raw + "\""));
+        }
+        validator.ifPresent(rule -> rule.validate(value));
+        return value;
     }
 }

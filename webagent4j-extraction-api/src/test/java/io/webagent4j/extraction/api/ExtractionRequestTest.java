@@ -13,12 +13,12 @@ class ExtractionRequestTest {
             LocatorDefinition.forRole(ElementRole.HEADING).named("Total");
 
     @Test
-    void textFactoryHasNoAttributeNameConverterOrValidator() {
+    void textFactoryHasNoAttributeNameOrValidatorButAlwaysHasAConverter() {
         ExtractionRequest<String> request = ExtractionRequest.text(SOURCE);
 
         assertThat(request.readType()).isEqualTo(ExtractionReadType.TEXT);
         assertThat(request.attributeName()).isEmpty();
-        assertThat(request.converter()).isEmpty();
+        assertThat(request.converter()).isNotNull();
         assertThat(request.validator()).isEmpty();
     }
 
@@ -39,7 +39,7 @@ class ExtractionRequestTest {
                                         SOURCE,
                                         ExtractionReadType.ATTRIBUTE,
                                         java.util.Optional.empty(),
-                                        java.util.Optional.empty(),
+                                        IValueConverter.identity(),
                                         java.util.Optional.empty()));
     }
 
@@ -52,7 +52,7 @@ class ExtractionRequestTest {
                                         SOURCE,
                                         ExtractionReadType.TEXT,
                                         java.util.Optional.of("href"),
-                                        java.util.Optional.empty(),
+                                        IValueConverter.identity(),
                                         java.util.Optional.empty()));
     }
 
@@ -63,7 +63,7 @@ class ExtractionRequestTest {
 
         ExtractionRequest<Integer> converted = withValidator.convert(IValueConverter.toInteger());
 
-        assertThat(converted.converter()).isPresent();
+        assertThat(converted.converter()).isNotNull();
         assertThat(converted.validator()).isEmpty();
     }
 
@@ -74,7 +74,26 @@ class ExtractionRequestTest {
                         .convert(IValueConverter.toInteger())
                         .validate(IExtractionValidator.range(0, 100));
 
-        assertThat(request.converter()).isPresent();
+        assertThat(request.converter()).isNotNull();
         assertThat(request.validator()).isPresent();
+    }
+
+    @Test
+    void convertAndValidateAppliesTheConverterThenTheValidatorInOrder() {
+        ExtractionRequest<Integer> request =
+                ExtractionRequest.text(SOURCE)
+                        .convert(IValueConverter.toInteger())
+                        .validate(IExtractionValidator.range(0, 100));
+
+        assertThat(request.convertAndValidate("42")).isEqualTo(42);
+    }
+
+    @Test
+    void convertAndValidateTurnsANullConverterResultIntoAConversionFailure() {
+        ExtractionRequest<String> request = ExtractionRequest.text(SOURCE).convert(raw -> null);
+
+        assertThatExceptionOfType(ExtractionConversionException.class)
+                .isThrownBy(() -> request.convertAndValidate("anything"))
+                .satisfies(failure -> assertThat(failure.rawValue()).isEqualTo("anything"));
     }
 }

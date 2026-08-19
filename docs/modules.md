@@ -8,7 +8,7 @@ Arrows below mean "depends on."
 | `webagent4j-common` | none | Exceptions, timeouts, retry policy |
 | `webagent4j-wait` | common | Deterministic wait/stability primitive: monotonic deadlines, polling, stability windows |
 | `webagent4j-locator-api` | none | Immutable locator definitions and generic fluent contracts |
-| `webagent4j-dom` | common, locator-api | Backend-neutral live element and scoped query contract |
+| `webagent4j-dom` | common, extraction-api, locator-api | Backend-neutral live element and scoped query contract |
 | `webagent4j-observation-api` | dom, locator-api | Immutable semantic model, options, renderer, fingerprint, diff, capture SPI |
 | `webagent4j-observation` | browser-api, observation-api | Semantic transformation, policies, observers, diagnostics, events |
 | `webagent4j-locator` | common, dom, locator-api, wait | Planning, discovery ports, filtering, scoring, ambiguity, diagnostics |
@@ -46,11 +46,15 @@ from becoming accidental compatibility commitments. No Maven dependency cycle ex
 
 `webagent4j-extraction-api` depends only on `locator-api`, never on `dom`: an `ExtractionRequest`
 describes where to search (a `LocatorDefinition`) and how to read/convert/validate what is found,
-never a live `IElement` reference, so an already-resolved element's own `text()`/`attributes()`/
-`value()` reads (already on `IElement` in `webagent4j-dom`) need no dependency on extraction at all
-- a caller applies `IValueConverter`/`IExtractionValidator` directly to those. `webagent4j-extraction`
-is the engine, reusing `ILocatorEngine`/`ILiveLocatorContext` rather than a parallel resolution
-engine.
+never a live `IElement` reference. `webagent4j-dom` depends on `extraction-api` in the other
+direction, for exactly one method - `IElement#extract(ExtractionRequest<T>)`, which reads an
+already-resolved element's own `text()`/`attributes()`/`value()` directly (no locator search) and
+applies the same `ExtractionRequest#convertAndValidate(String)` pipeline step `webagent4j-extraction`
+uses. This one-directional edge (`dom -> extraction-api`, never the reverse) is an ArchUnit-enforced
+rule (`extractionApiRemainsIndependentFromDom`), the same pattern `dom -> locator-api` already uses
+for `IElement.find()`. `webagent4j-extraction` is the deterministic engine
+(`ExtractionEngine`), reusing `ILocatorEngine`/`ILiveLocatorContext` rather than a parallel
+resolution engine.
 
 The action module owns orchestration but no browser-native implementation. Verification owns
 read-only conditions and polling. Browser adapters implement `IActionBackend`; target resolution,

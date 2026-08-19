@@ -25,6 +25,9 @@ class ArchitectureTest {
                         JavaClass.Predicates.resideInAnyPackage("io.webagent4j.dom.."),
                         JavaClass.Predicates.resideInAnyPackage("io.webagent4j.locator.api.."))
                 .ignoreDependency(
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.dom.."),
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.extraction.api.."))
+                .ignoreDependency(
                         JavaClass.Predicates.resideInAnyPackage("io.webagent4j.browser.."),
                         JavaClass.Predicates.resideInAnyPackage("io.webagent4j.observation.."))
                 .ignoreDependency(
@@ -141,6 +144,20 @@ class ArchitectureTest {
                                                 && !javaClass
                                                         .getPackageName()
                                                         .startsWith("io.webagent4j.locator.api")))
+                .check(projectClasses);
+    }
+
+    @Test
+    void extractionApiRemainsIndependentFromDom() {
+        // io.webagent4j.dom is allowed to depend on extraction.api (IElement#extract - see
+        // packageSlicesHaveNoCycles' matching ignoreDependency), so the direction matters: only
+        // dom -> extraction.api is legitimate, never the reverse.
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.extraction.api..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("io.webagent4j.dom..")
                 .check(projectClasses);
     }
 
