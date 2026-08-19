@@ -47,7 +47,8 @@ with every other Playwright-backed IT in this suite.
 
 Frame support has its own fixture, `FrameTestApplication`, and its own family of ITs
 (`FrameResolutionIT`, `FrameAmbiguityIT`, `FrameNestedIT`, `FrameLifecycleIT`, `FrameActionPlanIT`,
-`FrameDryRunAndTryFindIT`, `FrameNavigationIT`, `FrameCrossOriginIT`), separate from
+`FrameDryRunAndTryFindIT`, `FrameNavigationIT`, `FrameCrossOriginIT`, `FrameUrlResolutionIT`,
+`FrameLocateLiveResolutionIT`), separate from
 `ActionTestApplication`'s element-only routes: a frame is a document boundary, and several scenarios
 (ambiguity, replacement, detachment) need more than one live document open at once, which the
 existing fixture's single-document model does not represent. `FrameCrossOriginIT` starts a *second*

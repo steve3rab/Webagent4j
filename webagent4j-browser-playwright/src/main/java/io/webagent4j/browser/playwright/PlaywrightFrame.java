@@ -11,6 +11,7 @@ import io.webagent4j.browser.IFrame;
 import io.webagent4j.browser.IFrameLocator;
 import io.webagent4j.common.BrowserException;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.locator.ILiveLocatorContext;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorContext;
@@ -114,18 +115,15 @@ final class PlaywrightFrame implements IFrame {
 
     @Override
     public LocatorResult locate(LocatorDefinition definition) {
-        return engine.locate(currentContext(), definition);
+        return engine.locate(
+                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes),
+                definition);
     }
 
     @Override
     public LocatorResult locate(LocatorDefinition definition, LocatorConfig overrideConfig) {
-        LocatorContext resolved = currentContext();
-        return engine.locate(
-                new LocatorContext(
-                        resolved.backend(),
-                        resolved.scope(),
-                        Objects.requireNonNull(overrideConfig, "config")),
-                definition);
+        Objects.requireNonNull(overrideConfig, "config");
+        return engine.locate(liveContext(overrideConfig), definition);
     }
 
     @Override
@@ -144,9 +142,30 @@ final class PlaywrightFrame implements IFrame {
                 engine, baseContext, pendingScopes, config, options, actionBackend);
     }
 
-    /** Re-resolves this frame's own pending-scope chain against the current live DOM. */
-    private LocatorContext currentContext() {
-        return PlaywrightScopeResolver.resolvePendingScopes(engine, baseContext, pendingScopes);
+    /**
+     * Returns a live context that re-resolves this frame's own pending-scope chain fresh against
+     * the live DOM on every call, with {@code overrideConfig} applied to each fresh resolution -
+     * the same live-resolution guarantee {@link #find(LocatorConfig)} already gives, extended to
+     * {@link #locate(LocatorDefinition, LocatorConfig)} so a frame that disappears, is replaced, or
+     * becomes ambiguous mid-wait is caught on the very next poll rather than only when the wait
+     * begins.
+     */
+    private ILiveLocatorContext liveContext(LocatorConfig overrideConfig) {
+        return new ILiveLocatorContext() {
+            @Override
+            public LocatorContext baseline() {
+                return new LocatorContext(
+                        baseContext.backend(), baseContext.scope(), overrideConfig);
+            }
+
+            @Override
+            public LocatorContext resolve() {
+                LocatorContext resolved =
+                        PlaywrightScopeResolver.resolvePendingScopes(
+                                engine, baseContext, pendingScopes);
+                return new LocatorContext(resolved.backend(), resolved.scope(), overrideConfig);
+            }
+        };
     }
 
     /**

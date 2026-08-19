@@ -109,6 +109,12 @@ final class FrameTestApplication implements AutoCloseable {
                             "Two identical payment frames",
                             iframe("payment-1", "payment", "/frames/child/payment-1")
                                     + iframe("payment-2", "payment", "/frames/child/payment-2"));
+            case "/frames/two-identical-payment-same-url" ->
+                    host(
+                            "Two identical payment frames sharing the same url",
+                            iframe("payment-1", "payment", "/frames/child/payment-1")
+                                    + iframe(
+                                            "payment-1-dup", "payment", "/frames/child/payment-1"));
             case "/frames/wrong-frame-buy" ->
                     host(
                             "Two frames with identical buy buttons",

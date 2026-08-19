@@ -6,11 +6,16 @@ behavior depends on machine-readable browser semantics and current backend capab
 ## Document boundaries
 
 - Page, element, and frame scopes are all supported through the public API: `IPage#frame()` /
-  `IFrame#frame()` return an `IFrameLocator` with the same `single()`/`first()`/`all()`/`tryFind()`
-  terminal operations, 0/1/N classification, and bounded-wait semantics element locators already
-  have. Frame resolution is backend-neutral - no native Playwright `Frame`, `FrameLocator`, or `Page`
-  type is exposed - and cross-origin iframes work the same as same-origin ones, without weakening
-  browser security. See [locators.md](locators.md#frames) for the full contract.
+  `IFrame#frame()` return an `IFrameLocator` with `single()`/`tryFind()` terminal operations - no
+  `first()` or `all()`, since a frame has no scoring dimension to rank candidates by and DOM order
+  is never a hidden tie breaker - the same 0/1/N classification and bounded-wait semantics element
+  locators already have. Every criterion (`id`, `name`, `title`, `url`) filters candidates before
+  that 0/1/N classification is applied, so a `url` criterion can disambiguate two frames that share
+  a `name`, rather than one being forced to an ambiguous failure before `url` ever gets a chance to
+  narrow the match. Frame resolution is backend-neutral - no native Playwright `Frame`,
+  `FrameLocator`, or `Page` type is exposed - and cross-origin iframes work the same as same-origin
+  ones, without weakening browser security. See [locators.md](locators.md#frames) for the full
+  contract.
 - Frame criteria are limited to `id`, `name`, `title`, and URL (exact/case-insensitive/contains/
   starts-with/ends-with/regex); there is no CSS/XPath frame selector and no fuzzy frame-name
   matching, mirroring the same deliberate absence of a "huge selector DSL" the element locator API

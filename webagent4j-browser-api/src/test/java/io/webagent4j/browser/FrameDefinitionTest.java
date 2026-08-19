@@ -72,9 +72,23 @@ class FrameDefinitionTest {
         FrameDefinition definition = FrameDefinition.frame();
 
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> definition.withTimeout(Duration.ZERO));
+                .isThrownBy(() -> definition.withTimeout(Duration.ZERO))
+                .withMessage("timeout must be positive");
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> definition.withTimeout(Duration.ofSeconds(-1)));
+                .isThrownBy(() -> definition.withTimeout(Duration.ofSeconds(-1)))
+                .withMessage("timeout must be positive");
+    }
+
+    @Test
+    void rejectsANonPositiveStabilityWindowWithItsOwnDistinctMessage() {
+        FrameDefinition definition = FrameDefinition.frame();
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> definition.stableFor(Duration.ZERO))
+                .withMessage("stability must be positive");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> definition.stableFor(Duration.ofSeconds(-1)))
+                .withMessage("stability must be positive");
     }
 
     @Test
@@ -82,5 +96,31 @@ class FrameDefinitionTest {
         FrameDefinition definition = FrameDefinition.frame().withId(" checkout ");
 
         assertThat(definition.id()).contains("checkout");
+    }
+
+    @Test
+    void theCanonicalConstructorAlsoDistinguishesTimeoutFromStabilityMessages() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                new FrameDefinition(
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.of(Duration.ZERO),
+                                        java.util.Optional.empty()))
+                .withMessage("timeout must be positive");
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                new FrameDefinition(
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.of(Duration.ZERO)))
+                .withMessage("stability must be positive");
     }
 }

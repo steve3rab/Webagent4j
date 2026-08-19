@@ -2,17 +2,21 @@ package io.webagent4j.browser;
 
 import io.webagent4j.locator.api.TextMatch;
 import java.time.Duration;
-import java.util.List;
 import java.util.Optional;
 
 /**
  * Fluent immutable query that resolves a frame only at a terminal operation.
  *
- * <p>Mirrors {@link io.webagent4j.locator.api.ILocator}'s contract at the frame level: {@link
- * #single()} requires the match to be unique, {@link #first()} accepts multiple candidates and
- * returns the highest-ranked one in deterministic order, and {@link #all()} returns every
- * candidate. There is no scoring or DOM-order tie breaker for frames - two or more equally valid
- * matches are always ambiguous, never silently narrowed to "the first one".
+ * <p>Unlike {@link io.webagent4j.locator.api.ILocator} at the element level, this contract exposes
+ * only {@link #single()} and {@link #tryFind()} - no {@code first()} and no {@code all()}. A frame
+ * must be resolved by an unambiguous semantic identity, never by document order or position: there
+ * is no scoring dimension to rank frame candidates by, so a "highest ranked" pick would really mean
+ * "first in DOM order", exactly the hidden tie breaker this codebase deliberately never uses for
+ * frames. An {@code all()} enumerating several matches would also be misleading here, since every
+ * {@code IFrame} it returned would carry the identical query criteria - not a distinct,
+ * individually usable identity for "the second one" versus "the first one" - so it is not offered
+ * at all rather than offered with a trap. Two or more equally valid matches are always ambiguous,
+ * never silently narrowed to "the first one".
  */
 public interface IFrameLocator {
 
@@ -41,14 +45,8 @@ public interface IFrameLocator {
      */
     IFrameLocator stableFor(Duration duration);
 
-    /** Returns the highest-ranked compatible frame or fails when none exists. */
-    IFrame first();
-
     /** Returns one unambiguous frame or fails for zero or multiple equally valid matches. */
     IFrame single();
-
-    /** Returns every compatible frame currently present, in deterministic document order. */
-    List<IFrame> all();
 
     /**
      * Attempts a single unambiguous resolution without converting a real failure into a silent

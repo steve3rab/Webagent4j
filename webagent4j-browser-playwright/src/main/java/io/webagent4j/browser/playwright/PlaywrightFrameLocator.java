@@ -5,21 +5,19 @@ import io.webagent4j.browser.FrameDefinition;
 import io.webagent4j.browser.IFrame;
 import io.webagent4j.browser.IFrameLocator;
 import io.webagent4j.common.LocatorFailureClassifier;
-import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorContext;
 import io.webagent4j.locator.api.TextMatch;
 import java.time.Duration;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 /**
  * Internal fluent frame query entry point. Mirrors {@link PlaywrightFind}: neither construction nor
  * any {@code with*} call resolves anything - a frame is only ever looked up at a terminal operation
- * ({@link #single()}, {@link #first()}, {@link #all()}, {@link #tryFind()}), with real {@link
- * io.webagent4j.wait.WaitEngine}-driven waiting up to the requested timeout, exactly like {@link
+ * ({@link #single()}, {@link #tryFind()}), with real {@link io.webagent4j.wait.WaitEngine}-driven
+ * waiting up to the requested timeout, exactly like {@link
  * io.webagent4j.locator.api.ILocator#single()} does for elements.
  */
 final class PlaywrightFrameLocator implements IFrameLocator {
@@ -99,11 +97,9 @@ final class PlaywrightFrameLocator implements IFrameLocator {
     /**
      * Returns the one matching frame or fails for zero or multiple matches.
      *
-     * <p>Unlike {@link io.webagent4j.locator.api.ILocator#first()}, {@link #first()} on this type
-     * behaves identically to this method rather than picking a "highest ranked" candidate: there is
-     * no scoring dimension for frames to rank by, and DOM order is deliberately never used as a
-     * hidden tie breaker, so a frame query with more than one equally valid match is always
-     * ambiguous.
+     * <p>There is no scoring dimension for frames to rank candidates by, and DOM order is
+     * deliberately never used as a hidden tie breaker, so a frame query with more than one equally
+     * valid match is always ambiguous rather than resolved to "the first one".
      */
     @Override
     public IFrame single() {
@@ -116,38 +112,6 @@ final class PlaywrightFrameLocator implements IFrameLocator {
                         parentPendingScopes, new IPendingScope.Frame(definition));
         return new PlaywrightFrame(
                 engine, baseContext, resolvedScopes, config, options, actionBackend);
-    }
-
-    @Override
-    public IFrame first() {
-        return single();
-    }
-
-    /**
-     * Returns every frame currently matching this query, in deterministic document order.
-     *
-     * <p>Every returned {@code IFrame} carries the same semantic identity - this query's own
-     * criteria - not an index or DOM-order tie breaker distinguishing "the second one" from "the
-     * first one", since this codebase never uses one to disambiguate frames. Retaining exactly one
-     * entry and using it later works exactly like {@link #single()}'s result. Retaining more than
-     * one and using them independently later, while the same ambiguity that {@code all()} is
-     * enumerating here still holds, correctly fails as ambiguous at that point - {@code all()} lets
-     * a caller observe and count an ambiguous match set without being forced to pick one.
-     */
-    @Override
-    public List<IFrame> all() {
-        LocatorContext resolvedParent =
-                PlaywrightScopeResolver.resolvePendingScopes(
-                        engine, baseContext, parentPendingScopes);
-        List<IElement> matches =
-                PlaywrightScopeResolver.resolveFrameElements(engine, resolvedParent, definition);
-        List<IPendingScope> resolvedScopes =
-                PlaywrightScopeResolver.append(
-                        parentPendingScopes, new IPendingScope.Frame(definition));
-        IFrame frame =
-                new PlaywrightFrame(
-                        engine, baseContext, resolvedScopes, config, options, actionBackend);
-        return Collections.nCopies(matches.size(), frame);
     }
 
     @Override

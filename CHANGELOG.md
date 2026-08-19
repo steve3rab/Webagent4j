@@ -10,10 +10,10 @@ All notable changes to this project will be documented in this file. The format 
 
 - `IPage#frame()` / `IFrame#frame()`, returning a new `IFrameLocator`: a backend-neutral, immutable
   frame query with `withId`/`named`/`withTitle`/`withUrl`/`timeout`/`stableFor` criteria and
-  `single()`/`first()`/`all()`/`tryFind()` terminal operations - the same 0/1/N -> not-found/success/
-  ambiguous classification, bounded-wait semantics, and no-DOM-order-tie-breaker guarantees element
-  locators already have. A frame is modeled as a document boundary, never a descendant DOM element;
-  no native Playwright `Frame`, `FrameLocator`, or `Page` type is exposed through the public API.
+  `single()`/`tryFind()` terminal operations - the same 0/1/N -> not-found/success/ambiguous
+  classification, bounded-wait semantics, and no-DOM-order-tie-breaker guarantees element locators
+  already have. A frame is modeled as a document boundary, never a descendant DOM element; no native
+  Playwright `Frame`, `FrameLocator`, or `Page` type is exposed through the public API.
 - `IFrame`: a re-resolvable live frame handle exposing `find()`, `action()`, `observe()`/
   `observe(ObservationOptions)` (scoped only to that frame's own document), `url()`, `title()`,
   `navigate(String)`, and `frame()` for traversal nested strictly inside that frame's own document.
@@ -32,10 +32,52 @@ All notable changes to this project will be documented in this file. The format 
 - Widened `IObservationEngine`/`ObservationEngine` from `IPage` to the pre-existing
   `IObservationSource` supertype, letting `IFrame.observe()` reuse the same observation engine
   without duplicating it; existing `IPage`-based callers are unaffected.
-- 24 new Playwright integration tests (`FrameResolutionIT`, `FrameAmbiguityIT`, `FrameNestedIT`,
+- 25 new Playwright integration tests (`FrameResolutionIT`, `FrameAmbiguityIT`, `FrameNestedIT`,
   `FrameLifecycleIT`, `FrameActionPlanIT`, `FrameDryRunAndTryFindIT`, `FrameNavigationIT`,
   `FrameCrossOriginIT`) and 10 new deterministic robustness scenarios (`FrameRobustnessIT`,
   FRAME-001..FRAME-010).
+
+### Fixed (Frame / iframe consistency)
+
+- **URL now genuinely participates in frame resolution instead of being checked only after
+  id/name/title already settled on a single candidate.** Previously `PlaywrightScopeResolver`
+  resolved the `id`/`name`/`title` criteria through `ILocatorEngine#locateSingle` - which fails
+  closed on more than one match by itself - before the `url` criterion was ever consulted, so two
+  `<iframe>`s sharing the same `name` but different `src` were incorrectly rejected as `AMBIGUOUS`
+  even when `.withUrl(...)` should have disambiguated them. Frame resolution now discovers every
+  current `id`/`name`/`title` candidate through `ILocatorEngine#locateAll`, filters that set by the
+  `url` criterion when present, and only then applies the 0/1/N -> not-found/success/ambiguous
+  classification - the same fix applies to a `url`-only query against several candidates. The fix
+  reuses the existing `webagent4j-wait` `WaitEngine`/`WaitBudget`/`WaitPolicy` primitives (one more
+  caller of the shared wait architecture, not a second resolution engine), preserves the existing
+  one-shot-versus-real-timeout split for a prerequisite frame hop, keeps bounded waits, `stableFor`,
+  live re-resolution, nested frames, and typed classification exactly as before, and tolerates a
+  candidate whose content document has become momentarily unavailable mid-poll (excluded from that
+  poll rather than converting a real backend error into a false success).
+- **`IFrameLocator#first()` and `#all()` removed.** `first()` was a redundant alias for `single()`,
+  and `all()` returned the same `IFrame` handle repeated N times with no individual stable identity -
+  a misleading contract for a document boundary, which has no scoring dimension to rank candidates
+  by. `IFrameLocator` now exposes only `single()` and `tryFind()` as terminal operations; element-
+  level `ILocator#first()`/`#all()` are unaffected.
+- **`IFrame#locate(LocatorDefinition)` and `#locate(LocatorDefinition, LocatorConfig)` are now fully
+  live**, resolving this frame's own pending-scope chain fresh on every `WaitEngine` poll instead of
+  once before the wait begins - the same re-resolution guarantee `frame.find()...single()` and
+  `IFrame#find(LocatorConfig)` already had. A frame that is replaced, disappears, or becomes
+  ambiguous mid-wait is now caught by `locate(...)` exactly as it already was by `find(...)`, with
+  identical semantics between the fluent and programmatic entry points.
+- `FrameDefinition`'s Javadoc for `id` now names `<iframe>` explicitly instead of "iframe/frame"
+  (this codebase never added legacy HTML `<frame>` support). `requirePositive()` now takes a label
+  so a non-positive `timeout` and a non-positive `stableFor` duration raise distinct, correctly
+  worded messages instead of both saying "timeout must be positive".
+- 11 new tests covering the url-participates-before-classification fix and the live `locate()` fix:
+  `FrameUrlResolutionIT` (6 real-browser scenarios: same-name-different-url disambiguation,
+  same-name-same-url ambiguity, url-only selection among several, nonexistent url, frame replacement
+  retaining url-based identity, nested frame with a url criterion) and `FrameLocateLiveResolutionIT`
+  (5 real-browser scenarios: `locate()` after replacement, `locate()` NOT_FOUND on disappearance
+  mid-wait, `locate()` AMBIGUOUS on a duplicate appearing during `stableFor`, nested-frame `locate()`,
+  no wrong target leaking from a sibling frame), plus 12 new unit tests (25 total) in
+  `PlaywrightFrameScopeResolverTest` covering every `TextMatch` type against the `url` criterion and
+  the disambiguation/ambiguity/not-found matrix at the mocked-engine level.
 
 ### Fixed (CI stabilization)
 

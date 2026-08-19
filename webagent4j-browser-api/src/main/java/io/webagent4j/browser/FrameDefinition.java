@@ -15,7 +15,7 @@ import java.util.Optional;
  * found" outcome; two or more equally valid matches is a typed "ambiguous" outcome. Neither outcome
  * is ever resolved by picking the first candidate.
  *
- * @param id exact {@code iframe}/{@code frame} element id
+ * @param id exact {@code <iframe>} element id
  * @param name criterion against the HTML {@code name} attribute
  * @param title criterion against the {@code title} attribute
  * @param url criterion against the frame's current document URL
@@ -37,9 +37,9 @@ public record FrameDefinition(
         title = Objects.requireNonNull(title, "title");
         url = Objects.requireNonNull(url, "url");
         timeout = Objects.requireNonNull(timeout, "timeout");
-        timeout.ifPresent(FrameDefinition::requirePositive);
+        timeout.ifPresent(value -> requirePositive(value, "timeout"));
         stability = Objects.requireNonNull(stability, "stability");
-        stability.ifPresent(FrameDefinition::requirePositive);
+        stability.ifPresent(value -> requirePositive(value, "stability"));
     }
 
     /** Creates an unconstrained frame query. */
@@ -90,7 +90,7 @@ public record FrameDefinition(
     /** Returns a copy with a positive resolution timeout override. */
     public FrameDefinition withTimeout(Duration value) {
         Objects.requireNonNull(value, "timeout");
-        requirePositive(value);
+        requirePositive(value, "timeout");
         return new FrameDefinition(id, name, title, url, Optional.of(value), stability);
     }
 
@@ -99,7 +99,7 @@ public record FrameDefinition(
      */
     public FrameDefinition stableFor(Duration value) {
         Objects.requireNonNull(value, "stability");
-        requirePositive(value);
+        requirePositive(value, "stability");
         return new FrameDefinition(id, name, title, url, timeout, Optional.of(value));
     }
 
@@ -121,9 +121,9 @@ public record FrameDefinition(
         return normalized;
     }
 
-    private static void requirePositive(Duration value) {
+    private static void requirePositive(Duration value, String label) {
         if (value.isZero() || value.isNegative()) {
-            throw new IllegalArgumentException("timeout must be positive");
+            throw new IllegalArgumentException(label + " must be positive");
         }
     }
 }

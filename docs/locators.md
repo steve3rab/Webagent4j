@@ -418,12 +418,18 @@ IElement pay = checkout.find().button().named("Pay").single();
 `IFrameLocator` mirrors `ILocator`'s contract at the document-boundary level: `withId(String)`,
 `named(String)` (HTML `name` attribute), `withTitle(String)`, and `withUrl(TextMatch)` narrow the
 query; `timeout(Duration)` and `stableFor(Duration)` control how long and how strictly resolution
-waits; `single()`, `first()`, `all()`, and `tryFind()` are the same terminal operations element
-locators have, with the same 0/1/N -> not-found/success/ambiguous classification - there is no
-DOM-order tie breaker, so two frames matching the same criterion are always `AMBIGUOUS`, never
-resolved to "the first one". `id`/`name`/`title` only support exact and case-insensitive-exact
-matching; `url` supports the full `TextMatch` vocabulary (exact, case-insensitive, contains,
-starts-with, ends-with, regex).
+waits; `single()` and `tryFind()` are its only terminal operations - unlike `ILocator`, there is no
+`first()` or `all()`, since a frame has no scoring dimension to rank candidates by, so a
+"highest-ranked" pick would really mean "first in DOM order", exactly the hidden tie breaker frame
+resolution deliberately never uses. Every declared criterion filters the current set of `<iframe>`
+candidates first - `id`, then `name`, then `title`, then `url` - and only the resulting filtered set
+is classified 0/1/N -> not-found/success/ambiguous; `url` genuinely participates in disambiguating
+which frame is meant, so two frames sharing the same `name` are not forced into an ambiguous failure
+before a distinguishing `url` criterion ever gets a chance to narrow them down. There is still no
+DOM-order tie breaker at any point, so two frames that remain indistinguishable after every declared
+criterion are always `AMBIGUOUS`, never resolved to "the first one". `id`/`name`/`title` only support
+exact and case-insensitive-exact matching; `url` supports the full `TextMatch` vocabulary (exact,
+case-insensitive, contains, starts-with, ends-with, regex).
 
 Once resolved, an `IFrame` exposes `find()` for element queries scoped to that frame's own document,
 `action()` for frame-scoped actions (see [actions.md](actions.md#frames)), `observe()`/
