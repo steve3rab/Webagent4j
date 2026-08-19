@@ -1,5 +1,6 @@
 package io.webagent4j.integration;
 
+import static io.webagent4j.verification.Verifications.textVisible;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.webagent4j.action.ActionFailureType;
@@ -29,7 +30,8 @@ class FrameActionPlanIT {
             IFrame checkout = page.frame().named("checkout").single();
             IElementReference<IElement> target = checkout.find().button().named("Pay").reference();
 
-            IActionPlan<Void> plan = checkout.action().click(target).plan();
+            IActionPlan<Void> plan =
+                    checkout.action().click(target).expect(textVisible("Done")).plan();
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
             ActionResult<Void> result = plan.execute();
@@ -67,7 +69,8 @@ class FrameActionPlanIT {
             IFrame checkout = page.frame().named("checkout").single();
             IElementReference<IElement> target = checkout.find().button().named("Pay").reference();
 
-            IActionPlan<Void> plan = checkout.action().click(target).plan();
+            IActionPlan<Void> plan =
+                    checkout.action().click(target).expect(textVisible("Done")).plan();
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
             page.evaluate("replaceCheckoutFrame()");

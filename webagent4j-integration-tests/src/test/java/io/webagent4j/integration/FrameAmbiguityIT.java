@@ -1,5 +1,6 @@
 package io.webagent4j.integration;
 
+import static io.webagent4j.verification.Verifications.textVisible;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
@@ -38,6 +39,7 @@ class FrameAmbiguityIT {
 
             productA.action()
                     .click(productA.find().button().named("Buy").reference())
+                    .expect(textVisible("Done"))
                     .execute()
                     .throwIfFailed();
 
@@ -46,6 +48,7 @@ class FrameAmbiguityIT {
 
             productB.action()
                     .click(productB.find().button().named("Buy").reference())
+                    .expect(textVisible("Done"))
                     .execute()
                     .throwIfFailed();
 

@@ -1,5 +1,6 @@
 package io.webagent4j.integration;
 
+import static io.webagent4j.verification.Verifications.textVisible;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.webagent4j.browser.IFrame;
@@ -40,6 +41,7 @@ class FrameLifecycleIT {
             assertThat(checkout.url()).contains("/frames/child/checkout-v2");
             checkout.action()
                     .click(checkout.find().button().named("Pay").reference())
+                    .expect(textVisible("Done"))
                     .execute()
                     .throwIfFailed();
 

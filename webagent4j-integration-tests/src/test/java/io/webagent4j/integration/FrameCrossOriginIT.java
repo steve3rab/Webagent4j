@@ -1,5 +1,6 @@
 package io.webagent4j.integration;
 
+import static io.webagent4j.verification.Verifications.textVisible;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.webagent4j.browser.IFrame;
@@ -22,6 +23,7 @@ class FrameCrossOriginIT {
 
             external.action()
                     .click(external.find().button().named("Pay").reference())
+                    .expect(textVisible("Done"))
                     .execute()
                     .throwIfFailed();
 
