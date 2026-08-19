@@ -92,7 +92,13 @@ class FrameAmbiguityIT {
             throws Exception {
         try (var support = FramePhase4TestSupport.start();
                 var page = support.open("/frames/disappearing-during-wait")) {
-            IFrame checkout = page.frame().named("checkout").single();
+            // The initial lookup is not itself the scenario under test - the frame is present at
+            // t=0 and this is just getting a handle to it - so it is given a generous timeout
+            // rather than the 5s default, to stay robust under a heavily loaded CI runner (this
+            // suite runs alongside the full Chromium robustness benchmark in the same job) rather
+            // than being tied to the 800ms budget the actual disappearance assertion below needs.
+            IFrame checkout =
+                    page.frame().named("checkout").timeout(Duration.ofSeconds(15)).single();
 
             assertThatExceptionOfType(LocatorNotFoundException.class)
                     .isThrownBy(
