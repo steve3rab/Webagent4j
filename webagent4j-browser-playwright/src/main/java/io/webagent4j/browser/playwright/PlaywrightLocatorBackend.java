@@ -48,6 +48,15 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             """;
 
+    /**
+     * Bound for {@link #identifyOrNull(Locator)}'s candidate-identity evaluation: short enough to
+     * never meaningfully eat into a caller's configured {@link
+     * io.webagent4j.wait.WaitEngine}-driven timeout (frame ITs configure budgets as low as 800ms),
+     * generous enough to absorb ordinary IPC round-trip latency rather than producing false
+     * negatives for a candidate that is genuinely still present.
+     */
+    private static final double EVALUATE_TIMEOUT_MILLIS = 200;
+
     private final Locator documentRoot;
     private final ILocatorEngine engine;
     private final LocatorContext rootContext;
@@ -88,7 +97,6 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public LocatorBackendSearchResult find(
             LocatorBackendQuery query,
             LocatorScope scope,
@@ -102,7 +110,17 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
             Locator item = resolved.nth(index);
-            Map<String, Object> identity = (Map<String, Object>) item.evaluate(IDENTITY_SCRIPT);
+            Map<String, Object> identity = identifyOrNull(item);
+            if (identity == null) {
+                // count() confirmed this candidate a moment ago, but it (or, for a frame-scoped
+                // backend, the whole document containing it) was torn down before evaluate()
+                // reached it - the same "vanished between check and use" outcome as a detached
+                // explicit scope elsewhere in this class, so it is dropped from this poll's
+                // candidates rather than surfaced as a raw backend failure: the caller's
+                // WaitEngine poll retries and picks it up as a normal "not currently present"
+                // result.
+                continue;
+            }
             ElementRole knownRole = knownRole(query);
             candidates.add(
                     new LocatorBackendCandidate(
@@ -111,6 +129,28 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             ((Number) identity.get("domOrder")).intValue()));
         }
         return new LocatorBackendSearchResult(candidates, discoveredCount, discoveredCount > count);
+    }
+
+    /**
+     * Evaluates {@link #IDENTITY_SCRIPT} against {@code item}, bounded to a short explicit timeout
+     * so a candidate that vanishes between {@link Locator#count()} and this call fails fast instead
+     * of blocking on Playwright's own multi-second default actionability wait - which would both
+     * silently multiply the caller's configured {@link io.webagent4j.wait.WaitEngine} budget and
+     * leak a raw {@link com.microsoft.playwright.TimeoutError} across the backend-neutral boundary.
+     * Returns {@code null}, rather than throwing, when the candidate could not be evaluated in
+     * time.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> identifyOrNull(Locator item) {
+        try {
+            return (Map<String, Object>)
+                    item.evaluate(
+                            IDENTITY_SCRIPT,
+                            null,
+                            new Locator.EvaluateOptions().setTimeout(EVALUATE_TIMEOUT_MILLIS));
+        } catch (RuntimeException vanished) {
+            return null;
+        }
     }
 
     private static ElementRole knownRole(LocatorBackendQuery query) {
