@@ -267,9 +267,23 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         return root.getByText(text.value(), new Locator.GetByTextOptions().setExact(exact(text)));
     }
 
+    /**
+     * Whether discovery should ask Playwright's native locator for its own {@code exact} matching.
+     * Only {@link TextMatchType#EXACT} qualifies: Playwright's {@code exact: true} is
+     * case-sensitive and does not trim/collapse whitespace, whereas {@link
+     * TextMatchType#CASE_INSENSITIVE_EXACT} is still a full-string match but explicitly
+     * case-insensitive. Asking Playwright for {@code exact: true} on a {@code
+     * CASE_INSENSITIVE_EXACT} criterion would silently discover zero native candidates whenever the
+     * DOM text differs only in case, forcing a fallback all the way to the {@code FUZZY_TEXT}
+     * strategy - which {@link io.webagent4j.locator.LocatorScorer} can never mark as an exact
+     * match. {@code CASE_INSENSITIVE_EXACT} instead uses Playwright's own loose ({@code exact:
+     * false}) case-insensitive substring discovery here, then relies on {@link
+     * io.webagent4j.locator.LocatorScorer}'s own strict, case-folded full-string comparison (via
+     * {@link io.webagent4j.locator.TextMatcher}) to accept only a genuinely exact candidate and
+     * reject every other loosely-discovered one.
+     */
     private static boolean exact(TextMatch text) {
-        return text.type() == TextMatchType.EXACT
-                || text.type() == TextMatchType.CASE_INSENSITIVE_EXACT;
+        return text.type() == TextMatchType.EXACT;
     }
 
     static String attributeSelector(String name, String value) {

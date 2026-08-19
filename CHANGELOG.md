@@ -128,6 +128,27 @@ All notable changes to this project will be documented in this file. The format 
   proving a `TIMED_OUT` result with a non-empty last-observed sample can never become a `LocatorEngine`
   success, additionally asserting the `LocatorResolutionStatus.TIMEOUT` / `BudgetLimit.TIMEOUT`
   diagnostics stay correct.
+- **A `CASE_INSENSITIVE_EXACT` accessible-name/label/title/alt-text/visible-text criterion (the match
+  type behind `named(String)`, this codebase's most common locator entry point) now actually matches
+  case-insensitively at the Playwright discovery layer, instead of silently discovering nothing
+  whenever the DOM text's case differs from the requested value.** `PlaywrightLocatorBackend#exact`
+  mapped both `EXACT` and `CASE_INSENSITIVE_EXACT` to Playwright's native `exact: true` option -
+  but Playwright's own `exact: true` is case-*sensitive* and does not trim/collapse whitespace, so a
+  `CASE_INSENSITIVE_EXACT` criterion whose case differed from the DOM's actual text (for example
+  `.named("CRÉER le compte")` against a button whose real accessible name is "Créer le compte")
+  discovered zero native candidates through every deterministic strategy (`ACCESSIBLE_NAME`, `LABEL`,
+  `VISIBLE_TEXT`), forcing a fallback all the way to `FUZZY_TEXT` - whose candidates `LocatorScorer`
+  can never mark as an exact match (`exact = !fuzzy`). This was previously invisible because the
+  `LocatorEngine` timeout bug fixed above silently returned that non-exact fallback candidate as
+  though the wait had succeeded; with that bug fixed, the wait now (correctly) never finds an exact
+  match and times out. `exact(TextMatch)` now maps only `EXACT` to Playwright's `exact: true`;
+  `CASE_INSENSITIVE_EXACT` uses Playwright's own loose, case-insensitive substring discovery and
+  relies - exactly like `FUZZY_TEXT` already does - on `LocatorScorer`'s own strict, case-folded
+  full-string comparison (via `TextMatcher`) to accept only a genuinely case-insensitive-exact
+  candidate and reject every other loosely-discovered one. Surfaced by, and fixes,
+  `SemanticLocatorIT.supportsUnicodeNestedAccessibleNamesAndConfiguredTestIds` against a real
+  browser; confirmed via CI history that this test passed before the `LocatorEngine` fix above and
+  failed immediately after it, with no other change in between.
 
 ### Fixed (CI stabilization)
 
