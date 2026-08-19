@@ -21,6 +21,16 @@
     </dependency>
     <dependency>
       <groupId>io.webagent4j</groupId>
+      <artifactId>webagent4j-extraction</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.webagent4j</groupId>
+      <artifactId>webagent4j-extraction-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.webagent4j</groupId>
       <artifactId>webagent4j-locator</artifactId>
       <version>${project.version}</version>
     </dependency>

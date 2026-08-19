@@ -14,12 +14,13 @@ Arrows below mean "depends on."
 | `webagent4j-locator` | common, dom, locator-api, wait | Planning, discovery ports, filtering, scoring, ambiguity, diagnostics |
 | `webagent4j-verification` | dom, locator-api, observation-api, wait | Deterministic conditions, composition, and bounded polling |
 | `webagent4j-action` | common, dom, locator-api, observation-api, verification, wait | Commands, lifecycle orchestration, safe retries, structured results, and audit events |
-| `webagent4j-browser-api` | action, dom, locator, locator-api, observation-api | Browser/page lifecycle contracts |
+| `webagent4j-browser-api` | action, dom, extraction, extraction-api, locator, locator-api, observation-api | Browser/page lifecycle contracts |
 | `webagent4j-browser-playwright` | action, browser-api, dom, locator, locator-api, observation | Playwright action backend, browser lifecycle, batch observation adapter, and service provider |
 | `webagent4j-core` | browser-api | Public facade and provider discovery |
 | `webagent4j-http` | common | Reserved non-browser transport boundary |
 | `webagent4j-storage` | common | Reserved persistence boundary |
-| `webagent4j-extraction` | dom | Reserved extraction boundary |
+| `webagent4j-extraction-api` | locator-api | Backend-neutral extraction request/result/provenance, converters, validators, and failure taxonomy |
+| `webagent4j-extraction` | common, dom, extraction-api, locator, locator-api, wait | Deterministic extraction engine reusing the existing locator engine - no second DOM resolution engine |
 | `webagent4j-crawler` | http, storage | Reserved crawling composition boundary |
 | `webagent4j-workflow` | action | Reserved workflow boundary |
 | `webagent4j-recording` | workflow | Reserved record/replay boundary |
@@ -39,9 +40,17 @@ Browser API exposes only immutable observation contracts and the snapshot SPI; t
 orchestrates semantic policies; the backend implements bounded capture. No public observation type
 exposes Playwright.
 
-Reserved modules are intentionally empty until a tested vertical needs their public API. This prevents
-placeholder types from becoming accidental compatibility commitments. No Maven dependency cycle
-exists.
+Reserved modules (`http`, `storage`, `crawler`, `workflow`, `recording`, `plugin-api`) are
+intentionally empty until a tested vertical needs their public API. This prevents placeholder types
+from becoming accidental compatibility commitments. No Maven dependency cycle exists.
+
+`webagent4j-extraction-api` depends only on `locator-api`, never on `dom`: an `ExtractionRequest`
+describes where to search (a `LocatorDefinition`) and how to read/convert/validate what is found,
+never a live `IElement` reference, so an already-resolved element's own `text()`/`attributes()`/
+`value()` reads (already on `IElement` in `webagent4j-dom`) need no dependency on extraction at all
+- a caller applies `IValueConverter`/`IExtractionValidator` directly to those. `webagent4j-extraction`
+is the engine, reusing `ILocatorEngine`/`ILiveLocatorContext` rather than a parallel resolution
+engine.
 
 The action module owns orchestration but no browser-native implementation. Verification owns
 read-only conditions and polling. Browser adapters implement `IActionBackend`; target resolution,

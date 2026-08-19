@@ -8,6 +8,11 @@ import io.webagent4j.browser.BrowserOptions;
 import io.webagent4j.browser.IFrameLocator;
 import io.webagent4j.browser.IPage;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.extraction.ExtractionEngine;
+import io.webagent4j.extraction.api.ExtractedTable;
+import io.webagent4j.extraction.api.ExtractionRequest;
+import io.webagent4j.extraction.api.ExtractionResult;
+import io.webagent4j.locator.ILiveLocatorContext;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorContext;
@@ -28,6 +33,7 @@ final class PlaywrightPage implements IPage {
     private final Page page;
     private final BrowserOptions options;
     private final ILocatorEngine locatorEngine;
+    private final ExtractionEngine extractionEngine;
     private final PlaywrightLocatorBackend locatorBackend;
     private final ObservationEngine observationEngine;
     private final PlaywrightObservationBackend observationBackend;
@@ -37,6 +43,7 @@ final class PlaywrightPage implements IPage {
         this.page = page;
         this.options = options;
         this.locatorEngine = new LocatorEngine();
+        this.extractionEngine = new ExtractionEngine(locatorEngine);
         this.locatorBackend =
                 new PlaywrightLocatorBackend(
                         page,
@@ -142,6 +149,24 @@ final class PlaywrightPage implements IPage {
         return locatorEngine.locate(
                 LocatorContext.page(locatorBackend, Objects.requireNonNull(config, "config")),
                 definition);
+    }
+
+    @Override
+    public <T> ExtractionResult<T> extract(ExtractionRequest<T> request) {
+        return extractionEngine.extract(
+                ILiveLocatorContext.fixed(locatorBackend.context()), request);
+    }
+
+    @Override
+    public <T> ExtractionResult<List<T>> extractList(ExtractionRequest<T> request) {
+        return extractionEngine.extractList(
+                ILiveLocatorContext.fixed(locatorBackend.context()), request);
+    }
+
+    @Override
+    public ExtractionResult<ExtractedTable> extractTable(LocatorDefinition source) {
+        return extractionEngine.extractTable(
+                ILiveLocatorContext.fixed(locatorBackend.context()), source);
     }
 
     @Override

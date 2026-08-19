@@ -6,6 +6,57 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Extraction — Phase 0.5)
+
+- New `webagent4j-extraction-api` module (backend-neutral, depends only on `webagent4j-locator-api`):
+  `ExtractionRequest<T>` (immutable, copy-on-write, describing a `LocatorDefinition` source, a
+  `TEXT`/`ATTRIBUTE`/`VALUE` read type, and an optional converter/validator pipeline),
+  `ExtractionResult<T>` (converted value, pre-conversion raw string, `ExtractionProvenance`),
+  `ExtractionProvenance`, `IValueConverter<T>` (`identity`, `toInteger`, `toLong`, `toBigDecimal`,
+  `toBoolean`, `toLocalDate`), `IExtractionValidator<T>` (`nonBlank`, `range`, `matches`,
+  `predicate`), `ExtractedTable`/`ExtractedRow`, and the failure taxonomy
+  (`AExtractionException`, `ExtractionAttributeMissingException`, `ExtractionConversionException`,
+  `ExtractionValidationException`).
+- New `webagent4j-extraction` module: `ExtractionEngine`, the deterministic engine reusing the
+  existing `ILocatorEngine`/`ILiveLocatorContext`/`WaitEngine` machinery rather than a second DOM
+  resolution engine. `extract()` resolves one unambiguous source (`engine.locate`) and reads,
+  converts, and validates its data; `extractList()` resolves every matching source
+  (`engine.locateAll`) in the engine's deterministic order and does the same per candidate, failing
+  the whole request rather than silently dropping a bad entry; `extractTable()` resolves one
+  accessible HTML table and reads its `thead`/`tbody`/`tr`/`th`/`td` structure via
+  `element.find().css(...)` - the same locator engine every other read already uses, not a
+  Playwright-specific primitive.
+- `IPage`/`IFrame` gain `extract(ExtractionRequest<T>)`, `extractList(ExtractionRequest<T>)`, and
+  `extractTable(LocatorDefinition)`. Frame-scoped extraction re-resolves the frame's own
+  pending-scope chain fresh on every poll exactly like `IFrame#locate` already does, so a frame that
+  disappears, is replaced, or becomes ambiguous mid-wait is caught the same way. A not-found or
+  ambiguous source still raises the normal `LocatorNotFoundException`/`AmbiguousLocatorException`,
+  never reinterpreted; a genuine backend/runtime failure always propagates unchanged. Element-scoped
+  reads need no new API: `IElement#text()`/`attributes()`/`value()` (already existing) combine
+  directly with `IValueConverter`/`IExtractionValidator`, since an already-resolved element needs no
+  locator search.
+- 4 new example programs in `webagent4j-examples`: `ExtractTextExample`, `ExtractAttributeExample`
+  (also demonstrates `extractList`), `ExtractTableExample`, `ExtractFromFrameExample` (typed
+  conversion inside a frame).
+- New `docs/extraction.md`; updated `docs/roadmap.md`, `docs/modules.md`, `docs/architecture.md`,
+  `docs/limitations.md`, and `docs/index.md`.
+- 2 new ArchUnit rules (`ArchitectureTest`): extraction stays independent from Playwright, and
+  `webagent4j-extraction-api` stays independent from the locator engine module (only
+  `locator-api`).
+- Unit tests: 28 in `webagent4j-extraction-api` (converters, validators, request pipeline
+  invariants, table cell access) and 15 in `webagent4j-extraction` (`ExtractionEngineTest`,
+  covering text/attribute/value reads, missing-attribute vs missing-element, conversion-then-
+  validation ordering, NOT_FOUND/AMBIGUOUS/backend-failure propagation, list ordering and
+  fail-whole-request-on-bad-item, and table header/row reading including the no-`thead` case).
+- Real-browser integration tests: `ExtractionIT` (EXT-001..EXT-011: simple/Unicode text, attribute,
+  live form value, list, table, not-found, ambiguous, single/nested iframe, frame replacement) and
+  `ExtractionRobustnessIT` (cross-scope leak, sibling-frame leak, stale-element replacement, empty
+  table, ragged table row, missing attribute on an existing element, unparsable-number conversion
+  failure) against a new self-contained `ExtractionTestApplication` fixture. Backend-failure
+  propagation during extraction (EXT-012) is covered at the unit level
+  (`ExtractionEngineTest`) rather than as a real-browser IT, since reliably forcing a genuine
+  backend disconnect mid-extraction without flakiness isn't reasonably achievable in this suite.
+
 ### Added (Frame / iframe support)
 
 - `IPage#frame()` / `IFrame#frame()`, returning a new `IFrameLocator`: a backend-neutral, immutable

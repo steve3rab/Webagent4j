@@ -62,5 +62,11 @@ WebAgent4J does not bypass CAPTCHA, authentication, anti-bot systems, access con
 does not rotate proxies or disguise browser fingerprints. Public-site tests, transactions, purchases,
 bookings, comments, messages, or destructive forms are not part of the deterministic regression suite.
 
-There is no AI, extraction engine, crawler, workflow engine, OCR, or visual recognition implementation
-in this phase. Future optional fallbacks must preserve explicit uncertainty and action safety.
+There is no AI, crawler, workflow engine, OCR, or visual recognition implementation in this phase.
+Future optional fallbacks must preserve explicit uncertainty and action safety.
+
+The deterministic extraction engine (see [docs/extraction.md](extraction.md)) does not yet implement
+crawling, pagination, distributed/scraping-at-scale scenarios, AI-based schema inference, OCR,
+visual/computer-vision extraction, generalized automatic JSON-LD/structured-data discovery,
+infinite-scroll orchestration, advanced network-level retries, or reconstructing a "visual table"
+laid out with non-table markup. These belong to later phases.

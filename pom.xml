@@ -34,6 +34,7 @@
     <module>webagent4j-browser-playwright</module>
     <module>webagent4j-core</module>
     <module>webagent4j-http</module>
+    <module>webagent4j-extraction-api</module>
     <module>webagent4j-extraction</module>
     <module>webagent4j-storage</module>
     <module>webagent4j-crawler</module>

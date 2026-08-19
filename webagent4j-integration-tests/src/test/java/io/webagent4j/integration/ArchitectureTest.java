@@ -114,6 +114,37 @@ class ArchitectureTest {
     }
 
     @Test
+    void extractionRemainsIndependentFromPlaywright() {
+        noClasses()
+                .that()
+                .resideInAnyPackage("io.webagent4j.extraction..", "io.webagent4j.extraction.api..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void extractionApiRemainsIndependentFromTheLocatorEngineModule() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.extraction.api..")
+                .should()
+                .dependOnClassesThat(
+                        com.tngtech.archunit.base.DescribedPredicate.describe(
+                                "reside in io.webagent4j.locator.. but outside io.webagent4j.locator.api..",
+                                javaClass ->
+                                        javaClass
+                                                        .getPackageName()
+                                                        .startsWith("io.webagent4j.locator")
+                                                && !javaClass
+                                                        .getPackageName()
+                                                        .startsWith("io.webagent4j.locator.api")))
+                .check(projectClasses);
+    }
+
+    @Test
     void actionAndVerificationRemainIndependentFromPlaywright() {
         noClasses()
                 .that()
