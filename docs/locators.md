@@ -399,10 +399,59 @@ IElement form = page.find().form().named("Payment").single();
 IElement pay = form.find().button().named("Pay").single();
 ```
 
-Diagnostics retain the hierarchical scope path. `PAGE` and `ELEMENT` scopes are implemented.
-`FRAME` is represented in the scope model for future adapters but is not currently exposed as a
-terminal public operation. The Playwright adapter follows native open-shadow-root behavior where the
-selected strategy supports it; explicit XPath retains Playwright's normal shadow-DOM limitations.
+Diagnostics retain the hierarchical scope path. `PAGE`, `ELEMENT`, and `FRAME` scopes are all
+implemented - see [Frames](#frames) below for the frame scope's own terminal operation. The
+Playwright adapter follows native open-shadow-root behavior where the selected strategy supports it;
+explicit XPath retains Playwright's normal shadow-DOM limitations.
+
+## Frames
+
+A frame is a separate document boundary - the content window of one `<iframe>` - never a descendant
+DOM element of the page containing it. `IPage#frame()` starts a frame query, resolved the same way an
+element locator is:
+
+```java
+IFrame checkout = page.frame().named("checkout").single();
+IElement pay = checkout.find().button().named("Pay").single();
+```
+
+`IFrameLocator` mirrors `ILocator`'s contract at the document-boundary level: `withId(String)`,
+`named(String)` (HTML `name` attribute), `withTitle(String)`, and `withUrl(TextMatch)` narrow the
+query; `timeout(Duration)` and `stableFor(Duration)` control how long and how strictly resolution
+waits; `single()` and `tryFind()` are its only terminal operations - unlike `ILocator`, there is no
+`first()` or `all()`, since a frame has no scoring dimension to rank candidates by, so a
+"highest-ranked" pick would really mean "first in DOM order", exactly the hidden tie breaker frame
+resolution deliberately never uses. Every declared criterion filters the current set of `<iframe>`
+candidates first - `id`, then `name`, then `title`, then `url` - and only the resulting filtered set
+is classified 0/1/N -> not-found/success/ambiguous; `url` genuinely participates in disambiguating
+which frame is meant, so two frames sharing the same `name` are not forced into an ambiguous failure
+before a distinguishing `url` criterion ever gets a chance to narrow them down. There is still no
+DOM-order tie breaker at any point, so two frames that remain indistinguishable after every declared
+criterion are always `AMBIGUOUS`, never resolved to "the first one". `id`/`name`/`title` only support
+exact and case-insensitive-exact matching; `url` supports exact, case-insensitive exact, contains,
+starts-with, ends-with, and regex. `FUZZY` is explicitly rejected for `url` - never silently treated
+as `CONTAINS`, a regex, or any scoring behavior - with a `LocatorException` raised as soon as a
+`FUZZY` criterion is supplied to `FrameDefinition#withUrl(TextMatch)`, before any browser access is
+attempted.
+
+Once resolved, an `IFrame` exposes `find()` for element queries scoped to that frame's own document,
+`action()` for frame-scoped actions (see [actions.md](actions.md#frames)), `observe()`/
+`observe(ObservationOptions)` for a semantic snapshot of only that frame's document (never mixed with
+the main page or a sibling frame), `url()`/`title()` for its current live state, and `frame()` to
+resolve a frame nested inside it - resolved strictly inside that parent's own document, so it can
+never accidentally match a same-named frame belonging to the top-level page or a sibling frame.
+
+An `IFrame` is a re-resolvable semantic handle, not a frozen snapshot: every operation re-resolves its
+underlying `<iframe>` criterion against live browser state, exactly like a structured element scope
+does. A removed-then-reinserted `<iframe>` matching the same criterion is followed transparently; one
+that no longer matches, or now matches more than one element, surfaces as a typed not-found or
+ambiguous failure the next time it is actually used - never a stale reference to a detached or
+superseded document. `IFrame#navigate(String)` replaces only that frame's own document (the same
+absolute-HTTP(S)-only validation `IPage#navigate(String)` uses), and ordinary queries issued
+afterward search the new document.
+
+Cross-origin iframes are resolved and interacted with exactly like same-origin ones, without
+weakening Playwright's default cross-origin isolation.
 
 ## Text normalization
 

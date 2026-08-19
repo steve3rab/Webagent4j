@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head><title>Delayed frame insertion</title></head>
+  <body><main>
+    <p>Waiting for the delayed frame...</p>
+    <script>
+      setTimeout(() => {
+        const frame = document.createElement('iframe');
+        frame.name = 'delayed-frame';
+        frame.id = 'delayed-frame';
+        frame.src = '/fixture/frames/child-delayed.html';
+        document.body.appendChild(frame);
+      }, 150);
+    </script>
+  </main></body>
+</html>

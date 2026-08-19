@@ -40,6 +40,18 @@ final class PlaywrightFind implements IFind<IElement> {
         this.pendingScopes = pendingScopes;
     }
 
+    /**
+     * Creates a chain pre-seeded with {@code pendingScopes} - used by {@link
+     * PlaywrightFrame#find()} so a query started from a resolved frame keeps the frame boundary
+     * (and any scopes declared before it) as the leading entries of the same ordered pending-scope
+     * list, re-resolved end-to-end on every terminal operation exactly like any other {@code
+     * within(...)} chain.
+     */
+    static PlaywrightFind withPendingScopes(
+            ILocatorEngine engine, LocatorContext baseContext, List<IPendingScope> pendingScopes) {
+        return new PlaywrightFind(engine, baseContext, pendingScopes);
+    }
+
     @Override
     public IFind<IElement> within(IElement scope) {
         Objects.requireNonNull(scope, "scope");

@@ -6,6 +6,170 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Frame / iframe support)
+
+- `IPage#frame()` / `IFrame#frame()`, returning a new `IFrameLocator`: a backend-neutral, immutable
+  frame query with `withId`/`named`/`withTitle`/`withUrl`/`timeout`/`stableFor` criteria and
+  `single()`/`tryFind()` terminal operations - the same 0/1/N -> not-found/success/ambiguous
+  classification, bounded-wait semantics, and no-DOM-order-tie-breaker guarantees element locators
+  already have. A frame is modeled as a document boundary, never a descendant DOM element; no native
+  Playwright `Frame`, `FrameLocator`, or `Page` type is exposed through the public API.
+- `IFrame`: a re-resolvable live frame handle exposing `find()`, `action()`, `observe()`/
+  `observe(ObservationOptions)` (scoped only to that frame's own document), `url()`, `title()`,
+  `navigate(String)`, and `frame()` for traversal nested strictly inside that frame's own document.
+  `IFrame implements IActionContext, IObservationSource`, so `dryRun()`, `plan()`/`IActionPlan`,
+  postcondition verification, and `tryFind()` all work identically inside a frame as they already do
+  at the page level, including full revalidation of the frame boundary itself (not just the target
+  inside it) before `IActionPlan.execute()` touches the backend.
+- `FrameDefinition`, an immutable record mirroring `LocatorDefinition`'s copy-on-write pattern for
+  frame criteria.
+- Nested frame traversal, cross-origin iframe support (without weakening browser security), and
+  transparent following of a removed-and-replaced `<iframe>` matching the same semantic identity.
+- Extended `IPendingScope` (`webagent4j-browser-playwright`) with a `Frame` case, reusing the
+  existing pending-scope/live-resolution architecture rather than a parallel frame engine; a
+  prerequisite frame hop inside a longer chain stays bounded to a one-shot probe, never a nested
+  full-timeout wait.
+- Widened `IObservationEngine`/`ObservationEngine` from `IPage` to the pre-existing
+  `IObservationSource` supertype, letting `IFrame.observe()` reuse the same observation engine
+  without duplicating it; existing `IPage`-based callers are unaffected.
+- 25 new Playwright integration tests (`FrameResolutionIT`, `FrameAmbiguityIT`, `FrameNestedIT`,
+  `FrameLifecycleIT`, `FrameActionPlanIT`, `FrameDryRunAndTryFindIT`, `FrameNavigationIT`,
+  `FrameCrossOriginIT`) and 10 new deterministic robustness scenarios (`FrameRobustnessIT`,
+  FRAME-001..FRAME-010).
+
+### Fixed (Frame / iframe consistency)
+
+- **URL now genuinely participates in frame resolution instead of being checked only after
+  id/name/title already settled on a single candidate.** Previously `PlaywrightScopeResolver`
+  resolved the `id`/`name`/`title` criteria through `ILocatorEngine#locateSingle` - which fails
+  closed on more than one match by itself - before the `url` criterion was ever consulted, so two
+  `<iframe>`s sharing the same `name` but different `src` were incorrectly rejected as `AMBIGUOUS`
+  even when `.withUrl(...)` should have disambiguated them. Frame resolution now discovers every
+  current `id`/`name`/`title` candidate through `ILocatorEngine#locateAll`, filters that set by the
+  `url` criterion when present, and only then applies the 0/1/N -> not-found/success/ambiguous
+  classification - the same fix applies to a `url`-only query against several candidates. The fix
+  reuses the existing `webagent4j-wait` `WaitEngine`/`WaitBudget`/`WaitPolicy` primitives (one more
+  caller of the shared wait architecture, not a second resolution engine), preserves the existing
+  one-shot-versus-real-timeout split for a prerequisite frame hop, keeps bounded waits, `stableFor`,
+  live re-resolution, nested frames, and typed classification exactly as before.
+- **A genuine backend or runtime failure encountered while inspecting a URL candidate is no longer
+  absorbed as "this candidate does not match".** The URL-filtering step previously caught every
+  `RuntimeException` around a candidate's URL check and treated all of them alike as "vanished",
+  which could silently turn a disconnected browser or a closed context into a typed
+  `LocatorNotFoundException` - or an empty `tryFind()` result - instead of surfacing the real
+  failure. It now distinguishes three outcomes: the `<iframe>` element itself vanishing between
+  discovery and inspection is Playwright's typed `TimeoutError` (bounded to a short explicit
+  timeout, mirroring `PlaywrightLocatorBackend`'s existing candidate-vanishing idiom) and is
+  correctly treated as "not currently matching" so the wait keeps polling; a content document that
+  is present but not yet available or `Frame#isDetached()` is likewise a normal "not currently
+  matching" state, with no exception involved; anything else now propagates unchanged, exactly like
+  every other genuine backend failure elsewhere in this codebase.
+- **A `FUZZY` URL criterion is now rejected explicitly instead of silently degrading to
+  `CONTAINS`.** `FrameDefinition#withUrl(TextMatch)` (and its canonical constructor) now raises a
+  `LocatorException` ("Frame URL matching does not support FUZZY") as soon as a `FUZZY` criterion is
+  supplied, before any browser access is attempted. Frame URL matching supports exact,
+  case-insensitive exact, contains, starts-with, ends-with, and regex only - never fuzzy.
+- **`IFrameLocator#first()` and `#all()` removed.** `first()` was a redundant alias for `single()`,
+  and `all()` returned the same `IFrame` handle repeated N times with no individual stable identity -
+  a misleading contract for a document boundary, which has no scoring dimension to rank candidates
+  by. `IFrameLocator` now exposes only `single()` and `tryFind()` as terminal operations; element-
+  level `ILocator#first()`/`#all()` are unaffected.
+- **`IFrame#locate(LocatorDefinition)` and `#locate(LocatorDefinition, LocatorConfig)` are now fully
+  live**, resolving this frame's own pending-scope chain fresh on every `WaitEngine` poll instead of
+  once before the wait begins - the same re-resolution guarantee `frame.find()...single()` and
+  `IFrame#find(LocatorConfig)` already had. A frame that is replaced, disappears, or becomes
+  ambiguous mid-wait is now caught by `locate(...)` exactly as it already was by `find(...)`, with
+  identical semantics between the fluent and programmatic entry points.
+- `FrameDefinition`'s Javadoc for `id` now names `<iframe>` explicitly instead of "iframe/frame"
+  (this codebase never added legacy HTML `<frame>` support). `requirePositive()` now takes a label
+  so a non-positive `timeout` and a non-positive `stableFor` duration raise distinct, correctly
+  worded messages instead of both saying "timeout must be positive".
+- 11 new tests covering the url-participates-before-classification fix and the live `locate()` fix:
+  `FrameUrlResolutionIT` (6 real-browser scenarios: same-name-different-url disambiguation,
+  same-name-same-url ambiguity, url-only selection among several, nonexistent url, frame replacement
+  retaining url-based identity, nested frame with a url criterion) and `FrameLocateLiveResolutionIT`
+  (5 real-browser scenarios: `locate()` after replacement, `locate()` NOT_FOUND on disappearance
+  mid-wait, `locate()` AMBIGUOUS on a duplicate appearing during `stableFor`, nested-frame `locate()`,
+  no wrong target leaking from a sibling frame), plus 14 new unit tests (27 total) in
+  `PlaywrightFrameScopeResolverTest` covering every `TextMatch` type against the `url` criterion and
+  the disambiguation/ambiguity/not-found matrix at the mocked-engine level.
+- 5 further tests covering the backend-failure-propagation and `FUZZY`-rejection fixes: a
+  `TimeoutError`-vanished candidate and a genuine backend failure during URL inspection (each
+  proving the opposite outcome of the other) in `PlaywrightFrameScopeResolverTest` (now 27 total); a
+  new `PlaywrightFrameLocatorTest` proving `tryFind()` never converts a URL-inspection backend
+  failure into an empty `Optional`; and two new `FrameDefinitionTest` cases (now 10 total) proving
+  `withUrl(TextMatch)` and the canonical constructor both reject `FUZZY` explicitly.
+
+### Fixed (`LocatorEngine` timed-out wait no longer masquerades as success)
+
+- **A `stableFor` wait that times out can no longer return the last candidate it happened to
+  observe as though the wait had actually succeeded.** `LocatorEngine#resolve()` unconditionally
+  read `WaitResult#value()` regardless of `WaitResult#status()`. On `WaitStatus.TIMED_OUT`, that
+  value is the *last polled* `WaitSample`, which - per `WaitSample#pending(Object)`'s own contract -
+  is preserved only for diagnostics and may legitimately carry a real, non-empty candidate list when
+  the target was found but interrupted before its requested stability window elapsed (for example, a
+  frame that disappears partway through a `stableFor` wait: the poll immediately before the
+  disappearance is a genuine `WaitSample.satisfied(...)`, even though the wait as a whole never
+  stabilizes). `LocatorEngine` was treating that diagnostic-only value as a real result, silently
+  turning a genuine timeout into a false success. `resolve()` now only populates the final candidate
+  list when `WaitResult#status() == WaitStatus.SUCCESS`; a `TIMED_OUT` result always resolves to no
+  candidates, regardless of what the last poll observed. This was surfaced by, and fixes,
+  `FrameLocateLiveResolutionIT.locateFailsAsNotFoundWhenTheFrameDisappearsDuringTheWait`, which had
+  never previously exercised a real "found, then interrupted mid-`stableFor`" sequence against an
+  actual browser. Live re-resolution (`IFrame.locate()` re-walking its full pending-scope chain on
+  every poll), `stableFor`/timeout semantics, and every other locator/frame contract are unchanged.
+- 5 new deterministic fake-time unit tests in `LocatorEngineWaitIntegrationTest` (now 9 total),
+  reusing its existing `FakeClock`/`AdvancingSleeper`/`StagedBackend` harness: a candidate present on
+  every poll but never stable long enough before timeout; a candidate that disappears once (resetting
+  the stability window) and reappears but still not for long enough before timeout; a candidate that
+  genuinely remains stable for the full window, succeeding with that candidate; a no-`stableFor`
+  candidate present on the first poll still succeeding immediately with zero sleeps (no regression);
+  and a dedicated headline regression test (`doesNotReturnLastObservedCandidateWhenStabilityTimesOut`)
+  proving a `TIMED_OUT` result with a non-empty last-observed sample can never become a `LocatorEngine`
+  success, additionally asserting the `LocatorResolutionStatus.TIMEOUT` / `BudgetLimit.TIMEOUT`
+  diagnostics stay correct.
+- **A `CASE_INSENSITIVE_EXACT` accessible-name/label/title/alt-text/visible-text criterion (the match
+  type behind `named(String)`, this codebase's most common locator entry point) now actually matches
+  case-insensitively at the Playwright discovery layer, instead of silently discovering nothing
+  whenever the DOM text's case differs from the requested value.** `PlaywrightLocatorBackend#exact`
+  mapped both `EXACT` and `CASE_INSENSITIVE_EXACT` to Playwright's native `exact: true` option -
+  but Playwright's own `exact: true` is case-*sensitive* and does not trim/collapse whitespace, so a
+  `CASE_INSENSITIVE_EXACT` criterion whose case differed from the DOM's actual text (for example
+  `.named("CRÉER le compte")` against a button whose real accessible name is "Créer le compte")
+  discovered zero native candidates through every deterministic strategy (`ACCESSIBLE_NAME`, `LABEL`,
+  `VISIBLE_TEXT`), forcing a fallback all the way to `FUZZY_TEXT` - whose candidates `LocatorScorer`
+  can never mark as an exact match (`exact = !fuzzy`). This was previously invisible because the
+  `LocatorEngine` timeout bug fixed above silently returned that non-exact fallback candidate as
+  though the wait had succeeded; with that bug fixed, the wait now (correctly) never finds an exact
+  match and times out. `exact(TextMatch)` now maps only `EXACT` to Playwright's `exact: true`;
+  `CASE_INSENSITIVE_EXACT` uses Playwright's own loose, case-insensitive substring discovery and
+  relies - exactly like `FUZZY_TEXT` already does - on `LocatorScorer`'s own strict, case-folded
+  full-string comparison (via `TextMatcher`) to accept only a genuinely case-insensitive-exact
+  candidate and reject every other loosely-discovered one. Surfaced by, and fixes,
+  `SemanticLocatorIT.supportsUnicodeNestedAccessibleNamesAndConfiguredTestIds` against a real
+  browser; confirmed via CI history that this test passed before the `LocatorEngine` fix above and
+  failed immediately after it, with no other change in between.
+
+### Fixed (fail-closed candidate-identity inspection)
+
+- **A genuine backend or runtime failure encountered while evaluating a discovered candidate's
+  identity is no longer silently absorbed as "this candidate vanished".** `PlaywrightLocatorBackend`'s
+  `identifyOrNull(Locator)` - introduced to make a candidate that vanishes between `Locator#count()`
+  and this call fail fast instead of blocking on Playwright's multi-second default actionability
+  wait - caught every `RuntimeException` alike and returned `null` for all of them, treating a
+  disconnected browser, a closed context/page, or any other opaque backend failure exactly the same
+  as an ordinary detachment race. It now catches only Playwright's typed `TimeoutError` - its actual
+  signal for "did not resolve within the bounded inspection timeout" - and lets every other
+  `RuntimeException` propagate unchanged, matching the same fail-closed idiom already used elsewhere
+  in this class (`matchesUrl`'s candidate-vanishing check) and this codebase generally.
+- 2 new unit tests in `PlaywrightLocatorBackendTest` (new file): a candidate whose identity
+  evaluation raises `TimeoutError` is excluded from that poll with no exception propagated, and a
+  genuine backend failure (`IllegalStateException`) during the same call propagates as the exact
+  same instance rather than becoming an empty result. `ILocator#tryFind()`'s existing
+  backend-failure-propagation tests (`ILocatorTryFindTest`) already cover, generically, that any
+  such failure reaching a terminal locator operation is never reported as "not found" - this closes
+  the gap at the one place upstream of that contract that could previously have masked it.
+
 ### Fixed (CI stabilization)
 
 - Fixed three intermittent/deterministic integration-test failures exposed by CI (all traced to test

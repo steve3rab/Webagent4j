@@ -1,5 +1,6 @@
 package io.webagent4j.browser.playwright;
 
+import io.webagent4j.browser.FrameDefinition;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.api.ILocatorScope;
 import java.util.Objects;
@@ -30,6 +31,19 @@ sealed interface IPendingScope {
     record Structured(ILocatorScope<IElement> scope) implements IPendingScope {
         public Structured {
             Objects.requireNonNull(scope, "scope");
+        }
+    }
+
+    /**
+     * A frame boundary, re-resolved against live state at every terminal operation: unlike {@link
+     * Element} and {@link Structured}, this entry does not narrow the current document - it starts
+     * a fresh one, since a frame is a separate document/browsing context, never a descendant DOM
+     * element of the page that contains its {@code <iframe>}. See {@link
+     * PlaywrightScopeResolver#resolveFrameScope}.
+     */
+    record Frame(FrameDefinition definition) implements IPendingScope {
+        public Frame {
+            Objects.requireNonNull(definition, "definition");
         }
     }
 }

@@ -2,6 +2,7 @@ package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.AriaRole;
 import io.webagent4j.common.LocatorException;
 import io.webagent4j.dom.IElement;
@@ -48,14 +49,36 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             """;
 
-    private final Page page;
-    private final ILocatorEngine engine;
-    private final LocatorContext pageContext;
+    /**
+     * Bound for {@link #identifyOrNull(Locator)}'s candidate-identity evaluation: short enough to
+     * never meaningfully eat into a caller's configured {@link
+     * io.webagent4j.wait.WaitEngine}-driven timeout (frame ITs configure budgets as low as 800ms),
+     * generous enough to absorb ordinary IPC round-trip latency rather than producing false
+     * negatives for a candidate that is genuinely still present.
+     */
+    private static final double EVALUATE_TIMEOUT_MILLIS = 200;
 
+    private final Locator documentRoot;
+    private final ILocatorEngine engine;
+    private final LocatorContext rootContext;
+
+    /** Creates a backend rooted at the top-level page document. */
     PlaywrightLocatorBackend(Page page, ILocatorEngine engine, LocatorConfig config) {
-        this.page = page;
+        this(page.locator("html"), engine, config, LocatorScope.page());
+    }
+
+    /**
+     * Creates a backend rooted at a frame's own document instead of the top-level page: {@code
+     * documentRoot} is a lazily-resolving {@link Locator} (for example {@code
+     * frameLocator.locator("html")}) so every query issued through this backend re-resolves the
+     * frame's current document fresh on each real Playwright call, never reusing a handle captured
+     * against a document that has since been replaced or navigated away from.
+     */
+    PlaywrightLocatorBackend(
+            Locator documentRoot, ILocatorEngine engine, LocatorConfig config, LocatorScope scope) {
+        this.documentRoot = documentRoot;
         this.engine = engine;
-        this.pageContext = LocatorContext.page(this, config);
+        this.rootContext = new LocatorContext(this, scope, config);
     }
 
     @Override
@@ -75,24 +98,30 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public LocatorBackendSearchResult find(
             LocatorBackendQuery query,
             LocatorScope scope,
             LocatorConfig config,
             Duration timeout,
             int candidateLimit) {
-        Locator root =
-                scope.root()
-                        .map(PlaywrightLocatorBackend::unwrap)
-                        .orElseGet(() -> page.locator("html"));
+        Locator root = scope.root().map(PlaywrightLocatorBackend::unwrap).orElse(documentRoot);
         Locator resolved = resolve(root, query, config);
         int discoveredCount = resolved.count();
         int count = Math.min(discoveredCount, candidateLimit);
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
             Locator item = resolved.nth(index);
-            Map<String, Object> identity = (Map<String, Object>) item.evaluate(IDENTITY_SCRIPT);
+            Map<String, Object> identity = identifyOrNull(item);
+            if (identity == null) {
+                // count() confirmed this candidate a moment ago, but it (or, for a frame-scoped
+                // backend, the whole document containing it) was torn down before evaluate()
+                // reached it - the same "vanished between check and use" outcome as a detached
+                // explicit scope elsewhere in this class, so it is dropped from this poll's
+                // candidates rather than surfaced as a raw backend failure: the caller's
+                // WaitEngine poll retries and picks it up as a normal "not currently present"
+                // result.
+                continue;
+            }
             ElementRole knownRole = knownRole(query);
             candidates.add(
                     new LocatorBackendCandidate(
@@ -101,6 +130,32 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             ((Number) identity.get("domOrder")).intValue()));
         }
         return new LocatorBackendSearchResult(candidates, discoveredCount, discoveredCount > count);
+    }
+
+    /**
+     * Evaluates {@link #IDENTITY_SCRIPT} against {@code item}, bounded to a short explicit timeout
+     * so a candidate that vanishes between {@link Locator#count()} and this call fails fast instead
+     * of blocking on Playwright's own multi-second default actionability wait - which would both
+     * silently multiply the caller's configured {@link io.webagent4j.wait.WaitEngine} budget and
+     * leak a raw {@link TimeoutError} across the backend-neutral boundary. Returns {@code null},
+     * rather than throwing, only for that one typed "did not resolve within {@link
+     * #EVALUATE_TIMEOUT_MILLIS}" signal - the normal shape of "this candidate vanished between
+     * {@link Locator#count()} and this call". Any other {@link RuntimeException} - a disconnected
+     * browser, a closed context/page, or any other opaque backend or runtime failure - is a genuine
+     * failure, not a vanished candidate, and must propagate unchanged rather than being silently
+     * turned into an absent candidate.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> identifyOrNull(Locator item) {
+        try {
+            return (Map<String, Object>)
+                    item.evaluate(
+                            IDENTITY_SCRIPT,
+                            null,
+                            new Locator.EvaluateOptions().setTimeout(EVALUATE_TIMEOUT_MILLIS));
+        } catch (TimeoutError vanished) {
+            return null;
+        }
     }
 
     private static ElementRole knownRole(LocatorBackendQuery query) {
@@ -114,11 +169,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     IFind<IElement> findOnPage() {
-        return new PlaywrightFind(engine, pageContext);
+        return new PlaywrightFind(engine, rootContext);
     }
 
     IFind<IElement> findOnPage(LocatorConfig config) {
-        return new PlaywrightFind(engine, LocatorContext.page(this, config));
+        return new PlaywrightFind(engine, new LocatorContext(this, rootContext.scope(), config));
     }
 
     IFind<IElement> findWithin(IElement element, LocatorScope parentScope, LocatorConfig config) {
@@ -127,7 +182,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     LocatorContext context() {
-        return pageContext;
+        return rootContext;
     }
 
     private Locator resolve(Locator root, LocatorBackendQuery query, LocatorConfig config) {
@@ -217,12 +272,26 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         return root.getByText(text.value(), new Locator.GetByTextOptions().setExact(exact(text)));
     }
 
+    /**
+     * Whether discovery should ask Playwright's native locator for its own {@code exact} matching.
+     * Only {@link TextMatchType#EXACT} qualifies: Playwright's {@code exact: true} is
+     * case-sensitive and does not trim/collapse whitespace, whereas {@link
+     * TextMatchType#CASE_INSENSITIVE_EXACT} is still a full-string match but explicitly
+     * case-insensitive. Asking Playwright for {@code exact: true} on a {@code
+     * CASE_INSENSITIVE_EXACT} criterion would silently discover zero native candidates whenever the
+     * DOM text differs only in case, forcing a fallback all the way to the {@code FUZZY_TEXT}
+     * strategy - which {@link io.webagent4j.locator.LocatorScorer} can never mark as an exact
+     * match. {@code CASE_INSENSITIVE_EXACT} instead uses Playwright's own loose ({@code exact:
+     * false}) case-insensitive substring discovery here, then relies on {@link
+     * io.webagent4j.locator.LocatorScorer}'s own strict, case-folded full-string comparison (via
+     * {@link io.webagent4j.locator.TextMatcher}) to accept only a genuinely exact candidate and
+     * reject every other loosely-discovered one.
+     */
     private static boolean exact(TextMatch text) {
-        return text.type() == TextMatchType.EXACT
-                || text.type() == TextMatchType.CASE_INSENSITIVE_EXACT;
+        return text.type() == TextMatchType.EXACT;
     }
 
-    private static String attributeSelector(String name, String value) {
+    static String attributeSelector(String name, String value) {
         String safeName = name.replaceAll("[^A-Za-z0-9_:-]", "");
         if (safeName.isEmpty()) {
             throw new LocatorException("Attribute name is not CSS-safe: " + name);
@@ -234,7 +303,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 + "\"]";
     }
 
-    private static Locator unwrap(IElement element) {
+    static Locator unwrap(IElement element) {
         if (element instanceof PlaywrightElement playwrightElement) {
             return playwrightElement.locator();
         }

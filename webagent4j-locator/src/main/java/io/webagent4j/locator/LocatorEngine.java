@@ -212,7 +212,22 @@ public final class LocatorEngine implements ILocatorEngine {
         } catch (WaitInterruptedException interrupted) {
             throw new LocatorException("Locator wait was interrupted", interrupted);
         }
-        List<LocatorCandidate> latest = waited.value().orElseGet(List::of);
+        // waited.value() is the last WaitSample observed - on WaitStatus.SUCCESS that sample is the
+        // one that actually satisfied the wait (including any requested stability window), but on
+        // WaitStatus.TIMED_OUT it is merely the last *attempt*: a candidate that was found but
+        // never
+        // stabilized (or never became visible, when waitForCandidates requires that) still produces
+        // a WaitSample.satisfied(...) for that one poll, carrying real candidates as its value,
+        // even
+        // though the wait as a whole never succeeded. Trusting that value here would silently turn
+        // "the condition was never met" into "here are the candidates" - exactly the fail-open bug
+        // WaitStatus.SUCCESS/TIMED_OUT exists to prevent. Only a genuine SUCCESS may populate the
+        // final candidate list; a timeout always resolves to none, regardless of what the last poll
+        // happened to observe.
+        List<LocatorCandidate> latest =
+                waited.status() == WaitStatus.SUCCESS
+                        ? waited.value().orElseGet(List::of)
+                        : List.of();
         if (waited.status() == WaitStatus.TIMED_OUT) {
             diagnostics.limit(BudgetLimit.TIMEOUT);
             LOGGER.debug("Locator timed out after {} ms", timeout.toMillis());

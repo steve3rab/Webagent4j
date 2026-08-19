@@ -255,10 +255,23 @@ final class PlaywrightObservationBackend {
             }
             """;
 
-    private final Page page;
+    /**
+     * Runs the capture script against one document - the top-level page or a specific frame's own
+     * document - so this backend never needs to know which kind of document it is rooted at.
+     */
+    @FunctionalInterface
+    interface IDocumentEvaluator {
+        Object evaluate(String script, Object argument);
+    }
+
+    private final IDocumentEvaluator evaluator;
 
     PlaywrightObservationBackend(Page page) {
-        this.page = page;
+        this(page::evaluate);
+    }
+
+    PlaywrightObservationBackend(IDocumentEvaluator evaluator) {
+        this.evaluator = evaluator;
     }
 
     @SuppressWarnings("unchecked")
@@ -274,7 +287,8 @@ final class PlaywrightObservationBackend {
         arguments.put("maxListItems", options.budget().maxListItems());
         arguments.put("maxSelectOptions", options.budget().maxSelectOptions());
         arguments.put("allowedDataAttributes", List.copyOf(options.allowedDataAttributes()));
-        Map<String, Object> raw = (Map<String, Object>) page.evaluate(CAPTURE_SCRIPT, arguments);
+        Map<String, Object> raw =
+                (Map<String, Object>) evaluator.evaluate(CAPTURE_SCRIPT, arguments);
         List<SnapshotElement> elements = new ArrayList<>();
         for (Object value : list(raw.get("elements"))) {
             elements.add(element(map(value)));

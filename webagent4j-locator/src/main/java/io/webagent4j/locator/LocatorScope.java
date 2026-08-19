@@ -29,11 +29,27 @@ public record LocatorScope(LocatorScopeType type, Optional<IElement> root, List<
         if (type == LocatorScopeType.PAGE && root.isPresent()) {
             throw new IllegalArgumentException("page scope cannot have an element root");
         }
+        if (type == LocatorScopeType.FRAME && root.isPresent()) {
+            throw new IllegalArgumentException("frame scope cannot have an element root");
+        }
     }
 
     /** Creates a page scope. */
     public static LocatorScope page() {
         return new LocatorScope(LocatorScopeType.PAGE, Optional.empty(), List.of("Page"));
+    }
+
+    /**
+     * Creates a document-root scope for a frame - a new independent chain root, not a descendant of
+     * the caller's own scope, matching a frame's semantics as a separate document boundary. The
+     * safe description should identify the frame's own resolution criteria (for example {@code
+     * Frame[name="checkout"]}) so diagnostics make the document boundary explicit.
+     */
+    public static LocatorScope frame(String description) {
+        return new LocatorScope(
+                LocatorScopeType.FRAME,
+                Optional.empty(),
+                List.of(Objects.requireNonNull(description, "description")));
     }
 
     /** Creates a child element scope and appends its safe description to the path. */
