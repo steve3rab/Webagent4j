@@ -23,8 +23,12 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - name: Verify on Unix
-        if: runner.os != 'Windows'
+      - name: Verify on Linux
+        if: runner.os == 'Linux'
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -Pci-playwright-deps clean verify
+      - name: Verify on macOS
+        if: runner.os == 'macOS'
         run: ./mvnw --batch-mode --no-transfer-progress clean verify
       - name: Verify on Windows
         if: runner.os == 'Windows'
@@ -45,7 +49,8 @@ jobs:
           java-version: "21"
           cache: maven
       - name: Run full Chromium robustness benchmark
-        run: ./mvnw --batch-mode --no-transfer-progress -Probustness verify
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -Probustness,ci-playwright-deps verify
       - name: Upload robustness reports and failure diagnostics
         if: always()
         uses: actions/upload-artifact@v7

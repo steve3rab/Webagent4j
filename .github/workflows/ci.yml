@@ -21,10 +21,11 @@ jobs:
           java-version: "21"
           cache: maven
       - name: Verify standard reactor
-        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress -Pci-playwright-deps clean verify
       - name: Verify core robustness subset
         run: >-
-          ./mvnw --batch-mode --no-transfer-progress -Probustness
+          ./mvnw --batch-mode --no-transfer-progress -Probustness,ci-playwright-deps
           -pl webagent4j-robustness-tests -am -Dscenario=CLEAN-001
           -Dit.test=RobustnessBenchmarkIT
           -Dfailsafe.failIfNoSpecifiedTests=false verify
