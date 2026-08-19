@@ -9,11 +9,36 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  verify-linux:
+    name: Verify on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Same rationale as .github/workflows/ci.yml's "verify" job: the official Playwright Java
+    # image already contains Chromium and its Linux host dependencies, so this avoids the
+    # runtime install-deps -> apt-get -> Ubuntu/Azure mirror path that can hang indefinitely.
+    # setup-java still installs and switches to Temurin 21, since the image ships a newer JDK.
+    container:
+      image: mcr.microsoft.com/playwright/java:v1.60.0-noble
+      options: --user 1001
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Verify Java 21 toolchain
+        run: |
+          java -version
+          ./mvnw --version
+      - name: Verify standard reactor
+        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+
+  verify-other-platforms:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -23,24 +48,29 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - name: Verify on Linux
-        if: runner.os == 'Linux'
-        run: >-
-          ./mvnw --batch-mode --no-transfer-progress -Pci-playwright-deps clean verify
       - name: Verify on macOS
         if: runner.os == 'macOS'
         run: ./mvnw --batch-mode --no-transfer-progress clean verify
       - name: Verify on Windows
         if: runner.os == 'Windows'
         run: .\mvnw.cmd --batch-mode --no-transfer-progress clean verify
+
+  verify-docker-image:
+    name: Verify headless Chromium in Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
       - name: Verify headless Chromium in Docker
-        if: runner.os == 'Linux'
         run: docker build --target test --tag webagent4j-test .
 
   robustness:
     name: Full deterministic robustness benchmark
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    container:
+      image: mcr.microsoft.com/playwright/java:v1.60.0-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
@@ -49,8 +79,7 @@ jobs:
           java-version: "21"
           cache: maven
       - name: Run full Chromium robustness benchmark
-        run: >-
-          ./mvnw --batch-mode --no-transfer-progress -Probustness,ci-playwright-deps verify
+        run: ./mvnw --batch-mode --no-transfer-progress -Probustness verify
       - name: Upload robustness reports and failure diagnostics
         if: always()
         uses: actions/upload-artifact@v7
@@ -62,5 +91,12 @@ jobs:
             webagent4j-robustness-tests/target/robustness-artifacts/
             webagent4j-robustness-tests/target/failsafe-reports/
           if-no-files-found: ignore
+
+  robustness-docker-image:
+    name: Verify robustness target in Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
       - name: Verify robustness target in Docker
         run: docker build --target robustness --tag webagent4j-robustness .

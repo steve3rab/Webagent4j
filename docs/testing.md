@@ -91,15 +91,62 @@ Installing those packages needs `apt`/`sudo` and is Linux-specific, so it is not
 build: each of those two modules additionally declares a `ci-playwright-deps` Maven profile (inactive
 by default) whose own `exec-maven-plugin` execution runs
 `com.microsoft.playwright.CLI install-deps chromium` - Playwright's own supported host-dependency
-installer, not a hand-maintained apt package list. `.github/workflows/ci.yml` activates this profile
-explicitly (`-Pci-playwright-deps`); a normal local `./mvnw clean verify` on any OS never activates
-it and never needs `sudo`. `.github/workflows/nightly.yml`'s Linux legs do the same; its macOS and
-Windows legs do not, since `install-deps` is Linux-only. `ci.yml`'s "verify" job runs both its
-`mvnw` invocations on the same runner instance, so installed apt packages persist from the first
-step to the second: only the first step (`Verify standard reactor`) activates the profile, since it
-already installs everything the second step (`Verify core robustness subset`, a separate `-pl
-webagent4j-robustness-tests` Maven invocation on the same runner) needs - re-activating it there
-would just re-run the identical, already-satisfied `apt-get install`.
+installer, not a hand-maintained apt package list. A normal local `./mvnw clean verify`, on any OS,
+never activates it and never needs `sudo`; it remains available as an explicit opt-in
+(`-Pci-playwright-deps`) for any environment that genuinely needs it - a bare `ubuntu-latest` runner
+with no Playwright image, for instance. **Neither `.github/workflows/ci.yml` nor
+`.github/workflows/nightly.yml` activates it any more** (see below) - GitHub Actions' Linux jobs get
+these packages a different way now.
+
+### Linux CI runs inside the official Playwright Java container, not via runtime apt-get
+
+`ci.yml`'s "Java 21 / Linux" job and `nightly.yml`'s "Verify on Linux" and "Full deterministic
+robustness benchmark" jobs all run inside
+`container: mcr.microsoft.com/playwright/java:v1.60.0-noble` - the same image the repository's own
+`Dockerfile` already builds from, at the exact Playwright Java version (`1.60.0`) this project pins.
+That image ships Chromium and its Linux host dependencies pre-installed, so these jobs never need to
+run `install-deps`/`apt-get` at all. This replaced an earlier design where `-Pci-playwright-deps`
+ran `install-deps chromium` at CI time on a bare `ubuntu-latest` runner: that worked when it worked,
+but the underlying `apt-get update` sometimes hit a stalled Ubuntu/Azure mirror inside GitHub's
+network and hung for the rest of the job's timeout window instead of failing fast - a real,
+reproduced deterministic CI failure (confirmed twice, same hang point, same mirror), not a flaky
+one-off. Moving Linux CI onto a container image that already has the dependencies removes that
+runtime network dependency entirely rather than retrying around it or maintaining a package list by
+hand.
+
+Each of these container-based jobs still runs `actions/setup-java` for Temurin 21 and a `java
+-version` / `./mvnw --version` diagnostic step immediately after: the base image itself ships a
+newer JDK than 21, and this project must still be verified against Java 21, not whatever JDK the
+image defaults to. `setup-java` installs Temurin 21 into the container and points `JAVA_HOME` at it
+for every later step, so the actual `clean verify` run uses Java 21 - `./mvnw --version`'s own
+"Java version: 21..." line is the proof, checked into the job log on every run.
+
+Because the image's `/ms-playwright` already contains the exact matching Chromium build,
+`install-playwright-chromium`'s `install chromium` execution (still unconditional, on every OS, same
+as before) is expected to be a fast no-op there: Playwright's own installer checks for a completed
+install marker in the target browser directory before downloading anything, browser-by-browser, and
+skips the download entirely when it's already present at the right revision - confirmed by reading
+that check directly in the Playwright Java driver bundle. No skip flag was introduced for this,
+since removing an already-harmless step would be needless extra surface for zero benefit; a real CI
+run showing that step complete in a second or two (instead of downloading ~290 MiB, as it does on a
+bare runner) is the actual confirmation.
+
+The Docker-image verification steps (`docker build --target test .` / `--target robustness .`) are
+each their own separate, non-containerized job in `nightly.yml`, rather than trailing steps inside
+the Playwright-container jobs: the Playwright Java image doesn't ship a `docker` CLI, so `docker
+build` needs to run from a plain runner regardless of what the main verification job uses. Those
+Docker builds still run `./mvnw clean verify` using the `mcr.microsoft.com/playwright/java` image's
+own default JDK inside the container image (unchanged, pre-existing `Dockerfile` behavior) - that is
+a Docker-image build/packaging check, not a substitute for the Java-21-specific CI validation above,
+and is out of scope for this fix to change.
+
+**Testcontainers**: `webagent4j-integration-tests` declares a `testcontainers` test-scope dependency,
+but no test anywhere in the repository actually imports `org.testcontainers.*` or uses
+`@Testcontainers`/`GenericContainer` (verified by grepping the full source tree) - nothing currently
+needs a Docker daemon from inside the test JVM. Running the Linux CI job inside a job `container:`
+is safe on that basis; if a future test does need Testcontainers, that would need to be revisited
+together with whether Docker-in-Docker access is available from a job container on the runners in
+use at that time.
 
 ### A benign, expected "Playwright Host validation warning" for WebKit
 

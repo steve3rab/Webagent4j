@@ -68,6 +68,19 @@ All notable changes to this project will be documented in this file. The format 
   driver-internal, zero-argument auto-install check the Java driver runs on first browser launch -
   separate from, and in addition to, this project's own Chromium-scoped `install`/`install-deps`
   steps, which are confirmed correctly scoped and not the source of the warning.
+- Fixed a deterministic CI hang: `install-deps chromium`'s runtime `apt-get update` started
+  stalling indefinitely on an Ubuntu/Azure mirror inside GitHub Actions' network, reproduced twice,
+  cancelling the job at its 30-minute timeout both times. Moved `ci.yml`'s "Java 21 / Linux" job and
+  `nightly.yml`'s Linux jobs onto `container: mcr.microsoft.com/playwright/java:v1.60.0-noble` -
+  the same image the repository's `Dockerfile` already builds from, at the matching Playwright Java
+  version - which ships Chromium and its Linux host dependencies pre-installed, removing the
+  runtime `apt-get` path entirely rather than retrying around it. `-Pci-playwright-deps` is no
+  longer activated by either workflow but remains available as an explicit opt-in Maven profile for
+  environments that still need it; local builds are unaffected either way. Each container-based job
+  still installs Temurin 21 via `setup-java` and verifies it with a `java -version`/`./mvnw
+  --version` diagnostic step, since the base image ships a newer JDK. `nightly.yml`'s `docker build`
+  verification steps moved into their own separate, non-containerized jobs, since the Playwright
+  image doesn't ship a `docker` CLI.
 
 ### Added
 
