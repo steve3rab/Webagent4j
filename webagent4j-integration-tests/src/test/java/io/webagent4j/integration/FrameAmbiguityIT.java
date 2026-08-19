@@ -58,8 +58,12 @@ class FrameAmbiguityIT {
     }
 
     /**
-     * A "payment" frame uniquely resolves at t=0, so a bare {@code timeout(...)} wait would already
-     * have returned before the duplicate frame is inserted 150ms later. {@code stableFor(300ms)}
+     * The fixture's duplicate-insertion timer is armed explicitly, after an initial resolution has
+     * already proven the "payment" frame unique - never started implicitly at page load - so this
+     * test's own establishing lookup can never race against it. Only once that initial state is
+     * confirmed does the test arm the 150ms insertion and start the real scenario: the "payment"
+     * frame resolves uniquely at t=0 relative to that arming, so a bare {@code timeout(...)} wait
+     * would already have returned before the duplicate frame is inserted; {@code stableFor(300ms)}
      * keeps the wait actively polling through that moment - exactly {@link
      * io.webagent4j.locator.api.ILocator#stableFor(Duration)}'s guarantee, applied to the frame
      * boundary - so the duplicate is genuinely observed mid-wait and fails the resolution
@@ -69,6 +73,10 @@ class FrameAmbiguityIT {
     void aFrameThatBecomesAmbiguousWhileActivelyWaitingEndsTheWaitAsAmbiguous() throws Exception {
         try (var support = FramePhase4TestSupport.start();
                 var page = support.open("/frames/becomes-ambiguous-during-wait")) {
+            page.frame().named("payment").single();
+
+            page.evaluate("armPaymentAmbiguity()");
+
             assertThatExceptionOfType(AmbiguousLocatorException.class)
                     .isThrownBy(
                             () ->
@@ -81,24 +89,25 @@ class FrameAmbiguityIT {
     }
 
     /**
-     * The "checkout" frame and its "Pay" button both resolve at t=0, so the wait must be held open
-     * with {@code stableFor(300ms)} - mirroring {@code DynamicContextDisappearanceDuringWaitIT} at
-     * the element level - to still be actively polling when the underlying {@code <iframe>} is
-     * removed 150ms later: every poll re-resolves the frame pending-scope fresh, so its removal
-     * surfaces as a typed not-found on the very next attempt, never a stale element interaction.
+     * The fixture's removal timer is armed explicitly, after the frame has already been resolved
+     * once - never started implicitly at page load - so this test's own initial lookup can never
+     * race against it: the "checkout" frame is guaranteed present and unique at t=0. Only once that
+     * initial handle is obtained does the test arm the 150ms removal and start the real scenario:
+     * the "checkout" frame and its "Pay" button both resolve at t=0 relative to that arming, so the
+     * wait must be held open with {@code stableFor(300ms)} - mirroring {@code
+     * DynamicContextDisappearanceDuringWaitIT} at the element level - to still be actively polling
+     * when the underlying {@code <iframe>} is removed: every poll re-resolves the frame
+     * pending-scope fresh, so its removal surfaces as a typed not-found on the very next attempt,
+     * never a stale element interaction.
      */
     @Test
     void aFrameThatDisappearsWhileActivelyWaitingForATargetInsideItEndsTheWaitAsNotFound()
             throws Exception {
         try (var support = FramePhase4TestSupport.start();
                 var page = support.open("/frames/disappearing-during-wait")) {
-            // The initial lookup is not itself the scenario under test - the frame is present at
-            // t=0 and this is just getting a handle to it - so it is given a generous timeout
-            // rather than the 5s default, to stay robust under a heavily loaded CI runner (this
-            // suite runs alongside the full Chromium robustness benchmark in the same job) rather
-            // than being tied to the 800ms budget the actual disappearance assertion below needs.
-            IFrame checkout =
-                    page.frame().named("checkout").timeout(Duration.ofSeconds(15)).single();
+            IFrame checkout = page.frame().named("checkout").single();
+
+            page.evaluate("armCheckoutRemoval()");
 
             assertThatExceptionOfType(LocatorNotFoundException.class)
                     .isThrownBy(

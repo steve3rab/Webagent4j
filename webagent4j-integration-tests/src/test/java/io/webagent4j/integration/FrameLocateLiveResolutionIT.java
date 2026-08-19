@@ -50,17 +50,21 @@ class FrameLocateLiveResolutionIT {
 
     /**
      * Mirrors {@code FrameAmbiguityIT}'s disappearance-during-wait scenario, but through {@code
-     * locate(...)} rather than {@code find()...single()}: the frame is present at t=0, so a bare
-     * timeout would already have returned before the removal fires 150ms later; {@code stableFor}
-     * keeps the wait actively polling through that moment, proving {@code locate(...)} re-resolves
-     * the frame's own pending scope on every attempt too.
+     * locate(...)} rather than {@code find()...single()}: the fixture's removal timer is armed
+     * explicitly only after the frame has already been resolved once, so the initial lookup can
+     * never race against it. Only then does the real scenario start: the frame and its "Pay" button
+     * both resolve at t=0 relative to that arming, so a bare timeout would already have returned
+     * before the removal fires 150ms later; {@code stableFor} keeps the wait actively polling
+     * through that moment, proving {@code locate(...)} re-resolves the frame's own pending scope on
+     * every attempt too.
      */
     @Test
     void locateFailsAsNotFoundWhenTheFrameDisappearsDuringTheWait() throws Exception {
         try (var support = FramePhase4TestSupport.start();
                 var page = support.open("/frames/disappearing-during-wait")) {
-            IFrame checkout =
-                    page.frame().named("checkout").timeout(Duration.ofSeconds(15)).single();
+            IFrame checkout = page.frame().named("checkout").single();
+
+            page.evaluate("armCheckoutRemoval()");
 
             assertThatExceptionOfType(LocatorNotFoundException.class)
                     .isThrownBy(
@@ -76,14 +80,19 @@ class FrameLocateLiveResolutionIT {
 
     /**
      * Mirrors {@code FrameAmbiguityIT}'s becomes-ambiguous-during-wait scenario through {@code
-     * locate(...)}: a duplicate "payment" frame is inserted 150ms after the wait begins, and {@code
-     * stableFor} keeps the wait actively polling so the duplicate is genuinely observed mid-wait.
+     * locate(...)}: the fixture's duplicate-insertion timer is armed explicitly, only after the
+     * frame has already been resolved once, so this test's own establishing lookup can never race
+     * against it. Only then is the duplicate armed and the real scenario started: the duplicate
+     * "payment" frame is inserted 150ms after that, and {@code stableFor} keeps the wait actively
+     * polling so the duplicate is genuinely observed mid-wait.
      */
     @Test
     void locateFailsAsAmbiguousWhenASecondIdenticalFrameAppearsDuringStableFor() throws Exception {
         try (var support = FramePhase4TestSupport.start();
                 var page = support.open("/frames/becomes-ambiguous-during-wait")) {
-            IFrame payment = page.frame().named("payment").timeout(Duration.ofSeconds(15)).single();
+            IFrame payment = page.frame().named("payment").single();
+
+            page.evaluate("armPaymentAmbiguity()");
 
             assertThatExceptionOfType(AmbiguousLocatorException.class)
                     .isThrownBy(

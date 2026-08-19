@@ -147,21 +147,34 @@ final class FrameTestApplication implements AutoCloseable {
                             "Frame disappears during wait",
                             iframe("checkout-frame", "checkout", "/frames/child/checkout")
                                     + """
-                                    <script>setTimeout(() => {
-                                      document.querySelector('iframe[name="checkout"]').remove();
-                                    }, 150)</script>
+                                    <script>
+                                      function armCheckoutRemoval() {
+                                        setTimeout(() => {
+                                          const frame =
+                                            document.querySelector('iframe[name="checkout"]');
+                                          if (frame) {
+                                            frame.remove();
+                                          }
+                                        }, 150);
+                                      }
+                                    </script>
                                     """);
             case "/frames/becomes-ambiguous-during-wait" ->
                     host(
                             "Frame becomes ambiguous during wait",
                             iframe("payment-frame", "payment", "/frames/child/payment-1")
                                     + """
-                                    <script>setTimeout(() => {
-                                      const duplicate = document.createElement('iframe');
-                                      duplicate.name = 'payment'; duplicate.id = 'payment-frame-2';
-                                      duplicate.src = '/frames/child/payment-2';
-                                      document.body.appendChild(duplicate);
-                                    }, 150)</script>
+                                    <script>
+                                      function armPaymentAmbiguity() {
+                                        setTimeout(() => {
+                                          const duplicate = document.createElement('iframe');
+                                          duplicate.name = 'payment';
+                                          duplicate.id = 'payment-frame-2';
+                                          duplicate.src = '/frames/child/payment-2';
+                                          document.body.appendChild(duplicate);
+                                        }, 150);
+                                      }
+                                    </script>
                                     """);
             case "/frames/replace-on-call" ->
                     host(
