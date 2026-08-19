@@ -6,6 +6,43 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed (CI stabilization)
+
+- Fixed three intermittent/deterministic integration-test failures exposed by CI (all traced to test
+  fixture/orchestration bugs, not production defects):
+  - `ActionPlanIT.revalidationBlocksExecutionWhenThePreconditionStopsHolding` - its fixture disabled
+    the "Confirm" button via a bare `confirm.disabled = true` reference, which collides with the
+    browser's built-in `window.confirm` dialog function and could silently do nothing. Fixed by
+    referencing the element through `document.getElementById('confirm')` inside an explicit,
+    test-invoked `disableConfirmButton()` function instead of an implicit id-derived global.
+  - `ActionPlanScopeContainmentRevalidationIT.aPlanWhoseExplicitChildIsMovedOutsideItsParentFailsInsteadOfExecuting` -
+    its fixture moved `#panel` via a `setTimeout(..., 150)` that raced against the test's own
+    (variable-latency) locator resolution and `plan()` construction. Fixed by exposing an explicit
+    `movePanelToProductB()` fixture function, invoked from the test immediately after asserting the
+    plan is `READY`, removing the race entirely.
+  - `ActionTimeoutIT.boundsAnUnmetPostconditionAndKeepsThePageUsable` - asserted a server-side click
+    count against the shared default `/actions/click` fixture, whose "Increment" button never called
+    the counting endpoint; the assertion was unconditionally wrong, not flaky. Fixed with a dedicated
+    `/actions/click-timeout-oracle` fixture and two independent oracles (a synchronous DOM counter and
+    a briefly, boundedly polled server-side counter), both asserting exactly one backend invocation.
+  - The same `setTimeout`-plus-eager-pre-resolution race pattern was also present in, and fixed the
+    same way in, `ExplicitScopeMovedOutsideParentIT`, `ExplicitScopeDetachmentProtectionIT`, and
+    `ActionPlanMixedScopeRevalidationIT` (new `movePanelToProductB()`/`detachOuterContainer()`/
+    `replaceProductAAvailableRegion()`/`addDuplicateConfirmButton()`/
+    `replaceConfirmButtonWithFreshNode()`/`replaceConfirmButtonWithUnrelatedDeleteButton()` fixture
+    functions in `ActionTestApplication`, invoked explicitly instead of raced against a timer).
+- Fixed GitHub Actions CI ("CI / Java 21 / Linux") not installing the Linux OS packages Chromium
+  needs to launch (only the browser binary itself was installed), causing "missing dependencies to
+  run browsers" failures. Added an opt-in `ci-playwright-deps` Maven profile to
+  `webagent4j-integration-tests` and `webagent4j-robustness-tests`, running
+  `com.microsoft.playwright.CLI install-deps chromium` - Playwright's own supported host-dependency
+  installer - activated only by `.github/workflows/ci.yml` and the Linux legs of
+  `.github/workflows/nightly.yml`; a normal local `clean verify`, on any OS, never activates it and
+  never requires `sudo`.
+- Enabled the previously `if: false`-disabled `.github/workflows/dependency-review.yml` check, so it
+  performs a real dependency review on pull requests instead of reporting a misleading, no-op green
+  check.
+
 ### Added
 
 - Java 21 Maven multi-module foundation and dependency BOM.
