@@ -253,7 +253,8 @@ final class FrameTestApplication implements AutoCloseable {
                 title,
                 "<button onclick=\"fetch('/count-click/"
                         + counterName
-                        + "').then(() => { status.textContent = 'Done'; })\">"
+                        + "').then(() => { document.getElementById('status').textContent ="
+                        + " 'Done'; })\">"
                         + buttonLabel
                         + "</button><p id=\"status\">Ready</p>");
     }
