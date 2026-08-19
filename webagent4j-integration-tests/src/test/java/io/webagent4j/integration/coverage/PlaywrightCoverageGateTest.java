@@ -127,4 +127,31 @@ class PlaywrightCoverageGateTest {
                 .isThrownBy(() -> PlaywrightCoverageGate.evaluate(missing))
                 .withMessageContaining("not found");
     }
+
+    /**
+     * Proves the property {@code coverage-check-playwright-aggregate}'s {@code exec-maven-plugin}
+     * configuration actually relies on: an explicit path argument is resolved as the
+     * caller-supplied path itself, never relative to (or dependent on) the process's current
+     * working directory. {@code exec-maven-plugin}'s {@code java} goal runs the main class
+     * in-process, in the same JVM as the whole Maven reactor build, with no working-directory
+     * parameter of its own to set - a relative default would resolve against whatever directory
+     * {@code mvn} itself was launched from, not this module's own {@code target/}. {@code @TempDir}
+     * is deliberately unrelated to this module's build tree, so a passing test here cannot be
+     * explained by an accidental coincidence between the JVM's actual working directory and the
+     * fixture's location.
+     */
+    @Test
+    void resolvesAnExplicitAbsolutePathIndependentlyOfTheProcessWorkingDirectory(
+            @TempDir Path tempDir) throws Exception {
+        assertThat(tempDir).isAbsolute();
+        Path csv = tempDir.resolve("jacoco.csv");
+        Files.writeString(
+                csv,
+                HEADER
+                        + System.lineSeparator()
+                        + "G,io.webagent4j.browser.playwright,X,0,0,0,0,10,90,0,0,0,0"
+                        + System.lineSeparator());
+
+        PlaywrightCoverageGate.main(new String[] {csv.toAbsolutePath().toString()});
+    }
 }

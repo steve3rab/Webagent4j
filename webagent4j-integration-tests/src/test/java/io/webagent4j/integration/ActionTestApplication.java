@@ -177,43 +177,57 @@ final class ActionTestApplication implements AutoCloseable {
                             "Plan same target",
                             """
                             <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
-                            <script>setTimeout(() => {
-                              const old = document.getElementById('confirm');
-                              const fresh = document.createElement('button');
-                              fresh.id='fresh'; fresh.textContent='Confirm';
-                              fresh.onclick=() => fetch('/count-click'); old.replaceWith(fresh);
-                            }, 150)</script>
+                            <script>
+                              function replaceConfirmButtonWithFreshNode() {
+                                const old = document.getElementById('confirm');
+                                const fresh = document.createElement('button');
+                                fresh.id = 'fresh';
+                                fresh.textContent = 'Confirm';
+                                fresh.onclick = () => fetch('/count-click');
+                                old.replaceWith(fresh);
+                              }
+                            </script>
                             """);
             case "/actions/plan-wrong-target" ->
                     document(
                             "Plan wrong target",
                             """
                             <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
-                            <script>setTimeout(() => {
-                              const old = document.getElementById('confirm');
-                              const wrong = document.createElement('button');
-                              wrong.id='delete'; wrong.textContent='Delete';
-                              wrong.onclick=() => fetch('/count-click'); old.replaceWith(wrong);
-                            }, 150)</script>
+                            <script>
+                              function replaceConfirmButtonWithUnrelatedDeleteButton() {
+                                const old = document.getElementById('confirm');
+                                const wrong = document.createElement('button');
+                                wrong.id = 'delete';
+                                wrong.textContent = 'Delete';
+                                wrong.onclick = () => fetch('/count-click');
+                                old.replaceWith(wrong);
+                              }
+                            </script>
                             """);
             case "/actions/plan-ambiguity" ->
                     document(
                             "Plan ambiguity",
                             """
                             <div id="host"><button onclick="fetch('/count-click')">Confirm</button></div>
-                            <script>setTimeout(() => {
-                              const duplicate = document.createElement('button');
-                              duplicate.textContent='Confirm';
-                              duplicate.onclick=() => fetch('/count-click');
-                              host.appendChild(duplicate);
-                            }, 150)</script>
+                            <script>
+                              function addDuplicateConfirmButton() {
+                                const duplicate = document.createElement('button');
+                                duplicate.textContent = 'Confirm';
+                                duplicate.onclick = () => fetch('/count-click');
+                                document.getElementById('host').appendChild(duplicate);
+                              }
+                            </script>
                             """);
             case "/actions/plan-precondition-invalidates" ->
                     document(
                             "Plan precondition invalidates",
                             """
                             <button id="confirm" onclick="fetch('/count-click')">Confirm</button>
-                            <script>setTimeout(() => { confirm.disabled = true; }, 150)</script>
+                            <script>
+                              function disableConfirmButton() {
+                                document.getElementById('confirm').disabled = true;
+                              }
+                            </script>
                             """);
             case "/actions/context-multi" ->
                     document(
@@ -371,14 +385,16 @@ final class ActionTestApplication implements AutoCloseable {
                                 </section>
                               </div>
                             </section>
-                            <script>setTimeout(() => {
-                              const old = document.getElementById('available-old');
-                              const fresh = document.createElement('section');
-                              fresh.setAttribute('aria-label', 'Available');
-                              fresh.innerHTML =
-                                '<button onclick="fetch(\\'/count-click/product-a-ajouter\\')">Ajouter</button>';
-                              old.replaceWith(fresh);
-                            }, 150)</script>
+                            <script>
+                              function replaceProductAAvailableRegion() {
+                                const old = document.getElementById('available-old');
+                                const fresh = document.createElement('section');
+                                fresh.setAttribute('aria-label', 'Available');
+                                fresh.innerHTML =
+                                  '<button onclick="fetch(\\'/count-click/product-a-ajouter\\')">Ajouter</button>';
+                                old.replaceWith(fresh);
+                              }
+                            </script>
                             """);
             case "/actions/mixed-scope-detached-child" ->
                     document(
@@ -390,9 +406,11 @@ final class ActionTestApplication implements AutoCloseable {
                                 <button onclick="fetch('/count-click/product-a-confirm')">Confirm</button>
                               </div>
                             </section>
-                            <script>setTimeout(() => {
-                              document.getElementById('outer-container').remove();
-                            }, 150)</script>
+                            <script>
+                              function detachOuterContainer() {
+                                document.getElementById('outer-container').remove();
+                              }
+                            </script>
                             """);
             case "/actions/mixed-scope-child-moved" ->
                     document(
@@ -407,10 +425,12 @@ final class ActionTestApplication implements AutoCloseable {
                             <section aria-label="Product B" id="product-b">
                               <h2>Product B</h2>
                             </section>
-                            <script>setTimeout(() => {
-                              document.getElementById('product-b').appendChild(
-                                document.getElementById('panel'));
-                            }, 150)</script>
+                            <script>
+                              function movePanelToProductB() {
+                                document.getElementById('product-b').appendChild(
+                                  document.getElementById('panel'));
+                              }
+                            </script>
                             """);
             case "/actions/delayed-result", "/actions/retry" ->
                     document(
@@ -443,6 +463,16 @@ final class ActionTestApplication implements AutoCloseable {
                     document(
                             "Ambiguous actions",
                             "<button>Duplicate</button><button>Duplicate</button>");
+            case "/actions/click-timeout-oracle" ->
+                    document(
+                            "Click timeout oracle",
+                            """
+                            <p id="counter">0</p>
+                            <button id="increment" onclick="
+                              counter.textContent = String(Number(counter.textContent) + 1);
+                              fetch('/count-click');
+                            ">Increment</button>
+                            """);
             default ->
                     document(
                             "Click actions",

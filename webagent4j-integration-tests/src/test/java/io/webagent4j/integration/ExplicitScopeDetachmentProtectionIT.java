@@ -6,7 +6,6 @@ import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.browser.InteractionContext;
 import io.webagent4j.dom.IElement;
-import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -31,7 +30,7 @@ class ExplicitScopeDetachmentProtectionIT {
                             .named("Confirm")
                             .reference();
 
-            page.action().waitFor(Duration.ofMillis(300)).execute().throwIfFailed();
+            page.evaluate("detachOuterContainer()");
             ActionResult<Void> result = page.action().click(target).execute();
 
             assertThat(result.success()).isFalse();

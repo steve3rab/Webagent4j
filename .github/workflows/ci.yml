@@ -13,6 +13,16 @@ jobs:
     name: Java 21 / Linux
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Runs inside the official Playwright Java image matching this project's Playwright Java
+    # version (see the Dockerfile), which already contains the Chromium browser binary and the
+    # Linux host packages it needs to launch. This removes the runtime install-deps -> apt-get
+    # update -> Ubuntu/Azure mirror path entirely, instead of retrying or timing out around it -
+    # that runtime apt-get had started hanging indefinitely on the noble-security mirror and was
+    # hitting this job's 30-minute timeout on every run. The image ships a newer JDK than 21, so
+    # setup-java below still installs and switches to Temurin 21 for the actual build/test run.
+    container:
+      image: mcr.microsoft.com/playwright/java:v1.60.0-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
@@ -20,8 +30,13 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
+      - name: Verify Java 21 toolchain
+        run: |
+          java -version
+          ./mvnw --version
       - name: Verify standard reactor
-        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress clean verify
       - name: Verify core robustness subset
         run: >-
           ./mvnw --batch-mode --no-transfer-progress -Probustness

@@ -63,6 +63,25 @@ Maintainers may ask for changes to API design, test coverage, documentation, or 
 Reviews focus on correctness, deterministic behavior, security, maintainability, and module
 boundaries.
 
+## Branch protection for `main`
+
+`main` must be configured with the following GitHub branch protection rule (Settings → Branches →
+branch protection rule for `main`), so a red CI run can never be merged again:
+
+- Require a pull request before merging - no direct pushes to `main`.
+- Require status checks to pass before merging, with these checks marked required:
+  - `CI / Java 21 / Linux`
+  - `CodeQL`
+- Require branches to be up to date with `main` before merging (so a check that passed against a
+  stale base cannot merge a since-broken combination).
+- Dismiss stale pull request approvals when new commits are pushed.
+- Include administrators, so the rule applies uniformly.
+
+These settings live in repository configuration, not in workflow YAML - they cannot be enforced
+from a workflow file, and a workflow must never attempt to emulate them (for example, by failing a
+step conditionally to imitate a required check). If this rule is not currently configured, a
+repository administrator needs to add it under Settings → Branches.
+
 ## Reporting security issues
 
 Do not report vulnerabilities in public issues. Follow the [security policy](SECURITY.md).

@@ -7,7 +7,6 @@ import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.browser.InteractionContext;
 import io.webagent4j.dom.IElement;
-import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -37,7 +36,7 @@ class ActionPlanMixedScopeRevalidationIT {
             IActionPlan<Void> plan = page.action().click(target).plan();
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
-            page.action().waitFor(Duration.ofMillis(300)).execute().throwIfFailed();
+            page.evaluate("replaceProductAAvailableRegion()");
             ActionResult<Void> result = plan.execute();
 
             assertThat(result.success()).isTrue();

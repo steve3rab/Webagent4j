@@ -6,6 +6,82 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed (CI stabilization)
+
+- Fixed three intermittent/deterministic integration-test failures exposed by CI (all traced to test
+  fixture/orchestration bugs, not production defects):
+  - `ActionPlanIT.revalidationBlocksExecutionWhenThePreconditionStopsHolding` - its fixture disabled
+    the "Confirm" button via a bare `confirm.disabled = true` reference, which collides with the
+    browser's built-in `window.confirm` dialog function and could silently do nothing. Fixed by
+    referencing the element through `document.getElementById('confirm')` inside an explicit,
+    test-invoked `disableConfirmButton()` function instead of an implicit id-derived global.
+  - `ActionPlanScopeContainmentRevalidationIT.aPlanWhoseExplicitChildIsMovedOutsideItsParentFailsInsteadOfExecuting` -
+    its fixture moved `#panel` via a `setTimeout(..., 150)` that raced against the test's own
+    (variable-latency) locator resolution and `plan()` construction. Fixed by exposing an explicit
+    `movePanelToProductB()` fixture function, invoked from the test immediately after asserting the
+    plan is `READY`, removing the race entirely.
+  - `ActionTimeoutIT.boundsAnUnmetPostconditionAndKeepsThePageUsable` - asserted a server-side click
+    count against the shared default `/actions/click` fixture, whose "Increment" button never called
+    the counting endpoint; the assertion was unconditionally wrong, not flaky. Fixed with a dedicated
+    `/actions/click-timeout-oracle` fixture and two independent oracles (a synchronous DOM counter and
+    a briefly, boundedly polled server-side counter), both asserting exactly one backend invocation.
+  - The same `setTimeout`-plus-eager-pre-resolution race pattern was also present in, and fixed the
+    same way in, `ExplicitScopeMovedOutsideParentIT`, `ExplicitScopeDetachmentProtectionIT`, and
+    `ActionPlanMixedScopeRevalidationIT` (new `movePanelToProductB()`/`detachOuterContainer()`/
+    `replaceProductAAvailableRegion()`/`addDuplicateConfirmButton()`/
+    `replaceConfirmButtonWithFreshNode()`/`replaceConfirmButtonWithUnrelatedDeleteButton()` fixture
+    functions in `ActionTestApplication`, invoked explicitly instead of raced against a timer).
+- Fixed `PlaywrightCoverageGate`'s aggregate-coverage `exec-maven-plugin` execution
+  (`coverage-check-playwright-aggregate`) failing with "JaCoCo aggregate CSV not found" on every
+  real run - this had never been reached before this mission's other CI fixes, since the Failsafe
+  stage always failed first. Root cause: `exec-maven-plugin`'s `java` goal runs its main class
+  in-process, in the same JVM as the whole reactor build, with no working-directory parameter to
+  set - `PlaywrightCoverageGate`'s relative default path resolved against the JVM's own `user.dir`
+  (the repository root `mvn` was launched from), not this module's own `target/` directory. Fixed
+  by passing the CSV path explicitly as an absolute `${project.build.directory}/...` argument;
+  `PlaywrightCoverageGate.main(String[])` already supported an explicit path argument, so no Java
+  code changed.
+- Fixed GitHub Actions CI ("CI / Java 21 / Linux") not installing the Linux OS packages Chromium
+  needs to launch (only the browser binary itself was installed), causing "missing dependencies to
+  run browsers" failures. Added an opt-in `ci-playwright-deps` Maven profile to
+  `webagent4j-integration-tests` and `webagent4j-robustness-tests`, running
+  `com.microsoft.playwright.CLI install-deps chromium` - Playwright's own supported host-dependency
+  installer - activated only by `.github/workflows/ci.yml` and the Linux legs of
+  `.github/workflows/nightly.yml`; a normal local `clean verify`, on any OS, never activates it and
+  never requires `sudo`.
+- Enabled the previously `if: false`-disabled `.github/workflows/dependency-review.yml` check, so it
+  performs a real dependency review on pull requests instead of reporting a misleading, no-op green
+  check.
+- Added `PlaywrightCoverageGateTest.resolvesAnExplicitAbsolutePathIndependentlyOfTheProcessWorkingDirectory`,
+  proving the property the `coverage-check-playwright-aggregate` fix above actually depends on: an
+  explicit path argument is resolved as-is, never relative to the process's current working
+  directory.
+- Removed a redundant `ci-playwright-deps` activation from `.github/workflows/ci.yml`'s second
+  `mvnw` invocation ("Verify core robustness subset"): both steps run on the same job/runner, and
+  the first step's `webagent4j-integration-tests`-scoped `install-deps chromium` already installs
+  the OS packages the second step needs, since apt state persists for the rest of the job - the
+  second activation just re-ran an already-satisfied `apt-get install`.
+- Documented, in `docs/testing.md`, why CI's "Playwright Host validation warning" (~35 missing
+  libraries, e.g. `libgtk-4.so.1`, the `libgst*`/`libflite*` sets) is expected and benign for this
+  Chromium-only suite rather than something to silence: it traces (via the Playwright driver's own
+  bundled dependency tables) entirely to WebKit's dependency group, and originates from a
+  driver-internal, zero-argument auto-install check the Java driver runs on first browser launch -
+  separate from, and in addition to, this project's own Chromium-scoped `install`/`install-deps`
+  steps, which are confirmed correctly scoped and not the source of the warning.
+- Fixed a deterministic CI hang: `install-deps chromium`'s runtime `apt-get update` started
+  stalling indefinitely on an Ubuntu/Azure mirror inside GitHub Actions' network, reproduced twice,
+  cancelling the job at its 30-minute timeout both times. Moved `ci.yml`'s "Java 21 / Linux" job and
+  `nightly.yml`'s Linux jobs onto `container: mcr.microsoft.com/playwright/java:v1.60.0-noble` -
+  the same image the repository's `Dockerfile` already builds from, at the matching Playwright Java
+  version - which ships Chromium and its Linux host dependencies pre-installed, removing the
+  runtime `apt-get` path entirely rather than retrying around it. `-Pci-playwright-deps` is no
+  longer activated by either workflow but remains available as an explicit opt-in Maven profile for
+  environments that still need it; local builds are unaffected either way. Each container-based job
+  still installs Temurin 21 via `setup-java` and verifies it with a `java -version`/`./mvnw
+  --version` diagnostic step, since the base image ships a newer JDK. `nightly.yml`'s `docker build`
+  verification steps moved into their own separate, non-containerized jobs, since the Playwright
+  image doesn't ship a `docker` CLI.
+
 ### Added
 
 - Java 21 Maven multi-module foundation and dependency BOM.

@@ -6,7 +6,6 @@ import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionPlanStatus;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionPlan;
-import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -41,7 +40,7 @@ class ActionPlanIT {
             IActionPlan<Void> plan = page.action().click(target).plan();
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
-            page.action().waitFor(Duration.ofMillis(300)).execute().throwIfFailed();
+            page.evaluate("replaceConfirmButtonWithFreshNode()");
             ActionResult<Void> result = plan.execute();
 
             assertThat(result.success()).isTrue();
@@ -58,7 +57,7 @@ class ActionPlanIT {
             IActionPlan<Void> plan = page.action().click(target).plan();
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
-            page.action().waitFor(Duration.ofMillis(300)).execute().throwIfFailed();
+            page.evaluate("replaceConfirmButtonWithUnrelatedDeleteButton()");
             ActionResult<Void> result = plan.execute();
 
             assertThat(result.success()).isFalse();
@@ -79,7 +78,7 @@ class ActionPlanIT {
             IActionPlan<Void> plan = page.action().click(target).plan();
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
-            page.action().waitFor(Duration.ofMillis(300)).execute().throwIfFailed();
+            page.evaluate("addDuplicateConfirmButton()");
             ActionResult<Void> result = plan.execute();
 
             assertThat(result.success()).isFalse();
@@ -98,7 +97,7 @@ class ActionPlanIT {
             IActionPlan<Void> plan = page.action().click(target).plan();
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
-            page.action().waitFor(Duration.ofMillis(300)).execute().throwIfFailed();
+            page.evaluate("disableConfirmButton()");
             ActionResult<Void> result = plan.execute();
 
             assertThat(result.success()).isFalse();
