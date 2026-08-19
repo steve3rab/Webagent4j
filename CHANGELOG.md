@@ -100,6 +100,35 @@ All notable changes to this project will be documented in this file. The format 
   failure into an empty `Optional`; and two new `FrameDefinitionTest` cases (now 10 total) proving
   `withUrl(TextMatch)` and the canonical constructor both reject `FUZZY` explicitly.
 
+### Fixed (`LocatorEngine` timed-out wait no longer masquerades as success)
+
+- **A `stableFor` wait that times out can no longer return the last candidate it happened to
+  observe as though the wait had actually succeeded.** `LocatorEngine#resolve()` unconditionally
+  read `WaitResult#value()` regardless of `WaitResult#status()`. On `WaitStatus.TIMED_OUT`, that
+  value is the *last polled* `WaitSample`, which - per `WaitSample#pending(Object)`'s own contract -
+  is preserved only for diagnostics and may legitimately carry a real, non-empty candidate list when
+  the target was found but interrupted before its requested stability window elapsed (for example, a
+  frame that disappears partway through a `stableFor` wait: the poll immediately before the
+  disappearance is a genuine `WaitSample.satisfied(...)`, even though the wait as a whole never
+  stabilizes). `LocatorEngine` was treating that diagnostic-only value as a real result, silently
+  turning a genuine timeout into a false success. `resolve()` now only populates the final candidate
+  list when `WaitResult#status() == WaitStatus.SUCCESS`; a `TIMED_OUT` result always resolves to no
+  candidates, regardless of what the last poll observed. This was surfaced by, and fixes,
+  `FrameLocateLiveResolutionIT.locateFailsAsNotFoundWhenTheFrameDisappearsDuringTheWait`, which had
+  never previously exercised a real "found, then interrupted mid-`stableFor`" sequence against an
+  actual browser. Live re-resolution (`IFrame.locate()` re-walking its full pending-scope chain on
+  every poll), `stableFor`/timeout semantics, and every other locator/frame contract are unchanged.
+- 5 new deterministic fake-time unit tests in `LocatorEngineWaitIntegrationTest` (now 9 total),
+  reusing its existing `FakeClock`/`AdvancingSleeper`/`StagedBackend` harness: a candidate present on
+  every poll but never stable long enough before timeout; a candidate that disappears once (resetting
+  the stability window) and reappears but still not for long enough before timeout; a candidate that
+  genuinely remains stable for the full window, succeeding with that candidate; a no-`stableFor`
+  candidate present on the first poll still succeeding immediately with zero sleeps (no regression);
+  and a dedicated headline regression test (`doesNotReturnLastObservedCandidateWhenStabilityTimesOut`)
+  proving a `TIMED_OUT` result with a non-empty last-observed sample can never become a `LocatorEngine`
+  success, additionally asserting the `LocatorResolutionStatus.TIMEOUT` / `BudgetLimit.TIMEOUT`
+  diagnostics stay correct.
+
 ### Fixed (CI stabilization)
 
 - Fixed three intermittent/deterministic integration-test failures exposed by CI (all traced to test
