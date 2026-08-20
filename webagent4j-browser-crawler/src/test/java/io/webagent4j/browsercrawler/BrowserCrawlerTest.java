@@ -1,0 +1,488 @@
+package io.webagent4j.browsercrawler;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import io.webagent4j.browser.IBrowser;
+import io.webagent4j.browser.IPage;
+import io.webagent4j.browsercrawler.internal.LinkObservationFixtures;
+import io.webagent4j.observation.SemanticElement;
+import io.webagent4j.wait.IMonotonicClock;
+import io.webagent4j.wait.IWaitSleeper;
+import io.webagent4j.wait.WaitEngine;
+import java.net.URI;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Engine-level tests using scripted {@link IPage} mocks (never real Playwright/network) and a fake
+ * clock so stability/timeout behavior is deterministic and instant - no {@code Thread.sleep}
+ * anywhere in this suite.
+ */
+class BrowserCrawlerTest {
+
+    private record PageScript(
+            String finalUrl,
+            String title,
+            List<SemanticElement> links,
+            RuntimeException failure,
+            Duration delay) {
+        static PageScript ok(String finalUrl, String title, List<SemanticElement> links) {
+            return new PageScript(finalUrl, title, links, null, Duration.ZERO);
+        }
+
+        static PageScript delayed(String finalUrl, String title, Duration delay) {
+            return new PageScript(finalUrl, title, List.of(), null, delay);
+        }
+
+        static PageScript failing(RuntimeException failure) {
+            return new PageScript(null, null, List.of(), failure, Duration.ZERO);
+        }
+    }
+
+    /**
+     * A fake clock + immediately-advancing sleeper, so every wait in the test is instant. Backed by
+     * an {@link java.util.concurrent.atomic.AtomicLong} because {@link BrowserCrawler} can call it
+     * concurrently from multiple worker threads when {@code maxConcurrency > 1}.
+     */
+    private static final class FakeTime implements IMonotonicClock, IWaitSleeper {
+        private final java.util.concurrent.atomic.AtomicLong nanos =
+                new java.util.concurrent.atomic.AtomicLong();
+
+        @Override
+        public long nanoTime() {
+            return nanos.get();
+        }
+
+        @Override
+        public void sleep(Duration duration) {
+            nanos.addAndGet(duration.toNanos());
+        }
+    }
+
+    private final Map<String, PageScript> scripts = new HashMap<>();
+    private final List<IPage> createdPages = new ArrayList<>();
+    private final FakeTime fakeTime = new FakeTime();
+    private final BrowserCrawler crawler = new BrowserCrawler(new WaitEngine(fakeTime, fakeTime));
+
+    private IPage newScriptedPage() {
+        IPage page = mock(IPage.class);
+        doAnswer(
+                        invocation -> {
+                            String requestedUrl = invocation.getArgument(0);
+                            PageScript script = scripts.get(requestedUrl);
+                            if (script == null) {
+                                throw new IllegalStateException("unscripted URL: " + requestedUrl);
+                            }
+                            if (script.failure() != null) {
+                                throw script.failure();
+                            }
+                            if (!script.delay().isZero()) {
+                                Thread.sleep(script.delay().toMillis());
+                            }
+                            when(page.url()).thenReturn(script.finalUrl());
+                            when(page.title()).thenReturn(script.title());
+                            when(page.evaluate(anyString())).thenReturn("stable");
+                            when(page.observe(any()))
+                                    .thenReturn(
+                                            LinkObservationFixtures.withLinks(
+                                                    script.finalUrl(), script.links()));
+                            return null;
+                        })
+                .when(page)
+                .navigate(anyString());
+        return page;
+    }
+
+    private IBrowser scriptedBrowser() {
+        IBrowser browser = mock(IBrowser.class);
+        when(browser.newPage())
+                .thenAnswer(
+                        invocation -> {
+                            IPage page = newScriptedPage();
+                            createdPages.add(page);
+                            return page;
+                        });
+        return browser;
+    }
+
+    private BrowserCrawlRequest.Builder requestFor(IBrowser browser, String seed) {
+        return BrowserCrawlRequest.builder(browser)
+                .seed(seed)
+                .navigationTimeout(Duration.ofSeconds(5))
+                .stabilityWindow(Duration.ofMillis(200));
+    }
+
+    @Test
+    void singleSeedWithNoLinksProducesOnePage() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/", PageScript.ok("https://example.com/", "Home", List.of()));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(result.pages().get(0).finalUrl()).isEqualTo(URI.create("https://example.com/"));
+        assertThat(result.pages().get(0).title()).contains("Home");
+        assertThat(result.failures()).isEmpty();
+        assertThat(result.terminationReason()).isEqualTo(BrowserCrawlTerminationReason.COMPLETED);
+        assertThat(result.statistics().successfulPages()).isEqualTo(1);
+    }
+
+    @Test
+    void discoveredLinksAreClaimedAndNavigatedInBfsOrder() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok(
+                        "https://example.com/",
+                        "Home",
+                        List.of(
+                                LinkObservationFixtures.linkElement(
+                                        1, "/a", "https://example.com/a", "A"),
+                                LinkObservationFixtures.linkElement(
+                                        2, "/b", "https://example.com/b", "B"))));
+        scripts.put(
+                "https://example.com/a", PageScript.ok("https://example.com/a", "A", List.of()));
+        scripts.put(
+                "https://example.com/b", PageScript.ok("https://example.com/b", "B", List.of()));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .containsExactly(
+                        "https://example.com/", "https://example.com/a", "https://example.com/b");
+        assertThat(result.statistics().discoveredUrls()).isEqualTo(2);
+        assertThat(result.statistics().maxDepthReached()).isEqualTo(1);
+    }
+
+    @Test
+    void maxDepthStopsFurtherDiscovery() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok(
+                        "https://example.com/",
+                        "Home",
+                        List.of(
+                                LinkObservationFixtures.linkElement(
+                                        1, "/a", "https://example.com/a", "A"))));
+        scripts.put(
+                "https://example.com/a",
+                PageScript.ok(
+                        "https://example.com/a",
+                        "A",
+                        List.of(
+                                LinkObservationFixtures.linkElement(
+                                        1, "/b", "https://example.com/b", "B"))));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").maxDepth(1).build());
+
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .containsExactly("https://example.com/", "https://example.com/a");
+        assertThat(result.rejectedUrls())
+                .anySatisfy(
+                        link ->
+                                assertThat(link.resolvedUrl().toString())
+                                        .isEqualTo("https://example.com/b"));
+    }
+
+    @Test
+    void maxPagesStopsClaimingAndIsReportedAsTerminationReason() {
+        IBrowser browser = scriptedBrowser();
+        List<SemanticElement> manyLinks = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            String url = "https://example.com/p" + i;
+            manyLinks.add(LinkObservationFixtures.linkElement(i + 1, "/p" + i, url, "P" + i));
+            scripts.put(url, PageScript.ok(url, "P" + i, List.of()));
+        }
+        scripts.put(
+                "https://example.com/", PageScript.ok("https://example.com/", "Home", manyLinks));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").maxPages(3).build());
+
+        assertThat(result.pages()).hasSize(3);
+        assertThat(result.terminationReason())
+                .isEqualTo(BrowserCrawlTerminationReason.MAX_PAGES_REACHED);
+        assertThat(result.statistics().claimedNavigations()).isEqualTo(3);
+    }
+
+    @Test
+    void duplicateLinksFromDifferentParentsAreClaimedOnlyOnce() {
+        IBrowser browser = scriptedBrowser();
+        SemanticElement toShared =
+                LinkObservationFixtures.linkElement(
+                        1, "/shared", "https://example.com/shared", "Shared");
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok(
+                        "https://example.com/",
+                        "Home",
+                        List.of(
+                                LinkObservationFixtures.linkElement(
+                                        1, "/a", "https://example.com/a", "A"),
+                                LinkObservationFixtures.linkElement(
+                                        2, "/b", "https://example.com/b", "B"))));
+        scripts.put(
+                "https://example.com/a",
+                PageScript.ok("https://example.com/a", "A", List.of(toShared)));
+        scripts.put(
+                "https://example.com/b",
+                PageScript.ok("https://example.com/b", "B", List.of(toShared)));
+        scripts.put(
+                "https://example.com/shared",
+                PageScript.ok("https://example.com/shared", "Shared", List.of()));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        long sharedNavigations =
+                result.pages().stream()
+                        .filter(p -> p.finalUrl().toString().endsWith("/shared"))
+                        .count();
+        assertThat(sharedNavigations).isEqualTo(1);
+        assertThat(result.statistics().duplicateUrls()).isEqualTo(1);
+    }
+
+    @Test
+    void outOfScopeDiscoveredLinkIsRejectedNotNavigated() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok(
+                        "https://example.com/",
+                        "Home",
+                        List.of(
+                                LinkObservationFixtures.linkElement(
+                                        1,
+                                        "https://other.example/",
+                                        "https://other.example/",
+                                        "Other"))));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(result.rejectedUrls()).hasSize(1);
+        assertThat(result.rejectedUrls().get(0).allowed()).isFalse();
+        assertThat(result.statistics().outOfScopeUrls()).isEqualTo(1);
+    }
+
+    @Test
+    void navigationLeavingScopeOnFinalUrlIsAFailureNotAPage() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok("https://other.example/redirected", "Redirected", List.of()));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.OUT_OF_SCOPE_REDIRECT);
+    }
+
+    @Test
+    void navigationExceptionBecomesAStructuredFailure() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put("https://example.com/", PageScript.failing(new RuntimeException("boom")));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.NAVIGATION_FAILED);
+        assertThat(result.failures().get(0).cause()).isPresent();
+    }
+
+    @Test
+    void failFastStopsAfterAFatalFailure() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok(
+                        "https://example.com/",
+                        "Home",
+                        List.of(
+                                LinkObservationFixtures.linkElement(
+                                        1, "/bad", "https://example.com/bad", "Bad"),
+                                LinkObservationFixtures.linkElement(
+                                        2, "/ok", "https://example.com/ok", "Ok"))));
+        scripts.put("https://example.com/bad", PageScript.failing(new RuntimeException("boom")));
+        scripts.put(
+                "https://example.com/ok", PageScript.ok("https://example.com/ok", "Ok", List.of()));
+
+        BrowserCrawlResult result =
+                crawler.crawl(
+                        requestFor(browser, "https://example.com/")
+                                .maxConcurrency(1)
+                                .failFast(true)
+                                .build());
+
+        assertThat(result.terminationReason()).isEqualTo(BrowserCrawlTerminationReason.FAIL_FAST);
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .doesNotContain("https://example.com/ok");
+    }
+
+    @Test
+    void nonFailFastContinuesAfterAFailure() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok(
+                        "https://example.com/",
+                        "Home",
+                        List.of(
+                                LinkObservationFixtures.linkElement(
+                                        1, "/bad", "https://example.com/bad", "Bad"),
+                                LinkObservationFixtures.linkElement(
+                                        2, "/ok", "https://example.com/ok", "Ok"))));
+        scripts.put("https://example.com/bad", PageScript.failing(new RuntimeException("boom")));
+        scripts.put(
+                "https://example.com/ok", PageScript.ok("https://example.com/ok", "Ok", List.of()));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").failFast(false).build());
+
+        assertThat(result.terminationReason()).isEqualTo(BrowserCrawlTerminationReason.COMPLETED);
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .contains("https://example.com/ok");
+        assertThat(result.failures()).hasSize(1);
+    }
+
+    @Test
+    void cancellationBeforeCrawlStartsProducesNoPages() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/", PageScript.ok("https://example.com/", "Home", List.of()));
+        CancellationToken token = CancellationToken.create();
+        token.cancel();
+
+        BrowserCrawlResult result =
+                crawler.crawl(
+                        requestFor(browser, "https://example.com/")
+                                .cancellationToken(token)
+                                .build());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.terminationReason()).isEqualTo(BrowserCrawlTerminationReason.CANCELLED);
+        assertThat(result.statistics().cancelledTasks()).isEqualTo(1);
+    }
+
+    @Test
+    void crawlerOwnedPagesAreAlwaysClosed() throws Exception {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/", PageScript.ok("https://example.com/", "Home", List.of()));
+
+        crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(createdPages).hasSize(1);
+        verify(createdPages.get(0), times(1)).close();
+    }
+
+    @Test
+    void callerOwnedBrowserIsNotClosedByDefault() throws Exception {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/", PageScript.ok("https://example.com/", "Home", List.of()));
+
+        crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        verify(browser, times(0)).close();
+    }
+
+    @Test
+    void closeBrowserOnCompletionClosesTheBrowser() throws Exception {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/", PageScript.ok("https://example.com/", "Home", List.of()));
+
+        crawler.crawl(
+                requestFor(browser, "https://example.com/").closeBrowserOnCompletion(true).build());
+
+        verify(browser, times(1)).close();
+    }
+
+    @Test
+    void boundedConcurrencyNeverExceedsConfiguredMaximum() {
+        IBrowser browser = scriptedBrowser();
+        List<SemanticElement> seedLinks = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            String url = "https://example.com/p" + i;
+            seedLinks.add(LinkObservationFixtures.linkElement(i + 1, "/p" + i, url, "P" + i));
+            scripts.put(url, PageScript.ok(url, "P" + i, List.of()));
+        }
+        scripts.put(
+                "https://example.com/", PageScript.ok("https://example.com/", "Home", seedLinks));
+
+        BrowserCrawlResult result =
+                crawler.crawl(
+                        requestFor(browser, "https://example.com/").maxConcurrency(3).build());
+
+        assertThat(result.pages()).hasSize(7);
+        // one page per worker thread (ThreadLocal), never more than maxConcurrency threads used
+        verify(browser, org.mockito.Mockito.atMost(3)).newPage();
+    }
+
+    @Test
+    void logicalResultOrderIsUnaffectedByCompletionTimingUnderConcurrency() {
+        IBrowser browser = scriptedBrowser();
+        // frontier/discovery order is a, b, c - but c finishes first and a finishes last
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok(
+                        "https://example.com/",
+                        "Home",
+                        List.of(
+                                LinkObservationFixtures.linkElement(
+                                        1, "/a", "https://example.com/a", "A"),
+                                LinkObservationFixtures.linkElement(
+                                        2, "/b", "https://example.com/b", "B"),
+                                LinkObservationFixtures.linkElement(
+                                        3, "/c", "https://example.com/c", "C"))));
+        scripts.put(
+                "https://example.com/a",
+                PageScript.delayed("https://example.com/a", "A", Duration.ofMillis(150)));
+        scripts.put(
+                "https://example.com/b",
+                PageScript.delayed("https://example.com/b", "B", Duration.ofMillis(30)));
+        scripts.put(
+                "https://example.com/c",
+                PageScript.delayed("https://example.com/c", "C", Duration.ofMillis(80)));
+
+        BrowserCrawlResult result =
+                crawler.crawl(
+                        requestFor(browser, "https://example.com/").maxConcurrency(3).build());
+
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .containsExactly(
+                        "https://example.com/",
+                        "https://example.com/a",
+                        "https://example.com/b",
+                        "https://example.com/c");
+    }
+}

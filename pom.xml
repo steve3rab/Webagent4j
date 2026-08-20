@@ -39,6 +39,7 @@
     <module>webagent4j-storage</module>
     <module>webagent4j-crawler-api</module>
     <module>webagent4j-crawler</module>
+    <module>webagent4j-browser-crawler</module>
     <module>webagent4j-workflow</module>
     <module>webagent4j-recording</module>
     <module>webagent4j-plugin-api</module>

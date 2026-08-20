@@ -118,6 +118,10 @@ Semantic Model ----> Locator / Action / Extraction
 - `webagent4j-crawler` and `webagent4j-crawler-api` cannot depend on Playwright, any browser
   backend, or an AI/LLM library; `webagent4j-crawler-api` cannot depend on the crawler engine
   module (only the reverse). See [http-crawler.md](http-crawler.md).
+- `webagent4j-browser-crawler` depends only on backend-neutral contracts (`webagent4j-browser-api`,
+  `webagent4j-crawler-api`, `webagent4j-wait`) and cannot depend on Playwright or an AI/LLM library -
+  it navigates through `IPage`/`IBrowser`, never a native browser type. See
+  [browser-crawler.md](browser-crawler.md).
 - Public action contracts cannot depend on action implementation packages.
 - No module depends on an AI, LLM, MCP, Spring, Jakarta EE, reactive, or dependency-injection framework.
 - Cross-module implementations live in `internal` packages when they are not stable API.

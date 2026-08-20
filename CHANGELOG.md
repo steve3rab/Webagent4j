@@ -6,6 +6,35 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Browser Crawler — Phase 0.7)
+
+- New `webagent4j-browser-crawler` module: a deterministic, bounded-concurrency browser crawler.
+  `IBrowserCrawler`/`BrowserCrawler` (the sole implementation), `BrowserCrawlRequest` (immutable,
+  builder, fully validated), `BrowserCrawlResult`/`BrowserCrawledPage`/`BrowserCrawlFailure`/
+  `BrowserCrawlStatistics`, `BrowserCrawlFailureType`, `BrowserCrawlTerminationReason`,
+  `FrameCrawlPolicy` (only `TOP_LEVEL_ONLY` implemented in this phase), and `CancellationToken` (a
+  new, minimal cooperative-cancellation primitive - none existed anywhere in the codebase before).
+  Depends only on backend-neutral contracts (`webagent4j-browser-api`, `webagent4j-crawler-api`,
+  `webagent4j-wait`) - never Playwright directly, enforced by new ArchUnit rules
+  (`browserCrawlerRemainsIndependentFromPlaywright`, `browserCrawlerRemainsIndependentFromAiLibraries`).
+- One `IBrowser` instance is the crawl session (cookies/storage/auth state shared across every page
+  it opens); the crawler creates and always closes its own worker pages but never closes a
+  caller-supplied browser unless `closeBrowserOnCompletion(true)` is set.
+- Bounded concurrency (`maxConcurrency`, default `1`) with a documented, tested guarantee: physical
+  navigation completion order never changes the logical, frontier-ordered result order. Claiming
+  (dedup + `maxPages`) happens on a single coordinator thread through one synchronized gate, so it
+  is exact regardless of concurrency.
+- Page stability reuses `webagent4j-wait`'s `WaitEngine`/`WaitPolicy.stableFor` (a DOM-fingerprint
+  probe) - no `Thread.sleep`, no second timing implementation. Link discovery reuses
+  `IPage.observe()`'s already browser-resolved `href` values - no raw HTML parsing.
+- New unit tests (`webagent4j-browser-crawler`), a real-Playwright `BrowserCrawlerIT` suite
+  (`webagent4j-integration-tests`), and two ArchUnit rules. See
+  [docs/browser-crawler.md](docs/browser-crawler.md) for the full contract, determinism guarantee,
+  and this phase's documented limitations (top-level frames only, no SPA `pushState` tracking, no
+  redirect hop list, no dedicated robustness-tests suite in this phase).
+- Updated `docs/crawler.md`, `docs/modules.md`, `docs/architecture.md`, `docs/roadmap.md`,
+  `docs/index.md`, `docs/public-api.md`, `docs/limitations.md`, and `README.md` to reflect Phase 0.7.
+
 ### Added (Public API documentation consolidation)
 
 - New `docs/public-api.md`: a comprehensive public API reference spanning every implemented module

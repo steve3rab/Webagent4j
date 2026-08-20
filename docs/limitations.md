@@ -86,3 +86,18 @@ Public Suffix List is used, so "domain" scoping compares literal hosts rather th
 true registrable domain - the caller is responsible for choosing correct `allowedHosts`/seeds.
 There is no SSRF protection beyond the scheme/host/domain restrictions the caller configures - the
 caller remains responsible for the destinations it authorizes.
+
+## Browser crawler (Phase 0.7)
+
+The browser crawler (see [docs/browser-crawler.md](browser-crawler.md)) is implemented, but
+explicitly does not implement: frame discovery beyond the top-level document (`FrameCrawlPolicy`
+values other than `TOP_LEVEL_ONLY` are rejected at construction - no public API exists yet to
+enumerate every frame on a page); generic click-driven SPA exploration; tracking
+`history.pushState()`-only URL changes as separate crawl entries; an intermediate HTTP redirect hop
+list; download detection (a browser-initiated download is not distinguished from a rendered
+document); a `robots.txt` engine; a workflow engine; AI-based ranking or extraction; or MCP/agent
+tooling. `robots.txt` and SSRF limitations are the same as the HTTP crawler's, above. This phase did
+not add a dedicated `webagent4j-robustness-tests` adversarial suite (unlike Phase 0.6); the
+integration and unit suites cover the critical invariants (bounded concurrency, deterministic result
+ordering, atomic claiming, resource cleanup, cancellation) but not the full adversarial scenario
+matrix.
