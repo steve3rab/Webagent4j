@@ -22,26 +22,38 @@ import java.time.Duration;
  * background network activity - it is a bounded, purely DOM-shape-based approximation, documented
  * as such in {@code docs/browser-crawler.md#stability}.
  *
- * <p>The fingerprint is {@code document.readyState}, the current element count, and - since a link
- * target can change without changing the element count at all (an {@code <a href>} attribute being
- * rewritten in place, common in SPA hydration) - a compact, order-stable digest of every anchor's
- * {@code href} attribute in document order, capped at the first {@value #HREF_DIGEST_LIMIT} anchors
- * so a page with an unusually large number of links still produces a small, cheap string rather
- * than an unbounded one. This still is not a general content-change detector (an anchor's visible
- * text or any non-anchor content changing without an accompanying element-count or href change is
- * not detected), and it still only ever reflects one observation point, never continued monitoring
- * after stability is accepted - see {@code docs/browser-crawler.md#stability} for the exact
- * contract.
+ * <p>The fingerprint is four parts, concatenated: {@code document.readyState}; the total element
+ * count; the total count of {@code href}-bearing anchors (so an anchor being added or removed past
+ * the digest boundary below still changes the fingerprint, even though its own href is not
+ * individually captured); and a bounded, order-stable, structurally unambiguous digest of the first
+ * {@value #HREF_DIGEST_LIMIT} anchors' {@code href} attributes - {@code JSON.stringify} of a JSON
+ * array, not a delimiter-joined string, so an href that itself happens to contain the delimiter
+ * cannot collide with a genuinely different href sequence. {@value #HREF_DIGEST_LIMIT} is not an
+ * arbitrary lower cap: it is exactly {@link io.webagent4j.observation.ObservationOptions}'s {@code
+ * maxElements} bound this engine's own discovery observation uses (see {@code BrowserCrawler}), so
+ * a link mutation stability can ever be asked to notice is, by construction, exactly the same set
+ * of links discovery will actually see - a mutation past that boundary is invisible to both,
+ * consistently, rather than visible to one and not the other.
+ *
+ * <p>This still is not a general content-change detector (an anchor's visible text, a non-anchor
+ * element's content, or an href change past the digest boundary is not detected), and it still only
+ * ever reflects one observation point, never continued monitoring after stability is accepted - see
+ * {@code docs/browser-crawler.md#stability} for the exact contract.
  */
 public final class PageStabilityWaiter {
 
     private static final Duration POLL_INTERVAL = Duration.ofMillis(100);
-    private static final int HREF_DIGEST_LIMIT = 500;
+
+    /** Matches {@code ObservationOptions}'s {@code maxElements} default - see the class Javadoc. */
+    private static final int HREF_DIGEST_LIMIT = 2000;
+
     private static final String FINGERPRINT_SCRIPT =
             "document.readyState + ':' + document.querySelectorAll('*').length + ':' + "
-                    + "Array.prototype.slice.call(document.querySelectorAll('a[href]'), 0, "
+                    + "document.querySelectorAll('a[href]').length + ':' + "
+                    + "JSON.stringify(Array.prototype.slice.call("
+                    + "document.querySelectorAll('a[href]'), 0, "
                     + HREF_DIGEST_LIMIT
-                    + ").map(function(a) { return a.getAttribute('href'); }).join('|')";
+                    + ").map(function(a) { return a.getAttribute('href'); }))";
 
     private final WaitEngine waitEngine;
 

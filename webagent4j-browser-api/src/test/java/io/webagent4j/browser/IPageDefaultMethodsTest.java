@@ -27,12 +27,13 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves {@link IPage}'s default methods delegate exactly as documented - the same contract {@link
+ * Proves {@link IPage}'s default methods behave exactly as documented - the same contract {@link
  * IFrame} mirrors, see {@link IFrameDefaultMethodsTest}: {@link IPage#resolve(LocatorDefinition)}
  * must call through to {@code locate(definition).element()}, {@link IPage#find(InteractionContext)}
  * must call through to {@code find().inContext(context)}, and {@link IPage#navigate(String,
- * Duration)} must call through to {@code navigate(url)} for a backend that does not override it to
- * honor the timeout itself.
+ * Duration)} must fail explicitly with {@link UnsupportedOperationException} for a backend that
+ * does not override it - never silently fall back to {@code navigate(url)} and pretend the caller's
+ * timeout was honored.
  */
 class IPageDefaultMethodsTest {
 
@@ -60,18 +61,23 @@ class IPageDefaultMethodsTest {
     }
 
     @Test
-    void navigateWithTimeoutDelegatesToPlainNavigate() {
+    void navigateWithTimeoutThrowsExplicitlyWhenTheBackendDoesNotOverrideIt() {
         RecordingPage page = new RecordingPage(new StubElement());
 
-        page.navigate("https://example.com/", Duration.ofSeconds(5));
-
-        assertThat(page.lastNavigatedUrl).isEqualTo("https://example.com/");
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.navigate("https://example.com/", Duration.ofSeconds(5))))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test
-    void navigateWithTimeoutRejectsZeroOrNegativeTimeout() {
+    void navigateWithTimeoutRejectsNullZeroOrNegativeTimeout() {
         RecordingPage page = new RecordingPage(new StubElement());
 
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.navigate("https://example.com/", null)))
+                .isInstanceOf(IllegalArgumentException.class);
         assertThat(
                         org.assertj.core.api.Assertions.catchThrowable(
                                 () -> page.navigate("https://example.com/", Duration.ZERO)))
@@ -90,7 +96,6 @@ class IPageDefaultMethodsTest {
         private final IElement element;
         private final RecordingFind recordingFind = new RecordingFind();
         private LocatorDefinition lastLocateDefinition;
-        private String lastNavigatedUrl;
 
         RecordingPage(IElement element) {
             this.element = element;
@@ -108,7 +113,7 @@ class IPageDefaultMethodsTest {
 
         @Override
         public void navigate(String url) {
-            lastNavigatedUrl = url;
+            throw new UnsupportedOperationException();
         }
 
         @Override

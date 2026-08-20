@@ -7,6 +7,7 @@ import io.webagent4j.action.internal.DefaultActionBuilder;
 import io.webagent4j.browser.BrowserOptions;
 import io.webagent4j.browser.IFrameLocator;
 import io.webagent4j.browser.IPage;
+import io.webagent4j.browser.NavigationTimeoutException;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.extraction.ExtractionEngine;
 import io.webagent4j.extraction.api.ExtractedTable;
@@ -79,6 +80,16 @@ final class PlaywrightPage implements IPage {
                         .setTimeout((double) options.timeouts().navigation().toMillis()));
     }
 
+    /**
+     * Overrides the default {@link IPage#navigate(String, Duration)}, mapping {@code timeout}
+     * directly to Playwright's own {@link Page.NavigateOptions#setTimeout}, so it is genuinely
+     * enforced rather than merely accepted. Playwright's native {@link
+     * com.microsoft.playwright.TimeoutError} - a typed subclass of {@link
+     * com.microsoft.playwright.PlaywrightException}, never inferred from an exception message - is
+     * translated to the backend-neutral {@link NavigationTimeoutException} so callers such as
+     * {@code BrowserCrawler} can classify a navigation timeout without depending on Playwright at
+     * all. Any other Playwright failure propagates unchanged.
+     */
     @Override
     public void navigate(String url, Duration timeout) {
         if (timeout == null || timeout.isZero() || timeout.isNegative()) {
@@ -87,9 +98,15 @@ final class PlaywrightPage implements IPage {
         PlaywrightUrlValidator.requireAbsoluteHttp(url);
         // Math.max(1, ...): a sub-millisecond-but-positive remaining budget must never floor to 0,
         // since Playwright treats a timeout of exactly 0 as "disabled" rather than "immediate".
-        page.navigate(
-                url,
-                new Page.NavigateOptions().setTimeout((double) Math.max(1L, timeout.toMillis())));
+        try {
+            page.navigate(
+                    url,
+                    new Page.NavigateOptions()
+                            .setTimeout((double) Math.max(1L, timeout.toMillis())));
+        } catch (com.microsoft.playwright.TimeoutError e) {
+            throw new NavigationTimeoutException(
+                    "Navigation to " + url + " did not commit within " + timeout, e);
+        }
     }
 
     @Override

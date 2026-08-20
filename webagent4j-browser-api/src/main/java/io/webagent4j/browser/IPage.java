@@ -27,25 +27,31 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
     void navigate(String url);
 
     /**
-     * Navigates to an absolute HTTP(S) URL, bounding the navigation attempt itself to {@code
-     * timeout}.
+     * Navigates to an absolute HTTP(S) URL, with {@code timeout} as an authoritative upper bound on
+     * the navigation attempt itself.
      *
-     * <p>The default implementation ignores {@code timeout} and delegates to {@link
-     * #navigate(String)} - this backend's own configured navigation timeout applies instead. A
-     * backend that can honor a caller-supplied navigation timeout (the Playwright adapter does,
-     * mapping it to the native driver's own per-call navigation timeout option) overrides this
-     * method. A caller that needs an authoritative upper bound on the navigation attempt itself -
-     * such as the browser crawler, whose own configured timeout must be the real bound regardless
-     * of what a backend would otherwise default to - must use this overload rather than {@link
-     * #navigate(String)} alone.
+     * <p>Unlike {@link #navigate(String)}, which uses whatever navigation behavior/timeout this
+     * backend defaults to, this overload exists specifically so a caller with its own deadline -
+     * the browser crawler, bounding one navigation attempt to {@code
+     * BrowserCrawlRequest#navigationTimeout()} - gets a real, honored bound rather than an
+     * unenforced suggestion. A backend that cannot honor a caller-supplied timeout must say so
+     * explicitly rather than silently falling back to its own default: the default implementation
+     * here throws {@link UnsupportedOperationException} for exactly that reason. Silently ignoring
+     * {@code timeout} would let a caller believe a bound is enforced when it is not - the timeout
+     * equivalent of swallowing an error. The Playwright adapter overrides this method and maps
+     * {@code timeout} to the native driver's own per-call navigation timeout option, so it is truly
+     * enforced there.
      *
      * @throws IllegalArgumentException if {@code timeout} is {@code null}, zero, or negative
+     * @throws UnsupportedOperationException if this backend cannot honor a caller-supplied
+     *     navigation timeout
      */
     default void navigate(String url, Duration timeout) {
         if (timeout == null || timeout.isZero() || timeout.isNegative()) {
             throw new IllegalArgumentException("timeout must be positive");
         }
-        navigate(url);
+        throw new UnsupportedOperationException(
+                "This browser backend does not support caller-supplied navigation timeouts");
     }
 
     /** Reloads the current document. */

@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.junit.jupiter.api.AfterAll;
@@ -25,14 +26,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..016) for {@link
- * BrowserCrawler} - pathological and boundary-case graphs the engine must survive without hanging,
- * losing pages, exceeding a configured limit, or leaking a crawler-owned page, against a local HTTP
- * fixture only. Mirrors {@code HttpCrawlerRobustnessIT}'s naming and structure for the sibling HTTP
- * engine. Concurrency-specific scenarios (lost/duplicated URLs under real navigation parallelism,
- * reversed completion timing) are deliberately not included: this engine only supports a single
- * navigation lane (see {@code docs/browser-crawler.md#concurrency-model}), so there is no physical
- * concurrency left to race - {@link BrowserCrawlerIT}'s {@code
+ * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..016, STABILITY-002) for
+ * {@link BrowserCrawler} - pathological and boundary-case graphs the engine must survive without
+ * hanging, losing pages, exceeding a configured limit, or leaking a crawler-owned page, against a
+ * local HTTP fixture only. Mirrors {@code HttpCrawlerRobustnessIT}'s naming and structure for the
+ * sibling HTTP engine. Concurrency-specific scenarios (lost/duplicated URLs under real navigation
+ * parallelism, reversed completion timing) are deliberately not included: this engine only supports
+ * a single navigation lane (see {@code docs/browser-crawler.md#concurrency-model}), so there is no
+ * physical concurrency left to race - {@link BrowserCrawlerIT}'s {@code
  * maxConcurrencyAboveOneIsRejectedAndTheSequentialCrawlStillReachesEveryPage} and {@code
  * widerGraphIsCrawledCompletelyAndExactlyOnceAcrossRepeatedRuns} cover that engine's actual
  * concurrency contract instead. BC-ROB-016 runs {@code crawl(...)} itself on this test method's own
@@ -45,6 +46,10 @@ class BrowserCrawlerRobustnessIT {
     private static HttpServer server;
     private static ExecutorService serverExecutor;
     private static String baseUrl;
+
+    // BC-ROB-016 coordination only - see the /rob/cancelmidflight handler and the test itself.
+    private static volatile CountDownLatch cancelMidFlightRequestStarted;
+    private static volatile CountDownLatch cancelMidFlightAllowResponse;
 
     private IBrowser browser;
 
@@ -257,20 +262,54 @@ class BrowserCrawlerRobustnessIT {
                 "/rob/hrefmutation/wrong1", exchange -> respond(exchange, html("Wrong1", "")));
         server.createContext(
                 "/rob/hrefmutation/wrong2", exchange -> respond(exchange, html("Wrong2", "")));
+
+        // STABILITY-002: two anchors' href values are redistributed across a literal "|" character
+        // such that a naive "|"-delimited-join fingerprint would see the identical combined string
+        // before and after ("a|b" + "c" joins the same as "a" + "b|c"), even though the actual
+        // hrefs are genuinely different. maxDepth(0) below means these are only ever discovered,
+        // never navigated, so no server route is needed for either value.
+        server.createContext(
+                "/rob/pipehref",
+                exchange ->
+                        respond(
+                                exchange,
+                                """
+                                <!doctype html>
+                                <html><head><title>PipeHref</title></head>
+                                <body>
+                                <a id="l1" href="a|b">L1</a>
+                                <a id="l2" href="c">L2</a>
+                                <script>
+                                  setTimeout(function() {
+                                    document.getElementById('l1').setAttribute('href', 'a');
+                                    document.getElementById('l2').setAttribute('href', 'b|c');
+                                  }, 100);
+                                </script>
+                                </body></html>
+                                """));
         server.createContext(
                 "/rob/hrefmutation/final", exchange -> respond(exchange, html("Final", "")));
 
         // BC-ROB-016: cancellation observed while a navigation is genuinely in flight. The handler
-        // sleeps 800ms before responding so a cancel() call from another thread lands well within
-        // that window; the page then links to three children that must never be claimed.
+        // signals cancelMidFlightRequestStarted the instant the request arrives, then blocks on
+        // cancelMidFlightAllowResponse - the test releases that latch only after cancel() has
+        // already been called, so the response (and the page's three children) can never arrive
+        // before cancellation is observed. No wall-clock guessing on either side.
         server.createContext(
                 "/rob/cancelmidflight",
                 exchange -> {
-                    try {
-                        Thread.sleep(800);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return;
+                    CountDownLatch started = cancelMidFlightRequestStarted;
+                    CountDownLatch allowResponse = cancelMidFlightAllowResponse;
+                    if (started != null) {
+                        started.countDown();
+                    }
+                    if (allowResponse != null) {
+                        try {
+                            allowResponse.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
                     }
                     respond(
                             exchange,
@@ -581,6 +620,26 @@ class BrowserCrawlerRobustnessIT {
                 .noneMatch(url -> url.contains("wrong1") || url.contains("wrong2"));
     }
 
+    // STABILITY-002: a "|"-containing href does not collide with a differently-partitioned "|"
+    // sequence from a sibling anchor under the JSON-encoded fingerprint - see the fixture above for
+    // the exact collision this would trigger under a naive delimiter-joined fingerprint.
+    @Test
+    void stability002HrefContainingPipeCharacterDoesNotCreateAmbiguousFingerprintEquivalence() {
+        BrowserCrawlResult result =
+                new BrowserCrawler()
+                        .crawl(
+                                requestFor("/rob/pipehref")
+                                        .maxDepth(0)
+                                        .stabilityWindow(Duration.ofMillis(300))
+                                        .navigationTimeout(Duration.ofSeconds(5))
+                                        .build());
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(result.pages().get(0).links())
+                .extracting(link -> link.rawHref())
+                .containsExactlyInAnyOrder("a", "b|c");
+    }
+
     // BC-ROB-016: cancellation observed while a navigation is genuinely in flight (from another
     // thread, mid-navigate()) still lets that navigation complete and its own page be recorded, but
     // the children it discovers are rejected rather than claimed, and no further navigation occurs.
@@ -588,21 +647,35 @@ class BrowserCrawlerRobustnessIT {
     // is dispatched from a second thread (CancellationToken is a plain thread-safe AtomicBoolean,
     // safe to touch from anywhere) - the browser/page themselves are only ever touched from the one
     // thread that launched them, exactly as the single-execution-lane architecture requires.
+    //
+    // Deterministic by construction, not by timing: the /rob/cancelmidflight handler signals
+    // cancelMidFlightRequestStarted the instant it receives the request, then blocks on
+    // cancelMidFlightAllowResponse. This thread waits on the first latch (so it only proceeds once
+    // the navigation has genuinely begun), calls cancel(), and only then releases the second latch
+    // -
+    // so the response, and therefore the page's three children, can never arrive before
+    // cancellation
+    // is observed. No Thread.sleep anywhere in this coordination.
     @Test
     void
             bcRob016CancellationDuringAnInFlightNavigationPreventsDiscoveredChildrenFromBeingClaimed() {
         CancellationToken token = CancellationToken.create();
+        CountDownLatch requestStarted = new CountDownLatch(1);
+        CountDownLatch allowResponse = new CountDownLatch(1);
+        cancelMidFlightRequestStarted = requestStarted;
+        cancelMidFlightAllowResponse = allowResponse;
         ExecutorService cancelExecutor = Executors.newSingleThreadExecutor();
         try {
             cancelExecutor.submit(
                     () -> {
                         try {
-                            Thread.sleep(200); // well within the fixture's 800ms response delay
+                            requestStarted.await();
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                             return;
                         }
                         token.cancel();
+                        allowResponse.countDown();
                     });
 
             BrowserCrawlResult result =
@@ -626,6 +699,8 @@ class BrowserCrawlerRobustnessIT {
                                             .isEqualTo(CrawlDecisionType.REJECT_CANCELLED));
         } finally {
             cancelExecutor.shutdownNow();
+            cancelMidFlightRequestStarted = null;
+            cancelMidFlightAllowResponse = null;
         }
     }
 }

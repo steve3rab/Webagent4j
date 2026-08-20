@@ -62,6 +62,17 @@ thread that calls `crawl(...)`. See [Concurrency model](#concurrency-model) for 
 Internal engine types (`io.webagent4j.browsercrawler.internal`) are `public` by convention (mirroring
 `io.webagent4j.crawler.internal`), not by supported contract.
 
+Two additive, backward-compatible extensions to existing Phase 0.1-0.6 public types were required to
+make `navigationTimeout` genuinely authoritative and to support the cancellation invariant above -
+see [Compatibility](#compatibility) for the full, precise statement:
+
+- `IPage` (`webagent4j-browser-api`) gained a default method, `navigate(String, Duration)`, and a new
+  type in the same package, `NavigationTimeoutException` - see [Navigation timeout](#navigation-timeout).
+- `CrawlDecisionType` (`webagent4j-crawler-api`) gained one new enum constant, `REJECT_CANCELLED` -
+  see [Cancellation](#cancellation).
+
+No existing method signature changed and no existing type was removed.
+
 ## Session model
 
 The caller-supplied `IBrowser` instance **is** the crawl's session boundary - `BrowserCrawler` does
@@ -114,27 +125,42 @@ itself already computed - never re-implemented.
 `navigationTimeout` is one authoritative, monotonic budget covering both the navigation attempt
 itself and the subsequent stability wait - not merely a client-side check performed after a call
 that a backend's own default timeout already bounded to something longer. `BrowserCrawler` passes
-the remaining budget into `IPage.navigate(String, Duration)` on every attempt, so a backend that
-honors that overload (the Playwright adapter maps it directly to the native driver's own per-call
-navigation timeout option) is genuinely stopped by the crawler's own configured timeout, regardless
-of what its own default would otherwise allow. If navigation itself exceeds the deadline, the
-failure is `NAVIGATION_TIMEOUT`; if navigation succeeds but the page cannot reach the configured
-stability window before the same deadline, it is `PAGE_STABILITY_TIMEOUT`. Both are classified
-through the budget's own `expired()` state, never by matching an exception message.
+the remaining budget into `IPage.navigate(String, Duration)` on every attempt - never the plain
+`navigate(String)` overload. That overload's contract is explicit about what "authoritative" means:
+a backend that cannot honor a caller-supplied timeout must say so by throwing
+`UnsupportedOperationException` rather than silently applying its own (possibly much longer)
+default; the Playwright adapter overrides it and maps the timeout directly to the native driver's
+own per-call navigation timeout option, so it is genuinely enforced there. A real navigation timeout
+surfaces as the backend-neutral `io.webagent4j.browser.NavigationTimeoutException` (the Playwright
+adapter translates its native `TimeoutError` to this type); `BrowserCrawler` classifies that typed
+exception directly to `NAVIGATION_TIMEOUT` - never inferred from `WaitBudget.expired()`'s timing or
+from matching an exception message. If navigation itself succeeds but the page cannot reach the
+configured stability window before the same shared deadline, that is `PAGE_STABILITY_TIMEOUT`
+instead - navigation and stability draw from the same budget, so a slow navigation leaves
+correspondingly less time for stability, never a fresh full timeout for each stage.
 
 ## Stability
 
-`PageStabilityWaiter` polls a small, deterministic JavaScript fingerprint every 100ms until it
-reads identically for `stabilityWindow`: `document.readyState`, the current element count, and a
-document-order digest of every `<a href>` attribute (capped at the first 500 anchors, so the probe
-stays cheap and bounded even on a link-heavy page). The href digest exists because a link's target
-can change without changing the element count at all - an SPA hydration step rewriting `href`
-attributes in place, for example - which the element-count signal alone cannot see. This is still a
-bounded, purely DOM-shape-based heuristic, not a network-idle signal and not a general
-content-change detector: an anchor's visible text or any non-anchor content changing without an
-accompanying element-count or href change is not detected, and the engine takes exactly one
-observation snapshot per navigation - it never continues monitoring the DOM after stability is
-accepted (see [Dynamic DOM](#dynamic-dom)).
+`PageStabilityWaiter` polls a small, deterministic JavaScript fingerprint every 100ms until it reads
+identically for `stabilityWindow`, made of four parts: `document.readyState`; the total element
+count; the total count of `href`-bearing anchors; and `JSON.stringify` of a bounded, document-order
+array of the first 2000 anchors' `href` attribute values. The href digest exists because a link's
+target can change without changing the element count at all - an SPA hydration step rewriting `href`
+attributes in place, for example - which the element-count signal alone cannot see; it is
+`JSON.stringify`-encoded, not delimiter-joined, so an href that itself contains the delimiter cannot
+collide with a genuinely different href sequence. The 2000-anchor cap is not arbitrary: it is exactly
+the `maxElements` bound the engine's own discovery observation uses (see
+[Observation truncation](#observation-truncation)), so a mutation stability can ever be asked to
+notice is, by construction, exactly the same set of links discovery will actually see - a mutation
+past that boundary is invisible to both, consistently, never visible to one and silently missed by
+the other. In practice a page with more than 2000 elements always fails via `OBSERVATION_TRUNCATED`
+regardless of its stability outcome, so the cap's boundary itself is not independently reachable as
+a successful crawl - it exists for consistency with the observation bound, not because pages that
+large are expected to succeed. This is still a bounded, purely DOM-shape-based heuristic, not a
+network-idle signal and not a general content-change detector: an anchor's visible text or any
+non-anchor content changing without an accompanying element-count or href change is not detected,
+and the engine takes exactly one observation snapshot per navigation - it never continues monitoring
+the DOM after stability is accepted (see [Dynamic DOM](#dynamic-dom)).
 
 ## Observation truncation
 
@@ -231,6 +257,20 @@ deterministically, but the links it discovers are rejected (`CrawlDecisionType.R
 visible in `rejectedUrls()`) rather than claimed - the frontier stops growing the moment cancellation
 is observed, it does not merely stop being drained.
 
+`REJECT_CANCELLED` is a value on the shared `CrawlDecisionType` (`webagent4j-crawler-api`), not a
+browser-crawler-local type - a deliberate choice, not the path of least diff. `DiscoveredLink`'s own
+invariant requires a rejected link to carry a `CrawlDecision`; representing "cancelled, never
+claimed" any other way would mean either fabricating a misleading existing reason (`REJECT_MAX_PAGES`
+would falsely imply a capacity limit was hit) or silently omitting these links from
+`BrowserCrawledPage.links()` entirely - which would itself be exactly the kind of silent incomplete
+result this project's fail-closed philosophy exists to prevent (see
+[Observation truncation](#observation-truncation) for the same principle applied elsewhere).
+Cancellation-during-discovery is a genuinely engine-neutral crawl decision, not an HTTP- or
+browser-specific concept, so it belongs in the shared type both crawlers' `DiscoveredLink` results
+already draw from - this is an additive, backward-compatible change to `CrawlDecisionType` (see
+[Public API](#public-api)); the HTTP crawler does not use this value today and is otherwise
+untouched.
+
 ## Deduplication
 
 See [URL identities and deduplication](#url-identities-and-deduplication) above.
@@ -306,20 +346,34 @@ See `webagent4j-examples` for runnable `BrowserCrawlSimpleExample` and
 - Observation is bounded (`maxElements(2000)`); a page that exceeds it becomes an explicit
   `OBSERVATION_TRUNCATED` failure rather than a silently incomplete success - see
   [Observation truncation](#observation-truncation).
-- `BrowserCrawlerRobustnessIT` (BC-ROB-001..014, real Playwright, in `webagent4j-integration-tests`)
-  covers the adversarial scenario matrix this phase's own instructions asked for; it does not
-  duplicate the dedicated `webagent4j-robustness-tests` 100-scenario corpus's element-level model,
-  which was never designed for a crawl-graph concept.
+- `BrowserCrawlerRobustnessIT` (BC-ROB-001..016, STABILITY-002, real Playwright, in
+  `webagent4j-integration-tests`) covers the adversarial scenario matrix this phase's own
+  instructions asked for; it does not duplicate the dedicated `webagent4j-robustness-tests`
+  100-scenario corpus's element-level model, which was never designed for a crawl-graph concept.
 - No CLI `crawl-browser` command was added - out of scope per this phase's own instructions unless it
   fits cleanly, and a real browser process/session argument does not fit the existing CLI's
   argument model without its own design pass.
 
 ## Compatibility
 
-No existing Phase 0.1-0.6 public API changed. `IBrowserCrawler` is a new, separate contract from
-`ICrawler` - both `ICrawler#crawl(CrawlRequest)` and `ICrawlScopePolicy#evaluate(URI, URI,
-CrawlRequest)` are bound to the concrete, HTTP-shaped `CrawlRequest` record, so `BrowserCrawler`
-cannot implement `ICrawler` without forcing browser-specific configuration into fields that do not
-fit it - exactly what this phase's own design constraints forbid. This mirrors `HttpCrawler`/
-`ICrawler`: two clear implementations for two genuinely different backends, not one over-unified
-abstraction.
+Two additive public API changes were introduced, both backward-compatible - no existing method
+signature changed and no existing type was removed:
+
+- `IPage` (`webagent4j-browser-api`) gained a default method, `navigate(String, Duration)`, and a
+  new type, `NavigationTimeoutException`, in the same package - required to make
+  `navigationTimeout` genuinely authoritative rather than a best-effort suggestion (see
+  [Navigation timeout](#navigation-timeout)). Every existing `IPage` implementation remains
+  source-compatible unchanged: the new method has a default body, so nothing that does not already
+  call it is affected.
+- `CrawlDecisionType` (`webagent4j-crawler-api`) gained one new enum constant, `REJECT_CANCELLED`
+  (see [Cancellation](#cancellation) for why it belongs on the shared type rather than a
+  browser-crawler-local one).
+
+`IBrowserCrawler` is, and remains, a new, separate contract from `ICrawler` - both
+`ICrawler#crawl(CrawlRequest)` and `ICrawlScopePolicy#evaluate(URI, URI, CrawlRequest)` are bound to
+the concrete, HTTP-shaped `CrawlRequest` record, so `BrowserCrawler` cannot implement `ICrawler`
+without forcing browser-specific configuration into fields that do not fit it - exactly what this
+phase's own design constraints forbid. This mirrors `HttpCrawler`/`ICrawler`: two clear
+implementations for two genuinely different backends, not one over-unified abstraction. The HTTP
+crawler itself (`webagent4j-crawler`, `webagent4j-crawler-api`'s existing behavior) is otherwise
+completely unchanged - its full test suite remains green.

@@ -1,6 +1,7 @@
 package io.webagent4j.browsercrawler;
 
 import io.webagent4j.browser.IPage;
+import io.webagent4j.browser.NavigationTimeoutException;
 import io.webagent4j.browsercrawler.internal.BrowserCrawlFrontier;
 import io.webagent4j.browsercrawler.internal.BrowserCrawlTask;
 import io.webagent4j.browsercrawler.internal.BrowserUrlNormalizer;
@@ -270,13 +271,21 @@ public final class BrowserCrawler implements IBrowserCrawler {
                         Optional.empty());
             }
             try {
-                // The remaining budget, not the backend's own default, is the authoritative bound -
-                // see docs/browser-crawler.md#navigation-timeout. A backend that cannot honor a
-                // caller-supplied timeout falls back to its own default via IPage's default method.
+                // The remaining budget, not any backend default, is the authoritative bound - see
+                // docs/browser-crawler.md#navigation-timeout. A backend that cannot honor a
+                // caller-supplied timeout fails explicitly (IPage#navigate(String, Duration)'s
+                // default throws UnsupportedOperationException) rather than silently ignoring it.
                 page.navigate(task.url().toString(), budget.remaining());
+            } catch (NavigationTimeoutException e) {
+                // Typed, backend-neutral timeout signal - see NavigationTimeoutException. No
+                // budget-expiry inference and no backend-specific message parsing are needed or
+                // used
+                // for this classification.
+                return new NavigationFailure(
+                        BrowserCrawlFailureType.NAVIGATION_TIMEOUT, e.getMessage(), Optional.of(e));
             } catch (RuntimeException e) {
                 return new NavigationFailure(
-                        classifyNavigationException(e, budget), e.getMessage(), Optional.of(e));
+                        classifyNavigationException(e), e.getMessage(), Optional.of(e));
             }
             WaitResult<String> stability;
             try {
@@ -332,15 +341,14 @@ public final class BrowserCrawler implements IBrowserCrawler {
             }
         }
 
-        private static BrowserCrawlFailureType classifyNavigationException(
-                RuntimeException e, WaitBudget budget) {
-            // budget.expired() is a deterministic, backend-neutral signal - checked first, and
-            // authoritative, precisely because navigate() is now itself bounded by this same budget
-            // (see execute()), so a real backend timeout and budget expiry coincide by
-            // construction.
-            if (budget.expired()) {
-                return BrowserCrawlFailureType.NAVIGATION_TIMEOUT;
-            }
+        /**
+         * Classifies a navigation exception that is not the typed {@link
+         * NavigationTimeoutException} (handled separately, deterministically, in {@link #execute}).
+         * {@code PAGE_CLOSED} remains message-based - {@link IPage} exposes no deterministic "was
+         * this page closed" signal - and is the one remaining, deliberately narrow exception to
+         * this engine's no-message-parsing rule for failure classification.
+         */
+        private static BrowserCrawlFailureType classifyNavigationException(RuntimeException e) {
             String message = e.getMessage() == null ? "" : e.getMessage().toLowerCase(Locale.ROOT);
             if (message.contains("closed")) {
                 return BrowserCrawlFailureType.PAGE_CLOSED;

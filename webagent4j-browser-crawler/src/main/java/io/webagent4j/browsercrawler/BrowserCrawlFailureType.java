@@ -11,7 +11,13 @@ package io.webagent4j.browsercrawler;
  */
 public enum BrowserCrawlFailureType {
 
-    /** Navigation did not commit within the request's navigation timeout. */
+    /**
+     * The navigation attempt itself (before the page ever reaches stability - see {@link
+     * #PAGE_STABILITY_TIMEOUT}) did not commit within the request's navigation timeout. Classified
+     * deterministically from the typed {@link io.webagent4j.browser.NavigationTimeoutException},
+     * never inferred from a backend-specific exception message or a timing coincidence - see {@code
+     * docs/browser-crawler.md#navigation-timeout}.
+     */
     NAVIGATION_TIMEOUT,
 
     /** The browser backend reported navigation failure for a reason other than a timeout. */

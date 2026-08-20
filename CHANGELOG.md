@@ -47,10 +47,14 @@ All notable changes to this project will be documented in this file. The format 
 
 - `navigationTimeout` is now the real, authoritative bound on a navigation attempt, not merely a
   client-side check performed after a call a backend's own (longer) default could already have
-  bounded. New backend-neutral `IPage#navigate(String, Duration)` (default method delegates to
-  `navigate(String)` for backends that cannot honor a caller timeout; the Playwright adapter maps it
-  to the native driver's per-call navigation timeout). `BrowserCrawler` now passes the remaining
-  `WaitBudget` into every navigation call.
+  bounded. New backend-neutral `IPage#navigate(String, Duration)` (default method fails explicitly
+  with `UnsupportedOperationException` for a backend that cannot honor a caller-supplied timeout,
+  rather than silently falling back to `navigate(String)` and pretending the timeout was enforced;
+  the Playwright adapter overrides it and maps the timeout to the native driver's per-call navigation
+  timeout, translating its native `TimeoutError` to the new backend-neutral
+  `NavigationTimeoutException`). `BrowserCrawler` now passes the remaining `WaitBudget` into every
+  navigation call and classifies that typed exception directly to `NAVIGATION_TIMEOUT` - never
+  inferred from `WaitBudget.expired()`'s timing or a backend-specific exception message.
 - An observation that hits its configured capture limit (`ObservationStatistics#truncated()`) is no
   longer recorded as a complete, successful page - it becomes a new `BrowserCrawlFailureType
   .OBSERVATION_TRUNCATED` failure instead, so a link past the retained boundary is never silently
@@ -64,10 +68,40 @@ All notable changes to this project will be documented in this file. The format 
   or guarantees session isolation - the caller-supplied `IBrowser` is the session boundary, and
   isolating one crawl's session from another (or from other automation on the same instance) is the
   caller's responsibility.
-- The stability fingerprint now also digests every anchor's `href` in document order (bounded to the
-  first 500), so a link-target-only mutation with a constant element count no longer goes unnoticed
-  - a real gap a count-only fingerprint could not see (common in SPA hydration rewriting `href`
-  attributes in place).
+- The stability fingerprint now also digests every anchor's `href` in document order, so a
+  link-target-only mutation with a constant element count no longer goes unnoticed - a real gap a
+  count-only fingerprint could not see (common in SPA hydration rewriting `href` attributes in
+  place). Corrected in a follow-up (see below) to a `JSON.stringify`-encoded array (not a
+  delimiter-joined string) capped at 2000 anchors, plus a separate total-anchor-count term.
+
+### Fixed (Browser Crawler — Phase 0.7 second correction round)
+
+- The `IPage#navigate(String, Duration)` default no longer silently falls back to `navigate(String)`
+  (which would have let a backend quietly ignore the caller's timeout) - it now throws
+  `UnsupportedOperationException` explicitly, after validating the timeout argument itself. New
+  backend-neutral `io.webagent4j.browser.NavigationTimeoutException`; the Playwright adapter
+  translates its native `TimeoutError` to this type, and `BrowserCrawler` classifies it directly to
+  `NAVIGATION_TIMEOUT` with no `WaitBudget.expired()` inference or exception-message parsing
+  involved.
+- The stability fingerprint's href digest is now `JSON.stringify`-encoded rather than
+  `"|"`-delimiter-joined, so an href that itself contains the delimiter cannot collide with a
+  genuinely different href sequence; it also now includes a separate total-href-bearing-anchor-count
+  term, and its cap is aligned to exactly the 2000-element `maxElements` bound the engine's own
+  discovery observation already uses, rather than an independent, smaller 500-anchor limit.
+- `BrowserCrawlerRobustnessIT`'s BC-ROB-016 (cancellation during an in-flight navigation) no longer
+  coordinates via `Thread.sleep` on either side - the fixture now signals a `CountDownLatch` the
+  instant the request arrives and blocks on a second latch the test releases only after `cancel()`
+  has already been called, making the race deterministic by construction instead of by timing
+  margin. This also fixed a real defect: the previous version ran the crawl itself on a second
+  thread from the one that launched the browser, violating this engine's own single-execution-lane
+  requirement and hanging real CI for over 20 minutes instead of failing fast.
+- New STABILITY-002 test proving an href containing a literal `"|"` character cannot collide with a
+  differently-partitioned `"|"` sequence from a sibling anchor.
+- Corrected the PR description's and `docs/browser-crawler.md`'s claim of "no existing Phase 0.1-0.6
+  public API changed" - two additive, backward-compatible changes were introduced: `IPage` gained
+  `navigate(String, Duration)` and `NavigationTimeoutException`; `CrawlDecisionType`
+  (`webagent4j-crawler-api`) gained `REJECT_CANCELLED`. No existing method signature changed or type
+  was removed.
 - New `BrowserCrawlerRobustnessIT` scenarios BC-ROB-015/016 (href-only mutation stability, real
   in-flight-navigation cancellation) plus new `BrowserCrawlerIT`/`BrowserCrawlerTest` coverage for
   the timeout and observation-truncation fixes.

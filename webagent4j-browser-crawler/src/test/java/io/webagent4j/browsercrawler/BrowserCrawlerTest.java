@@ -325,6 +325,30 @@ class BrowserCrawlerTest {
         assertThat(result.failures().get(0).cause()).isPresent();
     }
 
+    /**
+     * TIMEOUT-003: the typed {@link io.webagent4j.browser.NavigationTimeoutException} - never a
+     * budget-expiry inference, never a backend-specific message match - is what classifies a
+     * navigation as {@link BrowserCrawlFailureType#NAVIGATION_TIMEOUT}.
+     */
+    @Test
+    void typedNavigationTimeoutExceptionBecomesNavigationTimeoutFailure() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.failing(
+                        new io.webagent4j.browser.NavigationTimeoutException(
+                                "did not commit in time")));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.NAVIGATION_TIMEOUT);
+        assertThat(result.failures().get(0).cause()).isPresent();
+    }
+
     @Test
     void failFastStopsAfterAFatalFailure() {
         IBrowser browser = scriptedBrowser();
