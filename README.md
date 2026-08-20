@@ -118,6 +118,8 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 - [Semantic observations](docs/observation.md)
 - [Actions](docs/actions.md)
 - [Verification](docs/verification.md)
+- [Extraction](docs/extraction.md)
+- [HTTP crawler](docs/http-crawler.md)
 - [Testing](docs/testing.md)
 - [Robustness benchmark](docs/robustness.md)
 - [Known limitations](docs/limitations.md)

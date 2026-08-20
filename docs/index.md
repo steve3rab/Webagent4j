@@ -10,10 +10,11 @@ WebAgent4J is a Java 21 foundation for deterministic web automation. Start with
 - [Observations](observation.md)
 - [Actions](actions.md) and [verification](verification.md)
 - [Extraction](extraction.md)
+- [HTTP crawler](http-crawler.md)
 - [Wait and stability](wait-and-stability.md)
 - [Testing](testing.md), [robustness](robustness.md), [known limitations](limitations.md), and
   [contributing](contribution.md)
 - [Roadmap](roadmap.md)
 
-Crawling, workflows, recording, and plugins currently have documented boundaries rather than
-incomplete public implementations. Their design notes are explicit about current status.
+Workflows, recording, and plugins currently have documented boundaries rather than incomplete
+public implementations. Their design notes are explicit about current status.

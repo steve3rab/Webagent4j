@@ -115,6 +115,9 @@ Semantic Model ----> Locator / Action / Extraction
 - `wait` depends only on `common` and the JDK; it cannot depend on `dom`, `locator`, `verification`,
   `action`, `browser`, `observation`, or Playwright, and knows nothing about any of those concepts.
 - `action` and `verification` cannot depend on Playwright or another concrete browser backend.
+- `webagent4j-crawler` and `webagent4j-crawler-api` cannot depend on Playwright, any browser
+  backend, or an AI/LLM library; `webagent4j-crawler-api` cannot depend on the crawler engine
+  module (only the reverse). See [http-crawler.md](http-crawler.md).
 - Public action contracts cannot depend on action implementation packages.
 - No module depends on an AI, LLM, MCP, Spring, Jakarta EE, reactive, or dependency-injection framework.
 - Cross-module implementations live in `internal` packages when they are not stable API.

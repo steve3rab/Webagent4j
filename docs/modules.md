@@ -21,7 +21,8 @@ Arrows below mean "depends on."
 | `webagent4j-storage` | common | Reserved persistence boundary |
 | `webagent4j-extraction-api` | locator-api | Backend-neutral extraction request/result/provenance, converters, validators, and failure taxonomy |
 | `webagent4j-extraction` | common, dom, extraction-api, locator, locator-api, wait | Deterministic extraction engine reusing the existing locator engine - no second DOM resolution engine |
-| `webagent4j-crawler` | http, storage | Reserved crawling composition boundary |
+| `webagent4j-crawler-api` | common | Backend-neutral HTTP crawler contracts: `CrawlRequest`/`CrawlResult`/`CrawledPage`, failure taxonomy, scope/dedup ports - no HTTP client, no HTML parser, no Playwright |
+| `webagent4j-crawler` | common, crawler-api, wait | Deterministic, sequential HTTP crawler engine: `java.net.http.HttpClient` fetcher, jsoup link extraction, BFS frontier, URL normalization/deduplication/scope policy, redirect and retry handling. No browser. See [http-crawler.md](http-crawler.md) |
 | `webagent4j-workflow` | action | Reserved workflow boundary |
 | `webagent4j-recording` | workflow | Reserved record/replay boundary |
 | `webagent4j-plugin-api` | locator | Reserved plugin boundary |
@@ -40,9 +41,14 @@ Browser API exposes only immutable observation contracts and the snapshot SPI; t
 orchestrates semantic policies; the backend implements bounded capture. No public observation type
 exposes Playwright.
 
-Reserved modules (`http`, `storage`, `crawler`, `workflow`, `recording`, `plugin-api`) are
-intentionally empty until a tested vertical needs their public API. This prevents placeholder types
-from becoming accidental compatibility commitments. No Maven dependency cycle exists.
+Reserved modules (`http`, `storage`, `workflow`, `recording`, `plugin-api`) are intentionally empty
+until a tested vertical needs their public API. This prevents placeholder types from becoming
+accidental compatibility commitments. No Maven dependency cycle exists.
+
+`webagent4j-crawler` graduated from a reserved module to a real implementation in Phase 0.6 (see
+[http-crawler.md](http-crawler.md)); its dependency set changed entirely in the process (it no
+longer depends on the still-reserved `http`/`storage` modules - the HTTP fetcher lives directly in
+`webagent4j-crawler`, since nothing else currently needs a standalone transport module).
 
 `webagent4j-extraction-api` depends only on `locator-api`, never on `dom`: an `ExtractionRequest`
 describes where to search (a `LocatorDefinition`) and how to read/convert/validate what is found,

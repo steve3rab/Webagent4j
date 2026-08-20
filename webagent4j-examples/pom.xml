@@ -15,6 +15,16 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <groupId>io.webagent4j</groupId>
+      <artifactId>webagent4j-crawler</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.webagent4j</groupId>
+      <artifactId>webagent4j-crawler-api</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
     </dependency>
