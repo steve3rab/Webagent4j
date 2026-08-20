@@ -35,9 +35,10 @@ import org.junit.jupiter.api.Test;
  * concurrency left to race - {@link BrowserCrawlerIT}'s {@code
  * maxConcurrencyAboveOneIsRejectedAndTheSequentialCrawlStillReachesEveryPage} and {@code
  * widerGraphIsCrawledCompletelyAndExactlyOnceAcrossRepeatedRuns} cover that engine's actual
- * concurrency contract instead. BC-ROB-016 does run the crawl itself from a second thread, but only
- * to call {@code cancel()} concurrently from the test - the crawl's own single execution lane is
- * unaffected.
+ * concurrency contract instead. BC-ROB-016 runs {@code crawl(...)} itself on this test method's own
+ * thread throughout, matching the thread {@code browser} was launched on - only the {@code
+ * cancel()} call is dispatched from a second thread ({@link CancellationToken} is a plain
+ * thread-safe primitive, safe to touch from anywhere).
  */
 class BrowserCrawlerRobustnessIT {
 
@@ -583,24 +584,33 @@ class BrowserCrawlerRobustnessIT {
     // BC-ROB-016: cancellation observed while a navigation is genuinely in flight (from another
     // thread, mid-navigate()) still lets that navigation complete and its own page be recorded, but
     // the children it discovers are rejected rather than claimed, and no further navigation occurs.
+    // The crawl itself runs on this test method's own thread throughout - only the cancel() call
+    // is dispatched from a second thread (CancellationToken is a plain thread-safe AtomicBoolean,
+    // safe to touch from anywhere) - the browser/page themselves are only ever touched from the one
+    // thread that launched them, exactly as the single-execution-lane architecture requires.
     @Test
-    void bcRob016CancellationDuringAnInFlightNavigationPreventsDiscoveredChildrenFromBeingClaimed()
-            throws InterruptedException {
+    void
+            bcRob016CancellationDuringAnInFlightNavigationPreventsDiscoveredChildrenFromBeingClaimed() {
         CancellationToken token = CancellationToken.create();
-        ExecutorService crawlExecutor = Executors.newSingleThreadExecutor();
+        ExecutorService cancelExecutor = Executors.newSingleThreadExecutor();
         try {
-            java.util.concurrent.Future<BrowserCrawlResult> future =
-                    crawlExecutor.submit(
-                            () ->
-                                    new BrowserCrawler()
-                                            .crawl(
-                                                    requestFor("/rob/cancelmidflight")
-                                                            .cancellationToken(token)
-                                                            .build()));
-            Thread.sleep(200); // well within the fixture's 800ms in-flight response delay
-            token.cancel();
+            cancelExecutor.submit(
+                    () -> {
+                        try {
+                            Thread.sleep(200); // well within the fixture's 800ms response delay
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                        token.cancel();
+                    });
 
-            BrowserCrawlResult result = future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            BrowserCrawlResult result =
+                    new BrowserCrawler()
+                            .crawl(
+                                    requestFor("/rob/cancelmidflight")
+                                            .cancellationToken(token)
+                                            .build());
 
             assertThat(result.terminationReason())
                     .isEqualTo(BrowserCrawlTerminationReason.CANCELLED);
@@ -614,11 +624,8 @@ class BrowserCrawlerRobustnessIT {
                             link ->
                                     assertThat(link.rejection().map(d -> d.type()).orElseThrow())
                                             .isEqualTo(CrawlDecisionType.REJECT_CANCELLED));
-        } catch (java.util.concurrent.ExecutionException
-                | java.util.concurrent.TimeoutException e) {
-            throw new AssertionError("crawl did not complete as expected", e);
         } finally {
-            crawlExecutor.shutdownNow();
+            cancelExecutor.shutdownNow();
         }
     }
 }
