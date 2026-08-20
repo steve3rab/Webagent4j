@@ -26,7 +26,7 @@ Arrows below mean "depends on."
 | `webagent4j-workflow` | action | Reserved workflow boundary |
 | `webagent4j-recording` | workflow | Reserved record/replay boundary |
 | `webagent4j-plugin-api` | locator | Reserved plugin boundary |
-| `webagent4j-testing` | none | Shared test-fixture boundary |
+| `webagent4j-testing` | none | Reserved shared test-fixture boundary - currently has no source code |
 | `webagent4j-cli` | core; Playwright at runtime | Public-API CLI |
 | `webagent4j-examples` | core; Playwright at runtime | Executable public-API example |
 | `webagent4j-integration-tests` | core, Playwright, testing | Architecture and browser integration tests |

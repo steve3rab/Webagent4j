@@ -281,9 +281,18 @@ class ArchitectureTest {
 
     @Test
     void interfacesUseTheProjectPrefix() {
+        // package-info.java compiles to a synthetic interface at the bytecode level, so
+        // areInterfaces() matches it too; it is excluded explicitly rather than renamed, since
+        // "Ipackage-info" is not a real option.
         classes()
-                .that()
-                .areInterfaces()
+                .that(
+                        com.tngtech.archunit.base.DescribedPredicate.describe(
+                                "are interfaces excluding the synthetic package-info type",
+                                javaClass ->
+                                        javaClass.isInterface()
+                                                && !javaClass
+                                                        .getSimpleName()
+                                                        .equals("package-info")))
                 .and()
                 .resideInAPackage("io.webagent4j..")
                 .should()
