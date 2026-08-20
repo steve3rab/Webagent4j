@@ -62,11 +62,27 @@ WebAgent4J does not bypass CAPTCHA, authentication, anti-bot systems, access con
 does not rotate proxies or disguise browser fingerprints. Public-site tests, transactions, purchases,
 bookings, comments, messages, or destructive forms are not part of the deterministic regression suite.
 
-There is no AI, crawler, workflow engine, OCR, or visual recognition implementation in this phase.
-Future optional fallbacks must preserve explicit uncertainty and action safety.
+There is no AI, workflow engine, OCR, or visual recognition implementation in this phase. Future
+optional fallbacks must preserve explicit uncertainty and action safety.
 
 The deterministic extraction engine (see [docs/extraction.md](extraction.md)) does not yet implement
 crawling, pagination, distributed/scraping-at-scale scenarios, AI-based schema inference, OCR,
 visual/computer-vision extraction, generalized automatic JSON-LD/structured-data discovery,
 infinite-scroll orchestration, advanced network-level retries, or reconstructing a "visual table"
 laid out with non-table markup. These belong to later phases.
+
+## HTTP crawler (Phase 0.6)
+
+The HTTP crawler (see [docs/http-crawler.md](http-crawler.md)) is implemented, but explicitly does
+not implement: JavaScript execution, SPA navigation, browser rendering, dynamic DOM, clicks, forms,
+or infinite-scroll handling; browser cookies or session state (it is stateless between requests);
+visual/computer-vision extraction; automatic browser fallback; distributed or high-concurrency
+crawling (this phase is intentionally sequential); advanced sitemap orchestration; a workflow
+engine; AI-based ranking or extraction; or MCP/agent tooling.
+
+`robots.txt` is not enforced in this phase. `ICrawlScopePolicy` is the extension point a future
+phase would use to add it; this document does not claim compliance it does not implement. No
+Public Suffix List is used, so "domain" scoping compares literal hosts rather than computing a
+true registrable domain - the caller is responsible for choosing correct `allowedHosts`/seeds.
+There is no SSRF protection beyond the scheme/host/domain restrictions the caller configures - the
+caller remains responsible for the destinations it authorizes.

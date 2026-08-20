@@ -162,6 +162,49 @@ class ArchitectureTest {
     }
 
     @Test
+    void crawlerRemainsIndependentFromPlaywright() {
+        noClasses()
+                .that()
+                .resideInAnyPackage("io.webagent4j.crawler..", "io.webagent4j.crawler.api..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void crawlerRemainsIndependentFromAiLibraries() {
+        noClasses()
+                .that()
+                .resideInAnyPackage("io.webagent4j.crawler..", "io.webagent4j.crawler.api..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("com.openai..", "dev.langchain4j..", "org.springframework.ai..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void crawlerApiRemainsIndependentFromTheCrawlerEngineModule() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.crawler.api..")
+                .should()
+                .dependOnClassesThat(
+                        com.tngtech.archunit.base.DescribedPredicate.describe(
+                                "reside in io.webagent4j.crawler.. but outside"
+                                        + " io.webagent4j.crawler.api..",
+                                javaClass ->
+                                        javaClass
+                                                        .getPackageName()
+                                                        .startsWith("io.webagent4j.crawler")
+                                                && !javaClass
+                                                        .getPackageName()
+                                                        .startsWith("io.webagent4j.crawler.api")))
+                .check(projectClasses);
+    }
+
+    @Test
     void actionAndVerificationRemainIndependentFromPlaywright() {
         noClasses()
                 .that()

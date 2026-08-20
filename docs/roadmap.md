@@ -11,7 +11,10 @@ Javadoc, user documentation, and a green `clean verify` build.
 - **0.5 Extraction:** deterministic text/attribute/value/list/table extraction reusing the existing
   locator engine, typed conversion, validation, provenance, and structured failures. See
   [docs/extraction.md](extraction.md).
-- **0.6 HTTP crawler:** queue, normalization, deduplication, robots.txt, rate limiting, and storage.
+- **0.6 HTTP crawler:** deterministic, sequential, backend-neutral HTTP crawler - frontier,
+  normalization, deduplication, host/domain scope policy, redirect and retry handling, and
+  structured failures. No browser, no `robots.txt` enforcement yet, no rate limiting, no
+  persistent storage. See [docs/http-crawler.md](http-crawler.md).
 - **0.7 Browser crawler:** dynamic pages, sessions, cancellation, and bounded concurrency.
 - **0.8 Workflows:** variables, masked secrets, simple conditions, and structured results.
 - **0.9 Recording and plugins:** record/replay foundation and small `ServiceLoader` extension points.

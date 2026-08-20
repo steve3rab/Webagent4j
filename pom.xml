@@ -37,6 +37,7 @@
     <module>webagent4j-extraction-api</module>
     <module>webagent4j-extraction</module>
     <module>webagent4j-storage</module>
+    <module>webagent4j-crawler-api</module>
     <module>webagent4j-crawler</module>
     <module>webagent4j-workflow</module>
     <module>webagent4j-recording</module>
@@ -75,6 +76,7 @@
     <assertj.version>3.27.3</assertj.version>
     <byte-buddy.version>1.18.7</byte-buddy.version>
     <jackson.version>2.19.2</jackson.version>
+    <jsoup.version>1.18.3</jsoup.version>
     <junit.version>5.13.4</junit.version>
     <mockito.version>5.23.0</mockito.version>
     <picocli.version>4.7.7</picocli.version>
@@ -146,6 +148,11 @@
         <groupId>org.assertj</groupId>
         <artifactId>assertj-core</artifactId>
         <version>${assertj.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jsoup</groupId>
+        <artifactId>jsoup</artifactId>
+        <version>${jsoup.version}</version>
       </dependency>
       <dependency>
         <groupId>org.mockito</groupId>

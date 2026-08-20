@@ -6,6 +6,75 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (HTTP Crawler — Phase 0.6)
+
+- New `webagent4j-crawler-api` module (backend-neutral, depends only on `webagent4j-common`):
+  `CrawlRequest` (immutable, builder, fully validated at construction - a bad `maxDepth`,
+  `maxPages`, timeout, `maxResponseBytes`, `maxRedirects`, non-HTTP(S) seed, or
+  `TraversalStrategy.DEPTH_FIRST` never surfaces only mid-crawl), `CrawlResult`, `CrawledPage`
+  (immutable, every collection defensively copied), `CrawlFailure`/`CrawlFailureType` (12 types,
+  including `BACKEND_FAILURE` for an opaque fetcher exception - never silently reclassified as
+  another type), `CrawlStatistics`, `CrawlTerminationReason`, `DiscoveredLink`, `CrawlDecision`/
+  `CrawlDecisionType`, `RedirectHop`, `CrawlPageProvenance`, `QueryParameterPolicy`
+  (`KEEP_ALL`/`DROP_ALL`/`DROP_KNOWN_TRACKING`, conservative by design - only the five standard
+  `utm_*` parameters), `TraversalStrategy`, `LinkKind`, and the `ICrawler`/`IUrlNormalizer`/
+  `ICrawlScopePolicy`/`ICrawlDeduplicator` ports.
+- `webagent4j-crawler` graduates from a reserved, empty module to the deterministic, sequential
+  HTTP crawler engine, with an entirely new dependency set (`webagent4j-common`,
+  `webagent4j-crawler-api`, `webagent4j-wait`, jsoup, slf4j-api) replacing its old reservation
+  toward `webagent4j-http`/`webagent4j-storage` (both remain reserved and untouched -
+  `IHttpFetcher`/`JavaHttpFetcher` live directly in `webagent4j-crawler`, since nothing else
+  currently needs a standalone HTTP transport module): `HttpCrawler` (the orchestrator - one
+  `crawl(CrawlRequest)` call, no concurrency, no `Thread.sleep`, backoff delegated to the injected
+  `IWaitSleeper` reused from `webagent4j-wait`), `JavaHttpFetcher` (`java.net.http.HttpClient`
+  adapter, `HttpClient.Redirect.NEVER` - `HttpCrawler` follows every redirect hop itself and
+  scope-checks each target before following it, so an out-of-scope redirect target is never
+  silently fetched), `JsoupHtmlLinkExtractor` (a real, tolerant HTML parser - never a regular
+  expression - extracting `<a href>`/`<area href>`, title, and declared canonical URL, with
+  correct `<base href>` resolution and RFC 3986-correct empty-href handling), `DefaultUrlNormalizer`
+  (deterministic and idempotent - proven by a parameterized test - lowercases scheme/host, drops
+  the fragment and default port, resolves dot segments, never re-encodes already-percent-encoded
+  paths), `HostScopePolicy` (dot-boundary-aware subdomain matching - `evil-example.com` is never
+  wrongly accepted as a subdomain of `example.com` - and independent per-seed allowed-host roots
+  for multi-seed crawls), plus internal `BreadthFirstCrawlFrontier` (a plain FIFO queue is already
+  correct BFS order here), `InMemoryCrawlDeduplicator` (normalized-URL identity;
+  `CrawlRequest#maxPages()` bounds URLs *claimed*, checked proactively before every claim, not just
+  successful pages - a mostly-404 site cannot bypass the limit), and `HttpResponseClassifier`.
+  `JavaHttpFetcher`'s bounded body subscriber enforces `maxResponseBytes` while streaming, never
+  after fully buffering the response - exceeding it raises `ResponseTooLargeException`
+  (`RESPONSE_TOO_LARGE`), never an `OutOfMemoryError` or a silently truncated success.
+- Reuses `io.webagent4j.common.RetryPolicy` directly as `CrawlRequest#retryPolicy()`'s type
+  (rather than inventing a crawler-specific record) and `io.webagent4j.wait.IWaitSleeper` for retry
+  backoff (rather than `Thread.sleep`), per the existing project convention of checking for an
+  equivalent before adding a new type.
+- 3 new ArchUnit rules (`ArchitectureTest`): the crawler modules stay independent from Playwright,
+  stay independent from AI/LLM libraries, and `webagent4j-crawler-api` stays independent from the
+  crawler engine module (only the reverse dependency direction is allowed).
+- 3 new example programs in `webagent4j-examples`: `HttpCrawlSimpleExample`,
+  `HttpCrawlRestrictedExample` (scope restriction and rejection diagnostics),
+  `HttpCrawlDiagnosticsExample` (full `CrawlStatistics` and structured failures).
+- New `docs/http-crawler.md`; updated `docs/crawler.md` (no longer describes unimplemented
+  features), `docs/roadmap.md`, `docs/modules.md`, `docs/architecture.md`, `docs/limitations.md`,
+  `docs/index.md`, and `README.md`.
+- Unit tests: 28 in `webagent4j-crawler-api` and 68 in `webagent4j-crawler` (`DefaultUrlNormalizer`
+  - including an idempotence property test, `HostScopePolicy`, `BreadthFirstCrawlFrontier`,
+  `InMemoryCrawlDeduplicator`, `HttpResponseClassifier`, `JsoupHtmlLinkExtractor`, and
+  `HttpCrawlerTest` - the orchestrator itself, driven entirely through fake collaborators so no
+  test touches the real network or sleeps in real time).
+- Integration tests against a new deterministic local fixture (`HttpCrawlerTestServer`, a bare
+  `com.sun.net.httpserver.HttpServer`, no browser): `HttpCrawlerIT` (HTTP-001..HTTP-020 - seed
+  traversal, relative/root-relative/protocol-relative URL resolution, fragment and dot-segment
+  dedup, same-host restriction, `maxDepth`/`maxPages` truncation, redirect chains, redirect loops,
+  4xx/5xx handling with bounded retry, timeout, response-size limit, unsupported content type,
+  Unicode content, `<base href>`, declared canonical URL, tracking-query dedup, mailto/javascript
+  rejection, and malformed-markup tolerance) and `HttpCrawlerRobustnessIT` (CRAWL-001..CRAWL-010 -
+  cyclic graphs, a hundred duplicate links, mixed dedup identities, external-host redirect
+  rejection, thousands of duplicate links without frontier explosion, an unparsable href not
+  crashing the page, a very large body rejected without full buffering, a redirect chain of
+  exactly `maxRedirects` hops, an abrupt connection close, and an opaque backend exception
+  classified as `BACKEND_FAILURE` - never silently becoming a fabricated `404`; plus the
+  specification's mandated full end-to-end scenario, verified against every documented statistic).
+
 ### Added (Extraction — Phase 0.5)
 
 - New `webagent4j-extraction-api` module (backend-neutral, depends only on `webagent4j-locator-api`):
