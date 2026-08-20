@@ -251,8 +251,18 @@ public final class BrowserCrawler implements IBrowserCrawler {
                 return new NavigationFailure(
                         classifyNavigationException(e, budget), e.getMessage(), Optional.of(e));
             }
-            WaitResult<String> stability =
-                    stabilityWaiter.awaitStable(page, budget, request.stabilityWindow());
+            WaitResult<String> stability;
+            try {
+                stability = stabilityWaiter.awaitStable(page, budget, request.stabilityWindow());
+            } catch (RuntimeException e) {
+                // e.g. the page navigates itself away (meta-refresh, JS redirect) while a stability
+                // poll is mid-flight, destroying the execution context evaluate() just ran in - a
+                // real, observed backend condition, never allowed to escape crawl() uncaught.
+                return new NavigationFailure(
+                        BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE,
+                        e.getMessage(),
+                        Optional.of(e));
+            }
             if (!stability.success()) {
                 return new NavigationFailure(
                         BrowserCrawlFailureType.PAGE_STABILITY_TIMEOUT,

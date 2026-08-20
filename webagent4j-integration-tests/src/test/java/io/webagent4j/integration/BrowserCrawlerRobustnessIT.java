@@ -54,14 +54,20 @@ class BrowserCrawlerRobustnessIT {
         server.createContext("/rob/cycle/b", exchange -> respond(exchange, html("B", link("c"))));
         server.createContext("/rob/cycle/c", exchange -> respond(exchange, html("C", link("a"))));
 
-        // BC-ROB-002: fifty identical links to one target
+        // BC-ROB-002: fifty identical links to one target. Absolute hrefs deliberately - a bare
+        // relative href resolved against a path with no trailing slash (like "/rob/dupfanout")
+        // replaces its last segment rather than descending under it, per RFC 3986 5.3.
         server.createContext(
                 "/rob/dupfanout",
-                exchange -> respond(exchange, html("Dup", "<a href=\"target\">T</a>".repeat(50))));
+                exchange ->
+                        respond(
+                                exchange,
+                                html("Dup", "<a href=\"/rob/dupfanout/target\">T</a>".repeat(50))));
         server.createContext(
                 "/rob/dupfanout/target", exchange -> respond(exchange, html("Target", "")));
 
-        // BC-ROB-003: fragment and dot-segment variants of the same target
+        // BC-ROB-003: fragment and dot-segment variants of the same target (absolute hrefs, same
+        // reasoning as BC-ROB-002 above).
         server.createContext(
                 "/rob/norm",
                 exchange ->
@@ -69,9 +75,9 @@ class BrowserCrawlerRobustnessIT {
                                 exchange,
                                 html(
                                         "Norm",
-                                        "<a href=\"target\">T1</a>"
-                                                + "<a href=\"target#section\">T2</a>"
-                                                + "<a href=\"./x/../target\">T3</a>")));
+                                        "<a href=\"/rob/norm/target\">T1</a>"
+                                                + "<a href=\"/rob/norm/target#section\">T2</a>"
+                                                + "<a href=\"/rob/norm/./x/../target\">T3</a>")));
         server.createContext(
                 "/rob/norm/target", exchange -> respond(exchange, html("NormTarget", "")));
 
@@ -177,8 +183,13 @@ class BrowserCrawlerRobustnessIT {
                 "/rob/redirectsaway/landed", exchange -> respond(exchange, html("Landed", "")));
 
         // BC-ROB-006/013: resource cleanup - a small multi-page graph, and a failFast graph
+        // (absolute href, same reasoning as BC-ROB-002 above)
         server.createContext(
-                "/rob/cleanup/ok", exchange -> respond(exchange, html("CleanupOk", link("child"))));
+                "/rob/cleanup/ok",
+                exchange ->
+                        respond(
+                                exchange,
+                                html("CleanupOk", "<a href=\"/rob/cleanup/ok/child\">C</a>")));
         server.createContext(
                 "/rob/cleanup/ok/child", exchange -> respond(exchange, html("CleanupOkChild", "")));
         server.createContext(
@@ -190,10 +201,18 @@ class BrowserCrawlerRobustnessIT {
                                         "CleanupFailFast",
                                         "<a href=\"http://127.0.0.1:1/\">Dead</a>")));
 
-        // BC-ROB-014: deterministic repeated runs
+        // BC-ROB-014: deterministic repeated runs (absolute hrefs, same reasoning as BC-ROB-002
+        // above - "/rob/deterministic" has no trailing slash, so a bare relative "a"/"b" would
+        // resolve as a sibling of "deterministic" under "/rob/", not underneath it).
         server.createContext(
                 "/rob/deterministic",
-                exchange -> respond(exchange, html("Det", link("a") + link("b"))));
+                exchange ->
+                        respond(
+                                exchange,
+                                html(
+                                        "Det",
+                                        "<a href=\"/rob/deterministic/a\">a</a>"
+                                                + "<a href=\"/rob/deterministic/b\">b</a>")));
         server.createContext(
                 "/rob/deterministic/a", exchange -> respond(exchange, html("DetA", "")));
         server.createContext(
@@ -419,7 +438,10 @@ class BrowserCrawlerRobustnessIT {
     }
 
     // BC-ROB-012: a navigation whose final URL leaves scope (client-side redirect) fails closed
-    // rather than being silently indexed.
+    // rather than being silently indexed. The redirect can land squarely between two stability
+    // polls (a clean OUT_OF_SCOPE_REDIRECT) or destroy the execution context a poll's evaluate()
+    // is mid-flight in (a real Playwright condition, classified BROWSER_BACKEND_FAILURE) -
+    // whichever it is, the page must never be silently indexed as a success.
     @Test
     void bcRob012OutOfScopeFinalUrlFailsClosed() {
         BrowserCrawlResult result =
@@ -428,7 +450,9 @@ class BrowserCrawlerRobustnessIT {
         assertThat(result.pages()).isEmpty();
         assertThat(result.failures()).hasSize(1);
         assertThat(result.failures().get(0).type())
-                .isEqualTo(BrowserCrawlFailureType.OUT_OF_SCOPE_REDIRECT);
+                .isIn(
+                        BrowserCrawlFailureType.OUT_OF_SCOPE_REDIRECT,
+                        BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE);
     }
 
     // BC-ROB-013: every crawler-created page is closed - under a normal successful multi-page

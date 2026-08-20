@@ -85,10 +85,16 @@ class BrowserCrawlerIT {
                                         "<a href=\"/wide/1\">1</a><a href=\"/wide/2\">2</a>"
                                                 + "<a href=\"/wide/3\">3</a><a href=\"/wide/4\">4</a>"
                                                 + "<a href=\"/wide/5\">5</a><a href=\"/wide/6\">6</a>")));
+        // Absolute hrefs deliberately - a bare relative href resolved against a path with no
+        // trailing slash (like "/wide/1") replaces its last segment rather than descending under
+        // it, per RFC 3986 5.3, so a bare "child" here would resolve to "/wide/child", not
+        // "/wide/1/child".
         server.createContext(
-                "/wide/1", exchange -> respond(exchange, html("Wide1", "<a href=\"child\">C</a>")));
+                "/wide/1",
+                exchange -> respond(exchange, html("Wide1", "<a href=\"/wide/1/child\">C</a>")));
         server.createContext(
-                "/wide/2", exchange -> respond(exchange, html("Wide2", "<a href=\"child\">C</a>")));
+                "/wide/2",
+                exchange -> respond(exchange, html("Wide2", "<a href=\"/wide/2/child\">C</a>")));
         server.createContext("/wide/3", exchange -> respond(exchange, html("Wide3", "")));
         server.createContext("/wide/4", exchange -> respond(exchange, html("Wide4", "")));
         server.createContext("/wide/5", exchange -> respond(exchange, html("Wide5", "")));
