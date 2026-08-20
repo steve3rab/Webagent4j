@@ -12,13 +12,16 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
     name: Build Javadoc site
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # api/latest must only ever be published from main. workflow_dispatch can be run from any
+    # branch, so this guard - not just the docs describing the contract - is what makes it true.
+    if: github.ref == 'refs/heads/main'
     # Same container and build command as ci.yml's "Java 21 / Linux" job, so the aggregate Javadoc
     # published here comes from the identical, already-verified build path (doclint=all,-missing,
     # failOnWarnings=true unchanged) rather than a second, divergent command.
@@ -59,6 +62,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
