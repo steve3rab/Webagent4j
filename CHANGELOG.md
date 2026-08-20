@@ -16,7 +16,7 @@ All notable changes to this project will be documented in this file. The format 
   domain, an explicit determinism contract (logical determinism vs. environment-dependent values),
   a fail-closed contract, an API-stability statement, and the API-module-vs-implementation-module
   split with minimal Maven snippets.
-- New `package-info.java` for ten primary public packages (`io.webagent4j.core`,
+- New `package-info.java` for the primary public packages (`io.webagent4j.core`,
   `io.webagent4j.browser`, `io.webagent4j.locator.api`, `io.webagent4j.wait`,
   `io.webagent4j.action`, `io.webagent4j.verification`, `io.webagent4j.extraction.api`,
   `io.webagent4j.crawler.api`, `io.webagent4j.crawler`, `io.webagent4j.observation`,

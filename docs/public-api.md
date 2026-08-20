@@ -542,7 +542,7 @@ domain's own section below has the full detail.
 | Timeout | `TIMEOUT` status/outcome, or a thrown timeout-flavored exception depending on the API | Normally expected | A bounded wait's deadline passed without a satisfied result |
 | Instability (state kept changing during `stableFor`) | Same as timeout (the wait never became stable in time) | Normally expected | Stability resets on any change to the tracked identity/state - see [Wait and stability](#wait-and-stability) |
 | Failed action precondition | `ActionFailureType.PRECONDITION_FAILED` in `ActionResult`/`ActionFailure` | Normally expected | Reported as structured result data, not thrown |
-| Failed action postcondition (`expect(...)`) | `ActionFailureType.VERIFICATION_FAILED` | Normally expected | The action itself already ran; verification is what failed |
+| Failed action postcondition (`expect(...)`) | `ActionStatus.VERIFICATION_FAILED` with `ActionFailureType.POSTCONDITION_FAILED` | Normally expected | The action itself already ran; verification is what failed |
 | Extraction conversion failure | `ExtractionConversionException` | Normally expected (bad/unexpected page data) | Raw value retained for diagnosis |
 | Extraction validation failure | `ExtractionValidationException` | Normally expected | Distinct from a conversion failure |
 | Missing HTML attribute during extraction | `ExtractionAttributeMissingException` | Normally expected | Distinct from the element itself being absent |
@@ -674,9 +674,22 @@ Minimal `pom.xml` for browser automation:
 </dependencies>
 ```
 
-Minimal `pom.xml` for HTTP crawling only (no browser, no Playwright dependency at all):
+Minimal `pom.xml` for HTTP crawling only (no browser, no Playwright dependency at all) - the BOM
+manages `webagent4j-crawler`'s version the same way it does every other module:
 
 ```xml
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>io.webagent4j</groupId>
+      <artifactId>webagent4j-bom</artifactId>
+      <version>0.1.0-SNAPSHOT</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
 <dependencies>
   <dependency>
     <groupId>io.webagent4j</groupId>

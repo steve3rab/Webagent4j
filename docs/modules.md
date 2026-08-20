@@ -28,7 +28,7 @@ Arrows below mean "depends on."
 | `webagent4j-plugin-api` | locator | Reserved plugin boundary |
 | `webagent4j-testing` | none | Reserved shared test-fixture boundary - currently has no source code |
 | `webagent4j-cli` | core; Playwright at runtime | Public-API CLI |
-| `webagent4j-examples` | core; Playwright at runtime | Executable public-API example |
+| `webagent4j-examples` | core, crawler, crawler-api; Playwright at runtime | Executable public-API examples |
 | `webagent4j-integration-tests` | core, Playwright, testing | Architecture and browser integration tests |
 | `webagent4j-robustness-tests` | core, Playwright | Profile-gated deterministic adversarial corpus and cross-phase journeys |
 
