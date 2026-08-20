@@ -24,6 +24,12 @@ All notable changes to this project will be documented in this file. The format 
   its neighboring module - none existed before.
 - `docs/index.md` and `README.md` now link to the Public API reference as a primary entry point.
 
+### Added (GitHub Pages Javadoc publishing)
+
+- The aggregated Javadoc is now published through GitHub Pages on every push to `main`
+  (`.github/workflows/pages.yml`), served under `api/latest/` alongside a small static landing page
+  (`docs-site/`). `README.md`, `docs/index.md`, and `docs/public-api.md` link to it.
+
 ### Fixed (documentation drift found during the public API audit)
 
 - `docs/modules.md` described `webagent4j-testing` as an implemented "Shared test-fixture boundary."

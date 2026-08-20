@@ -99,6 +99,16 @@ Additional runnable examples are available in
 `./mvnw clean verify` also builds the aggregated Javadoc (`target/reports/apidocs/index.html`) for
 the full method-level API reference alongside the [Public API guide](docs/public-api.md).
 
+The same aggregated Javadoc is published from `main` via GitHub Pages:
+
+- Public Java API: <https://steve3rab.github.io/Webagent4j/api/latest/>
+- Documentation site: <https://steve3rab.github.io/Webagent4j/>
+
+`api/latest` tracks the current head of `main` and is republished on every push to it (see
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml)). Publishing requires the
+repository's **Settings → Pages → Source** to be set to **GitHub Actions**; until that is
+configured, these URLs are not yet live.
+
 ## Architecture
 
 The repository is organized as a Maven multi-module build. Public contracts remain separate from
