@@ -19,11 +19,13 @@ import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..016, STABILITY-002) for
@@ -40,7 +42,13 @@ import org.junit.jupiter.api.Test;
  * thread throughout, matching the thread {@code browser} was launched on - only the {@code
  * cancel()} call is dispatched from a second thread ({@link CancellationToken} is a plain
  * thread-safe primitive, safe to touch from anywhere).
+ *
+ * <p>Every test carries a class-level {@link Timeout} so a genuine hang fails fast with a thread
+ * dump captured at the deadline, rather than silently consuming this whole job's CI-level {@code
+ * timeout-minutes} budget with zero diagnostic output - exactly what happened once already during
+ * this phase's development (see the git history for the incident this guards against).
  */
+@Timeout(value = 45, unit = TimeUnit.SECONDS)
 class BrowserCrawlerRobustnessIT {
 
     private static HttpServer server;

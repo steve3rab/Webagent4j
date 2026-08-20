@@ -18,16 +18,21 @@ import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Real-Playwright integration tests for {@link BrowserCrawler}, against a deterministic local HTTP
- * fixture - no external websites, no arbitrary sleeps.
+ * fixture - no external websites, no arbitrary sleeps. Every test carries a class-level {@link
+ * Timeout} so a genuine hang fails fast with a thread dump rather than silently consuming this
+ * job's whole CI-level {@code timeout-minutes} budget.
  */
+@Timeout(value = 45, unit = TimeUnit.SECONDS)
 class BrowserCrawlerIT {
 
     private static HttpServer server;
