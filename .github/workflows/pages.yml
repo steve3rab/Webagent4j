@@ -39,18 +39,18 @@ jobs:
         run: ./mvnw --batch-mode --no-transfer-progress clean verify
       - name: Validate aggregate Javadoc output
         run: |
-          set -euo pipefail
+          set -eu
           test -s target/reports/apidocs/index.html
           grep -q "WebAgent" target/reports/apidocs/index.html
       - name: Prepare Pages staging directory
         run: |
-          set -euo pipefail
+          set -eu
           mkdir -p target/pages/api/latest
           cp docs-site/index.html docs-site/styles.css target/pages/
           cp -r target/reports/apidocs/. target/pages/api/latest/
       - name: Validate Pages staging directory
         run: |
-          set -euo pipefail
+          set -eu
           test -s target/pages/index.html
           grep -q "api/latest" target/pages/index.html
           test -s target/pages/api/latest/index.html
