@@ -8,18 +8,19 @@ Arrows below mean "depends on."
 | `webagent4j-common` | none | Exceptions, timeouts, retry policy |
 | `webagent4j-wait` | common | Deterministic wait/stability primitive: monotonic deadlines, polling, stability windows |
 | `webagent4j-locator-api` | none | Immutable locator definitions and generic fluent contracts |
-| `webagent4j-dom` | common, locator-api | Backend-neutral live element and scoped query contract |
+| `webagent4j-dom` | common, extraction-api, locator-api | Backend-neutral live element and scoped query contract |
 | `webagent4j-observation-api` | dom, locator-api | Immutable semantic model, options, renderer, fingerprint, diff, capture SPI |
 | `webagent4j-observation` | browser-api, observation-api | Semantic transformation, policies, observers, diagnostics, events |
 | `webagent4j-locator` | common, dom, locator-api, wait | Planning, discovery ports, filtering, scoring, ambiguity, diagnostics |
 | `webagent4j-verification` | dom, locator-api, observation-api, wait | Deterministic conditions, composition, and bounded polling |
 | `webagent4j-action` | common, dom, locator-api, observation-api, verification, wait | Commands, lifecycle orchestration, safe retries, structured results, and audit events |
-| `webagent4j-browser-api` | action, dom, locator, locator-api, observation-api | Browser/page lifecycle contracts |
+| `webagent4j-browser-api` | action, dom, extraction, extraction-api, locator, locator-api, observation-api | Browser/page lifecycle contracts |
 | `webagent4j-browser-playwright` | action, browser-api, dom, locator, locator-api, observation | Playwright action backend, browser lifecycle, batch observation adapter, and service provider |
 | `webagent4j-core` | browser-api | Public facade and provider discovery |
 | `webagent4j-http` | common | Reserved non-browser transport boundary |
 | `webagent4j-storage` | common | Reserved persistence boundary |
-| `webagent4j-extraction` | dom | Reserved extraction boundary |
+| `webagent4j-extraction-api` | locator-api | Backend-neutral extraction request/result/provenance, converters, validators, and failure taxonomy |
+| `webagent4j-extraction` | common, dom, extraction-api, locator, locator-api, wait | Deterministic extraction engine reusing the existing locator engine - no second DOM resolution engine |
 | `webagent4j-crawler` | http, storage | Reserved crawling composition boundary |
 | `webagent4j-workflow` | action | Reserved workflow boundary |
 | `webagent4j-recording` | workflow | Reserved record/replay boundary |
@@ -39,9 +40,21 @@ Browser API exposes only immutable observation contracts and the snapshot SPI; t
 orchestrates semantic policies; the backend implements bounded capture. No public observation type
 exposes Playwright.
 
-Reserved modules are intentionally empty until a tested vertical needs their public API. This prevents
-placeholder types from becoming accidental compatibility commitments. No Maven dependency cycle
-exists.
+Reserved modules (`http`, `storage`, `crawler`, `workflow`, `recording`, `plugin-api`) are
+intentionally empty until a tested vertical needs their public API. This prevents placeholder types
+from becoming accidental compatibility commitments. No Maven dependency cycle exists.
+
+`webagent4j-extraction-api` depends only on `locator-api`, never on `dom`: an `ExtractionRequest`
+describes where to search (a `LocatorDefinition`) and how to read/convert/validate what is found,
+never a live `IElement` reference. `webagent4j-dom` depends on `extraction-api` in the other
+direction, for exactly one method - `IElement#extract(ExtractionRequest<T>)`, which reads an
+already-resolved element's own `text()`/`attributes()`/`value()` directly (no locator search) and
+applies the same `ExtractionRequest#convertAndValidate(String)` pipeline step `webagent4j-extraction`
+uses. This one-directional edge (`dom -> extraction-api`, never the reverse) is an ArchUnit-enforced
+rule (`extractionApiRemainsIndependentFromDom`), the same pattern `dom -> locator-api` already uses
+for `IElement.find()`. `webagent4j-extraction` is the deterministic engine
+(`ExtractionEngine`), reusing `ILocatorEngine`/`ILiveLocatorContext` rather than a parallel
+resolution engine.
 
 The action module owns orchestration but no browser-native implementation. Verification owns
 read-only conditions and polling. Browser adapters implement `IActionBackend`; target resolution,

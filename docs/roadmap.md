@@ -8,7 +8,9 @@ Javadoc, user documentation, and a green `clean verify` build.
 - **0.2 Semantic locators:** more roles, labels, deterministic diagnostics, frames, and shadow DOM.
 - **0.3 Observation engine:** richer landmarks, forms, tables, compact rendering, and JSON contracts.
 - **0.4 Actions and verification:** typing, selection, waits, preconditions, and more postconditions.
-- **0.5 Extraction:** CSS extraction, schemas, converters, and structured failures.
+- **0.5 Extraction:** deterministic text/attribute/value/list/table extraction reusing the existing
+  locator engine, typed conversion, validation, provenance, and structured failures. See
+  [docs/extraction.md](extraction.md).
 - **0.6 HTTP crawler:** queue, normalization, deduplication, robots.txt, rate limiting, and storage.
 - **0.7 Browser crawler:** dynamic pages, sessions, cancellation, and bounded concurrency.
 - **0.8 Workflows:** variables, masked secrets, simple conditions, and structured results.

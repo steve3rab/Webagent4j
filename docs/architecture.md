@@ -104,7 +104,7 @@ PageSnapshot (bounded, backend-neutral)
 Observation Engine
       |
       v
-Semantic Model ----> Locator / Action / future Extraction
+Semantic Model ----> Locator / Action / Extraction
 ```
 
 ## Dependency rules

@@ -220,6 +220,23 @@ class LocatorEngineTest {
         assertThat(backend.queries()).isNotEmpty();
     }
 
+    @Test
+    void locateAllWithScopePathReportsTheActualResolvedScopeNotJustTheCandidates() {
+        IElement form = LocatorTestFixtures.element(ElementRole.FORM, "Payment");
+        IElement first = LocatorTestFixtures.element(ElementRole.BUTTON, "Pay");
+        FakeBackend backend = new FakeBackend(List.of(form), List.of(first));
+        LocatorContext scoped = context(backend).within(form);
+
+        LocatorAllResult result =
+                engine.locateAllWithScopePath(
+                        scoped, LocatorDefinition.forRole(ElementRole.BUTTON).named("Pay"));
+
+        assertThat(result.candidates())
+                .extracting(LocatorCandidate::element)
+                .containsExactly(first);
+        assertThat(result.scopePath()).isEqualTo(scoped.scope().path());
+    }
+
     private ILocator<IElement> locator(LocatorContext context, LocatorDefinition definition) {
         return new ILocator<>() {
             @Override

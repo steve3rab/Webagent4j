@@ -1,8 +1,13 @@
 package io.webagent4j.dom;
 
+import io.webagent4j.extraction.api.ExtractionProvenance;
+import io.webagent4j.extraction.api.ExtractionRequest;
+import io.webagent4j.extraction.api.ExtractionResult;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.IFind;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -106,5 +111,44 @@ public interface IElement {
     default IFind<IElement> find() {
         throw new UnsupportedOperationException(
                 "Scoped locators are not supported by this backend");
+    }
+
+    /**
+     * Reads, converts, and validates {@code request}'s datum directly from this already-resolved
+     * element - never a locator search, since the element is already the one the caller was told
+     * was selected. Unlike {@code IPage#extract}/{@code IFrame#extract}, {@code request.source()}
+     * is not searched for; it is retained only as descriptive metadata on the request and on the
+     * returned {@link ExtractionResult#provenance()}, whose {@link
+     * ExtractionProvenance#scopePath()} is empty here since no locator scope was resolved to reach
+     * this element.
+     *
+     * @throws io.webagent4j.extraction.api.ExtractionAttributeMissingException if {@link
+     *     ExtractionRequest#readType()} is {@code ATTRIBUTE} and this element lacks that attribute
+     * @throws io.webagent4j.extraction.api.ExtractionConversionException if {@link
+     *     ExtractionRequest#converter()} fails or returns {@code null}
+     * @throws io.webagent4j.extraction.api.ExtractionValidationException if the converted value
+     *     fails {@link ExtractionRequest#validator()}
+     */
+    default <T> ExtractionResult<T> extract(ExtractionRequest<T> request) {
+        Objects.requireNonNull(request, "request");
+        String raw =
+                switch (request.readType()) {
+                    case TEXT -> text();
+                    case VALUE -> value();
+                    case ATTRIBUTE -> {
+                        String name = request.attributeName().orElseThrow();
+                        String attributeValue = attributes().get(name);
+                        if (attributeValue == null) {
+                            throw new io.webagent4j.extraction.api
+                                    .ExtractionAttributeMissingException(name);
+                        }
+                        yield attributeValue;
+                    }
+                };
+        T value = request.convertAndValidate(raw);
+        ExtractionProvenance provenance =
+                new ExtractionProvenance(
+                        List.of(), request.source(), request.readType(), request.attributeName());
+        return new ExtractionResult<>(value, Optional.of(raw), provenance);
     }
 }

@@ -11,6 +11,10 @@ import io.webagent4j.browser.IFrame;
 import io.webagent4j.browser.IFrameLocator;
 import io.webagent4j.common.BrowserException;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.extraction.ExtractionEngine;
+import io.webagent4j.extraction.api.ExtractedTable;
+import io.webagent4j.extraction.api.ExtractionRequest;
+import io.webagent4j.extraction.api.ExtractionResult;
 import io.webagent4j.locator.ILiveLocatorContext;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorConfig;
@@ -40,6 +44,7 @@ import java.util.Objects;
 final class PlaywrightFrame implements IFrame {
 
     private final ILocatorEngine engine;
+    private final ExtractionEngine extractionEngine;
     private final LocatorContext baseContext;
     private final List<IPendingScope> pendingScopes;
     private final LocatorConfig config;
@@ -55,6 +60,7 @@ final class PlaywrightFrame implements IFrame {
             BrowserOptions options,
             PlaywrightActionBackend actionBackend) {
         this.engine = engine;
+        this.extractionEngine = new ExtractionEngine(engine);
         this.baseContext = baseContext;
         this.pendingScopes = pendingScopes;
         this.config = config;
@@ -124,6 +130,24 @@ final class PlaywrightFrame implements IFrame {
     public LocatorResult locate(LocatorDefinition definition, LocatorConfig overrideConfig) {
         Objects.requireNonNull(overrideConfig, "config");
         return engine.locate(liveContext(overrideConfig), definition);
+    }
+
+    @Override
+    public <T> ExtractionResult<T> extract(ExtractionRequest<T> request) {
+        return extractionEngine.extract(
+                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes), request);
+    }
+
+    @Override
+    public <T> ExtractionResult<List<T>> extractList(ExtractionRequest<T> request) {
+        return extractionEngine.extractList(
+                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes), request);
+    }
+
+    @Override
+    public ExtractionResult<ExtractedTable> extractTable(LocatorDefinition source) {
+        return extractionEngine.extractTable(
+                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes), source);
     }
 
     @Override

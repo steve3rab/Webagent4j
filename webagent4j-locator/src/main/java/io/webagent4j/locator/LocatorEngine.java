@@ -154,6 +154,12 @@ public final class LocatorEngine implements ILocatorEngine {
     @Override
     public List<LocatorCandidate> locateAll(
             ILiveLocatorContext context, LocatorDefinition definition) {
+        return locateAllWithScopePath(context, definition).candidates();
+    }
+
+    @Override
+    public LocatorAllResult locateAllWithScopePath(
+            ILiveLocatorContext context, LocatorDefinition definition) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(definition, "definition");
         boolean waitForCandidates =
@@ -165,7 +171,7 @@ public final class LocatorEngine implements ILocatorEngine {
                         .diagnostics()
                         .snapshot(resolution.candidates(), selected, Optional.empty());
         selected.ifPresent(candidate -> completed(candidate, diagnostics));
-        return resolution.candidates();
+        return new LocatorAllResult(resolution.candidates(), diagnostics.scopePath());
     }
 
     /**

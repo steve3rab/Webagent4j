@@ -6,6 +6,83 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Extraction — Phase 0.5)
+
+- New `webagent4j-extraction-api` module (backend-neutral, depends only on `webagent4j-locator-api`):
+  `ExtractionRequest<T>` (immutable, copy-on-write, describing a `LocatorDefinition` source, a
+  `TEXT`/`ATTRIBUTE`/`VALUE` read type, a mandatory `IValueConverter<T>` - `text()`/`attribute()`/
+  `value()` all start with `identity()`, so an engine never has to fall back to an unchecked cast -
+  and an optional validator), `ExtractionResult<T>` (converted value, never `null`; pre-conversion
+  raw string; `ExtractionProvenance`), `ExtractionProvenance`, `IValueConverter<T>` (`identity`,
+  `toInteger`, `toLong`, `toBigDecimal`, `toBoolean`, `toLocalDate`), `IExtractionValidator<T>`
+  (`nonBlank`, `range`, `matches`, `predicate`), `ExtractedTable`/`ExtractedRow`, and the failure
+  taxonomy (`AExtractionException`, `ExtractionAttributeMissingException`,
+  `ExtractionConversionException`, `ExtractionValidationException`).
+  `ExtractionRequest#convertAndValidate(String)` is the one shared raw-&gt;convert-&gt;validate
+  pipeline step, reused by both `ExtractionEngine` and `IElement#extract` below; a converter that
+  returns `null` is itself treated as a conversion failure.
+- New `webagent4j-extraction` module: `ExtractionEngine`, the deterministic engine reusing the
+  existing `ILocatorEngine`/`ILiveLocatorContext`/`WaitEngine` machinery rather than a second DOM
+  resolution engine. `extract()` and `extractTable()` resolve their source to exactly one
+  unambiguous candidate (`ILocatorEngine#locateSingle` - the same contract `single()` already has),
+  so an ambiguous source or an ambiguous table always raises `AmbiguousLocatorException`, never
+  silently resolving to whichever candidate ranks first; `extractList()` resolves every matching
+  source (`ILocatorEngine#locateAll`) and returns them in DOM order
+  (`LocatorCandidate#domOrder()`, explicitly sorted - not necessarily the engine's rank order),
+  failing the whole request rather than silently dropping a bad entry. `extractTable()` reads its
+  `thead`/`tbody`/`tr`/`th`/`td` structure via `element.find().css(...)` with every selector
+  anchored to direct children at each level (a `> thead > tr > th` chain, not a bare descendant
+  selector), so a table nested inside one of this table's own cells never contributes its own
+  headers, rows, or cells to this table's result.
+- `ILocatorEngine` gains `locateAllWithScopePath` (default method, overridden by `LocatorEngine`):
+  returns the same candidates as `locateAll` together with the scope path actually live-resolved for
+  that search, so `extractList`'s provenance reports the real resolved scope (for example a frame's
+  own `Frame[name="checkout"]` scope) rather than the caller's starting baseline scope - without a
+  second, independent live resolution.
+- `IPage`/`IFrame` gain `extract(ExtractionRequest<T>)`, `extractList(ExtractionRequest<T>)`, and
+  `extractTable(LocatorDefinition)` as `default` methods that report "extraction is not supported by
+  this backend" unless a backend overrides them (the Playwright adapter does) - keeping every
+  existing `IPage`/`IFrame` implementation source-compatible. Frame-scoped extraction re-resolves the
+  frame's own pending-scope chain fresh on every poll exactly like `IFrame#locate` already does, so a
+  frame that disappears, is replaced, or becomes ambiguous mid-wait is caught the same way. A
+  not-found or ambiguous source still raises the normal
+  `LocatorNotFoundException`/`AmbiguousLocatorException`, never reinterpreted; a genuine
+  backend/runtime failure always propagates unchanged.
+- `IElement` (in `webagent4j-dom`, which now also depends on `webagent4j-extraction-api`) gains
+  `extract(ExtractionRequest<T>)`: reads, converts, and validates directly from an already-resolved
+  element, no locator search at all. Its provenance's `scopePath()` is always empty, since no
+  locator scope is resolved to reach an already-resolved element. The one-directional
+  `dom -> extraction-api` edge (never the reverse) is enforced by a new ArchUnit rule.
+- 4 new example programs in `webagent4j-examples`: `ExtractTextExample`, `ExtractAttributeExample`
+  (also demonstrates `extractList`), `ExtractTableExample`, `ExtractFromFrameExample` (typed
+  conversion inside a frame).
+- New `docs/extraction.md`; updated `docs/roadmap.md`, `docs/modules.md`, `docs/architecture.md`,
+  `docs/limitations.md`, and `docs/index.md`.
+- 3 new ArchUnit rules (`ArchitectureTest`): extraction stays independent from Playwright,
+  `webagent4j-extraction-api` stays independent from the locator engine module (only
+  `locator-api`), and `webagent4j-extraction-api` stays independent from `webagent4j-dom` (the
+  `dom -> extraction-api` dependency direction is one-way only).
+- Unit tests: 31 in `webagent4j-extraction-api` (converters, validators, request pipeline
+  invariants including `convertAndValidate`'s null-converter-is-a-conversion-failure rule, table
+  cell access, and a dedicated `ExtractionResultTest` proving a successful result can never carry a
+  `null` value) and 20 in `webagent4j-extraction` (`ExtractionEngineTest`, covering text/attribute/
+  value reads, missing-attribute vs missing-element, conversion-then-validation ordering, NOT_FOUND/
+  AMBIGUOUS/backend-failure propagation, two dedicated regression tests proving `extract`/
+  `extractTable` resolve through `locateSingle` rather than `locate` - which would fail if either
+  were ever swapped back - DOM-order list ordering against a fake engine whose rank order and DOM
+  order deliberately disagree, list provenance using the live-resolved scope path rather than the
+  baseline, and table header/row reading including the no-`thead` case). Plus 1 new test in
+  `webagent4j-locator` (`LocatorEngineTest`) covering `locateAllWithScopePath` directly.
+- Real-browser integration tests: `ExtractionIT` (EXT-001..EXT-015: simple/Unicode text, attribute,
+  live form value, list, table, not-found, ambiguous source, single/nested iframe, frame
+  replacement, ambiguous table, nested-table isolation, and frame/nested-frame list provenance) and
+  `ExtractionRobustnessIT` (cross-scope leak, sibling-frame leak, stale-element replacement, empty
+  table, ragged table row, missing attribute on an existing element, unparsable-number conversion
+  failure) against `ExtractionTestApplication`. Backend-failure propagation during extraction is
+  covered at the unit level (`ExtractionEngineTest`) rather than as a real-browser IT, since
+  reliably forcing a genuine backend disconnect mid-extraction without flakiness isn't reasonably
+  achievable in this suite.
+
 ### Added (Frame / iframe support)
 
 - `IPage#frame()` / `IFrame#frame()`, returning a new `IFrameLocator`: a backend-neutral, immutable

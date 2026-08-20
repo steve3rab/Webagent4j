@@ -25,6 +25,9 @@ class ArchitectureTest {
                         JavaClass.Predicates.resideInAnyPackage("io.webagent4j.dom.."),
                         JavaClass.Predicates.resideInAnyPackage("io.webagent4j.locator.api.."))
                 .ignoreDependency(
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.dom.."),
+                        JavaClass.Predicates.resideInAnyPackage("io.webagent4j.extraction.api.."))
+                .ignoreDependency(
                         JavaClass.Predicates.resideInAnyPackage("io.webagent4j.browser.."),
                         JavaClass.Predicates.resideInAnyPackage("io.webagent4j.observation.."))
                 .ignoreDependency(
@@ -110,6 +113,51 @@ class ArchitectureTest {
                         "io.webagent4j.browser..",
                         "io.webagent4j.observation..",
                         "com.microsoft.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void extractionRemainsIndependentFromPlaywright() {
+        noClasses()
+                .that()
+                .resideInAnyPackage("io.webagent4j.extraction..", "io.webagent4j.extraction.api..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void extractionApiRemainsIndependentFromTheLocatorEngineModule() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.extraction.api..")
+                .should()
+                .dependOnClassesThat(
+                        com.tngtech.archunit.base.DescribedPredicate.describe(
+                                "reside in io.webagent4j.locator.. but outside io.webagent4j.locator.api..",
+                                javaClass ->
+                                        javaClass
+                                                        .getPackageName()
+                                                        .startsWith("io.webagent4j.locator")
+                                                && !javaClass
+                                                        .getPackageName()
+                                                        .startsWith("io.webagent4j.locator.api")))
+                .check(projectClasses);
+    }
+
+    @Test
+    void extractionApiRemainsIndependentFromDom() {
+        // io.webagent4j.dom is allowed to depend on extraction.api (IElement#extract - see
+        // packageSlicesHaveNoCycles' matching ignoreDependency), so the direction matters: only
+        // dom -> extraction.api is legitimate, never the reverse.
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.extraction.api..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("io.webagent4j.dom..")
                 .check(projectClasses);
     }
 
