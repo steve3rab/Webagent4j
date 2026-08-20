@@ -180,21 +180,20 @@ class BrowserCrawlerRobustnessIT {
                                         "OutOfScope",
                                         "<a href=\"https://out-of-scope.invalid/never\">Never</a>")));
 
-        // BC-ROB-012: navigation ends up on an out-of-scope final URL (client-side redirect). The
-        // target is this same server reachable as "localhost" instead of "127.0.0.1" - a real,
-        // locally resolvable navigation (no external DNS/network needed) whose host string is still
-        // a different scope identity from the "127.0.0.1" seed, exactly like a real cross-host
+        // BC-ROB-012: navigation ends up on an out-of-scope final URL. An HTTP 302 (not a
+        // client-side meta-refresh/JS redirect - see the redirect() helper's Javadoc for why) to
+        // this same server reachable as "localhost" instead of "127.0.0.1" - a real, locally
+        // resolvable navigation (no external DNS/network needed) whose host string is still a
+        // different scope identity from the "127.0.0.1" seed, exactly like a real cross-host
         // redirect would be.
         server.createContext(
                 "/rob/redirectsaway",
                 exchange ->
-                        respond(
+                        redirect(
                                 exchange,
-                                "<!doctype html><html><head><title>RedirectsAway</title>"
-                                        + "<meta http-equiv=\"refresh\" content=\"0; url=http://localhost:"
+                                "http://localhost:"
                                         + server.getAddress().getPort()
-                                        + "/rob/redirectsaway/landed\">"
-                                        + "</head><body></body></html>"));
+                                        + "/rob/redirectsaway/landed"));
         server.createContext(
                 "/rob/redirectsaway/landed", exchange -> respond(exchange, html("Landed", "")));
 
@@ -378,6 +377,24 @@ class BrowserCrawlerRobustnessIT {
         }
     }
 
+    /**
+     * An HTTP-level 302, not a client-side meta-refresh/JS redirect: Playwright's {@code
+     * navigate()} follows this entirely on its own before returning, so there is no window in which
+     * a stability poll's {@code evaluate()} call can race against an in-flight client-side
+     * navigation. A meta-refresh redirect was tried first for BC-ROB-012 and, under real CI timing,
+     * occasionally hung indefinitely (not merely threw) inside {@code evaluate()} when a poll
+     * landed exactly during the frame's transition - a genuine Playwright-driver-level condition
+     * this project's architecture rules out working around with a secondary thread/Future timeout
+     * around Playwright calls. The redirect target being out-of-scope is the actual thing under
+     * test either way.
+     */
+    private static void redirect(com.sun.net.httpserver.HttpExchange exchange, String location)
+            throws IOException {
+        exchange.getResponseHeaders().add("Location", location);
+        exchange.sendResponseHeaders(302, -1);
+        exchange.close();
+    }
+
     private BrowserCrawlRequest.Builder requestFor(String path) {
         return BrowserCrawlRequest.builder(browser)
                 .seed(baseUrl + path)
@@ -553,11 +570,9 @@ class BrowserCrawlerRobustnessIT {
                                         .contains("out-of-scope.invalid"));
     }
 
-    // BC-ROB-012: a navigation whose final URL leaves scope (client-side redirect) fails closed
-    // rather than being silently indexed. The redirect can land squarely between two stability
-    // polls (a clean OUT_OF_SCOPE_REDIRECT) or destroy the execution context a poll's evaluate()
-    // is mid-flight in (a real Playwright condition, classified BROWSER_BACKEND_FAILURE) -
-    // whichever it is, the page must never be silently indexed as a success.
+    // BC-ROB-012: a navigation whose final URL leaves scope (an HTTP 302, resolved entirely inside
+    // navigate() - see the redirect() helper's Javadoc for why not a client-side redirect) fails
+    // closed rather than being silently indexed.
     @Test
     void bcRob012OutOfScopeFinalUrlFailsClosed() {
         BrowserCrawlResult result =
@@ -566,9 +581,7 @@ class BrowserCrawlerRobustnessIT {
         assertThat(result.pages()).isEmpty();
         assertThat(result.failures()).hasSize(1);
         assertThat(result.failures().get(0).type())
-                .isIn(
-                        BrowserCrawlFailureType.OUT_OF_SCOPE_REDIRECT,
-                        BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE);
+                .isEqualTo(BrowserCrawlFailureType.OUT_OF_SCOPE_REDIRECT);
     }
 
     // BC-ROB-013: every crawler-created page is closed - under a normal successful multi-page
