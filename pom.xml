@@ -76,7 +76,7 @@
     <assertj.version>3.27.3</assertj.version>
     <byte-buddy.version>1.18.7</byte-buddy.version>
     <jackson.version>2.19.2</jackson.version>
-    <jsoup.version>1.18.3</jsoup.version>
+    <jsoup.version>1.23.1</jsoup.version>
     <junit.version>5.13.4</junit.version>
     <mockito.version>5.23.0</mockito.version>
     <picocli.version>4.7.7</picocli.version>
