@@ -20,14 +20,25 @@ CrawlRequest -> HttpCrawler -> CrawlResult
               CrawledPage / CrawlFailure -> CrawlResult
 ```
 
-Same input, same HTTP responses, same `CrawlRequest` always produce the same logical crawl order,
-the same scope/dedup/redirect decisions, and the same page/failure content - the engine is
-intentionally sequential (no concurrency) for this phase, precisely so that guarantee holds without
-a benchmark-only carve-out. The one field this excludes is `CrawledPage#fetchDuration()`: under the
-production `IMonotonicClock.systemClock()` it reflects real elapsed time and so varies between
-runs like any wall-clock measurement would; injecting a fixed clock (as a determinism test does)
-makes it, and therefore the whole `CrawlResult`, reproducible byte-for-byte across repeated runs of
-the same script. See [Time and determinism](#time-and-determinism).
+Given the same `CrawlRequest`, the same normalized seed order, the same HTTP responses/failures,
+and the same injected timing behavior, WebAgent4J guarantees deterministic **logical crawl
+behavior**: frontier order, URL normalization, discovery order, dedup decisions, scope decisions,
+redirect decisions, retry decisions, page ordering, failure ordering, statistics, provenance, and
+termination reason are all reproducible - the engine is intentionally sequential (no concurrency)
+for this phase, precisely so that guarantee holds without a benchmark-only carve-out.
+
+Two things sit outside this structural guarantee, deliberately:
+
+- `CrawledPage#fetchDuration()` - under the production `IMonotonicClock.systemClock()` it reflects
+  real elapsed time and so varies between runs like any wall-clock measurement would; injecting a
+  fixed clock (as a determinism test does) makes it reproducible too.
+- `CrawlFailure#cause()` - a `Throwable`'s identity, message object, and stack trace are not part of
+  the structural guarantee. Two runs that both fail with `new IOException("connection reset")`
+  produce two logically identical `CrawlFailure`s (same `type`, `failedUrl`, `requestedUrl`,
+  `attempts`, `statusCode`, `redirectChain`), but the two `Throwable` instances are never
+  `Object#equals`, so `CrawlResult#equals` cannot be relied on when a run includes a failure
+  carrying a cause. Comparing the failure's other fields directly is the correct way to assert two
+  failing runs behaved identically. See [Time and determinism](#time-and-determinism).
 
 ## Modules
 
@@ -176,9 +187,15 @@ sets rather than conflating them into one:
 - **Fetch identity** (a plain `Set<URI>` local to one crawl session, claimed by a single internal
   `claimFetchIdentity` gate): "has a real HTTP request already been started for this URL?" Every
   request the engine ever sends - a task's own starting URL *and* every redirect hop it follows -
-  claims this budget first. `CrawlStatistics#fetchedUrls()` counts these claims, so it is always
-  `>= discoveredUrls` (a redirect-heavy crawl fetches strictly more identities than it discovers)
-  and never confuses the two concepts the way a single deduplicator would.
+  claims this budget first. `CrawlStatistics#fetchedUrls()` counts these claims - it never confuses
+  the two concepts the way a single deduplicator would, but no general relationship is guaranteed
+  between it and `discoveredUrls`. A redirect-heavy crawl usually fetches more identities than it
+  discovers (each hop is a fetch, never a discovery), but `discoveredUrls` can also exceed
+  `fetchedUrls`: the proactive `maxPages` check at discovery time (below) only compares against the
+  budget already claimed *so far*, so a link can be validly discovered while under budget and then,
+  once its own task is finally dequeued, find the budget exhausted by an intervening sibling task's
+  own fetch - failing reactively as `CRAWL_LIMIT_REACHED` without ever claiming a fetch identity of
+  its own.
 
 `/products`, `/products#top`, and `/a/../products` all normalize to the same identity in both
 sets, so they are discovered/fetched at most once regardless of which one a link happens to use.
@@ -300,9 +317,15 @@ philosophy from earlier phases: an unexpected backend failure never silently bec
 page, a skipped link, a fabricated `404`, or an unsignaled partial success.
 
 By default (`failFast = false`) one page's failure is recorded and the crawl continues - a page
-failing with a 500 does not stop its siblings from being fetched. With `failFast = true`, the
-first failure of *any* type (including `BACKEND_FAILURE`) stops the crawl with
-`CrawlTerminationReason.FATAL_ERROR`.
+failing with a 500 does not stop its siblings from being fetched. With `failFast = true`, the first
+*genuine* fetch failure (network, timeout, redirect, HTTP status, content, or `BACKEND_FAILURE`)
+stops the crawl with `CrawlTerminationReason.FATAL_ERROR`. `CRAWL_LIMIT_REACHED` and
+`ALREADY_FETCHED` are deliberately exempt from this even when `failFast = true`: both are ordinary,
+expected outcomes of the crawl's own graph (a user-requested page budget, or two discovery paths
+converging on the same URL), never a backend problem, so neither one aborts the crawl or turns
+`terminationReason()` into `FATAL_ERROR` - a `maxPages` limit hit under `failFast` still reports
+`MAX_PAGES_REACHED`, and an `ALREADY_FETCHED` outcome lets the crawl keep processing the rest of the
+frontier.
 
 ## Response-size protection
 
@@ -345,6 +368,16 @@ retries and redirects included), not a duplicate of it.
 across every retry and every redirect hop of every task - not just the final successful one. A
 response aborted for exceeding `maxResponseBytes` contributes nothing to the total, since the
 partial byte count at the moment of abortion is not tracked.
+
+### Diagnostic fields excluded from the determinism guarantee
+
+`CrawlFailure#cause()` deliberately keeps the real `Throwable` rather than a summarized DTO -
+fail-closed diagnostics need the actual exception, not a lossy projection of it. That means
+`Throwable` identity (and, by extension, full `CrawlResult#equals` when a run produced a failure
+with a cause) is outside the structural determinism guarantee described above; a test asserting two
+runs behaved identically after a failure should compare `CrawlFailure#type()`, `failedUrl()`,
+`requestedUrl()`, `attempts()`, `statusCode()`, and `redirectChain()` directly, not rely on
+`CrawlResult#equals()`.
 
 ## Provenance
 

@@ -587,6 +587,291 @@ class HttpCrawlerTest {
     }
 
     @Test
+    void discoveredUrlsCanExceedFetchedUrlsWhenASiblingTaskConsumesTheRemainingBudgetFirst() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        URI l = URI.create("https://example.test/l");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, htmlResponse(a, 200));
+        fetcher.respond(b, htmlResponse(b, 200));
+        FakeHtmlLinkExtractor extractor = new FakeHtmlLinkExtractor();
+        extractor.stub(a, linksTo(l));
+
+        // maxPages=2. Seed "a" claims the budget's first slot and, while still under budget,
+        // proactively discovers link "l" (discoveredUrls grows to 2). Before "l" reaches the front
+        // of the frontier, sibling seed "b" claims the budget's second and last slot. When "l" is
+        // finally dequeued, its own initial fetch-identity claim now reactively hits
+        // CRAWL_LIMIT_REACHED - it was validly discovered, but the budget it was proactively
+        // checked against at discovery time has since been exhausted by an intervening sibling.
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        extractor,
+                        CrawlRequest.builder()
+                                .seed(a)
+                                .seed(b)
+                                .sameHostOnly(false)
+                                .maxDepth(1)
+                                .maxPages(2));
+
+        assertThat(result.statistics().discoveredUrls()).isEqualTo(3);
+        assertThat(result.statistics().fetchedUrls()).isEqualTo(2);
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.CRAWL_LIMIT_REACHED);
+        assertThat(result.failures().get(0).failedUrl()).isEqualTo(l);
+    }
+
+    // --- maxDepthReached: only a task that actually sent a request counts (consolidation) ---
+
+    @Test
+    void maxDepthReachedIsZeroWhenTheDeeperTaskIsNeverActuallyFetched() {
+        URI child = URI.create("https://example.test/child");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(SEED, htmlResponse(SEED, 200));
+        FakeHtmlLinkExtractor extractor = new FakeHtmlLinkExtractor();
+        extractor.stub(SEED, linksTo(child));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        extractor,
+                        CrawlRequest.builder().seed(SEED).maxDepth(1).maxPages(1));
+
+        assertThat(result.statistics().maxDepthReached()).isZero();
+        assertThat(fetcher.requested()).doesNotContain(child);
+    }
+
+    @Test
+    void maxDepthReachedReflectsTheDeepestTaskThatWasActuallyFetched() {
+        URI child = URI.create("https://example.test/child");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(SEED, htmlResponse(SEED, 200));
+        fetcher.respond(child, htmlResponse(child, 200));
+        FakeHtmlLinkExtractor extractor = new FakeHtmlLinkExtractor();
+        extractor.stub(SEED, linksTo(child));
+
+        CrawlResult result =
+                crawl(fetcher, extractor, CrawlRequest.builder().seed(SEED).maxDepth(1));
+
+        assertThat(result.statistics().maxDepthReached()).isEqualTo(1);
+    }
+
+    @Test
+    void maxDepthReachedIsUnaffectedByHowManyRedirectHopsATaskFollows() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        URI c = URI.create("https://example.test/c");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, b));
+        fetcher.respond(b, redirectResponse(b, 302, c));
+        fetcher.respond(c, htmlResponse(c, 200));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0));
+
+        // Three real fetch identities (a, b, c), but they all belong to the single depth-0 task
+        // that discovered "a" as a seed - a redirect hop never changes the task's own depth.
+        assertThat(result.statistics().fetchedUrls()).isEqualTo(3);
+        assertThat(result.statistics().maxDepthReached()).isZero();
+    }
+
+    @Test
+    void maxDepthReachedIsUnaffectedByATaskThatReturnsAlreadyFetchedBeforeAnyRequest() {
+        URI a = URI.create("https://example.test/a");
+        URI target = URI.create("https://example.test/target");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, target));
+        fetcher.respond(target, htmlResponse(target, 200));
+        FakeHtmlLinkExtractor extractor = new FakeHtmlLinkExtractor();
+        // The page at "target" links back to its own URL - a brand new discovery (dedup never saw
+        // "target" at discovery time, only at fetch time via the redirect hop), which enqueues a
+        // depth-1 task whose own starting URL is an identity already claimed at fetch time.
+        extractor.stub(target, linksTo(target));
+
+        CrawlResult result = crawl(fetcher, extractor, CrawlRequest.builder().seed(a).maxDepth(1));
+
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.ALREADY_FETCHED);
+        assertThat(failure.attempts()).isZero();
+        assertThat(failure.depth()).isEqualTo(1);
+        // The depth-1 task never sent a single real request (its own initial claim failed
+        // immediately), so it must never count toward maxDepthReached.
+        assertThat(result.statistics().maxDepthReached()).isZero();
+        assertThat(result.statistics().fetchedUrls()).isEqualTo(2);
+        assertThat(result.statistics().successfulPages()).isEqualTo(1);
+        assertThat(result.statistics().failedUrls())
+                .isEqualTo(result.failures().size())
+                .isEqualTo(1);
+    }
+
+    // --- failFast must never turn an expected, non-backend outcome into FATAL_ERROR ---
+
+    @Test
+    void failFastNeverTurnsCrawlLimitReachedIntoFatalError() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, b));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0).maxPages(1).failFast(true));
+
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.CRAWL_LIMIT_REACHED);
+        assertThat(result.terminationReason()).isEqualTo(CrawlTerminationReason.MAX_PAGES_REACHED);
+    }
+
+    @Test
+    void failFastNeverTurnsAlreadyFetchedIntoFatalErrorAndTheCrawlContinues() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        URI target = URI.create("https://example.test/target");
+        URI thirdSeed = URI.create("https://third.test/");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, target));
+        fetcher.respond(b, redirectResponse(b, 302, target));
+        fetcher.respond(target, htmlResponse(target, 200));
+        fetcher.respond(thirdSeed, htmlResponse(thirdSeed, 200));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder()
+                                .seed(a)
+                                .seed(b)
+                                .seed(thirdSeed)
+                                .sameHostOnly(false)
+                                .maxDepth(0)
+                                .failFast(true));
+
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.ALREADY_FETCHED);
+        assertThat(result.terminationReason()).isEqualTo(CrawlTerminationReason.COMPLETED);
+        assertThat(fetcher.requested()).contains(thirdSeed);
+    }
+
+    @Test
+    void failFastTurnsAGenuineBackendFailureIntoFatalError() {
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.throwRuntime(SEED, new IllegalStateException("boom"));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(SEED).maxDepth(0).failFast(true));
+
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.BACKEND_FAILURE);
+        assertThat(result.terminationReason()).isEqualTo(CrawlTerminationReason.FATAL_ERROR);
+    }
+
+    // --- CrawlStatistics: no general relationship between fetchedUrls/successfulPages/failedUrls
+    // ---
+
+    @Test
+    void statisticsCountersMatchTheirDefinitionsExactlyRegardlessOfRetries() {
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        HttpFetchResult serverError =
+                new HttpFetchResult(SEED, 500, Map.of(), new byte[0], "", Duration.ZERO);
+        fetcher.respond(SEED, serverError);
+        fetcher.respond(SEED, htmlResponse(SEED, 200));
+
+        CrawlRequest request =
+                CrawlRequest.builder()
+                        .seed(SEED)
+                        .maxDepth(0)
+                        .retryPolicy(
+                                new io.webagent4j.common.RetryPolicy(
+                                        3, Duration.ZERO, 1.0, Duration.ZERO))
+                        .build();
+        HttpCrawler crawler =
+                new HttpCrawler(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        new HostScopePolicy(),
+                        duration -> {});
+        CrawlResult result = crawler.crawl(request);
+
+        assertThat(result.statistics().successfulPages())
+                .isEqualTo(result.pages().size())
+                .isEqualTo(1);
+        assertThat(result.statistics().failedUrls())
+                .isEqualTo(result.failures().size())
+                .isEqualTo(0);
+        // Two real requests were sent (500 then 200), but only one fetch identity was ever claimed.
+        assertThat(result.statistics().fetchedUrls()).isEqualTo(1);
+        assertThat(fetcher.fetchCount(SEED)).isEqualTo(2);
+    }
+
+    @Test
+    void fetchedUrlsCanExceedTheSumOfPagesAndFailuresWhenARedirectIsFollowed() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, b));
+        fetcher.respond(b, htmlResponse(b, 200));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0));
+
+        // "a" and "b" are both real fetch identities, but only "b" becomes the task's single page -
+        // the intermediate hop "a" is never itself a page or a failure. No general relationship is
+        // guaranteed between fetchedUrls and pages.size() + failures.size(); see CrawlStatistics.
+        assertThat(result.statistics().fetchedUrls()).isEqualTo(2);
+        assertThat(result.pages().size() + result.failures().size()).isEqualTo(1);
+    }
+
+    /**
+     * {@link CrawlFailure#cause()} carries the real {@link Throwable}, which never compares equal
+     * across two independently-constructed instances - so a determinism check across a failing run
+     * compares the failure's other fields directly instead of relying on {@code
+     * CrawlResult#equals}.
+     */
+    @Test
+    void twoIdenticallyScriptedFailingRunsProduceTheSameLogicalFailureFieldsButNotEqualCauses() {
+        FakeHttpFetcher fetcherOne = new FakeHttpFetcher();
+        fetcherOne.throwRuntime(SEED, new IllegalStateException("boom"));
+        FakeHttpFetcher fetcherTwo = new FakeHttpFetcher();
+        fetcherTwo.throwRuntime(SEED, new IllegalStateException("boom"));
+
+        CrawlResult first =
+                crawl(
+                        fetcherOne,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(SEED).maxDepth(0));
+        CrawlResult second =
+                crawl(
+                        fetcherTwo,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(SEED).maxDepth(0));
+
+        CrawlFailure failureOne = first.failures().get(0);
+        CrawlFailure failureTwo = second.failures().get(0);
+        assertThat(failureOne.type()).isEqualTo(failureTwo.type());
+        assertThat(failureOne.failedUrl()).isEqualTo(failureTwo.failedUrl());
+        assertThat(failureOne.requestedUrl()).isEqualTo(failureTwo.requestedUrl());
+        assertThat(failureOne.attempts()).isEqualTo(failureTwo.attempts());
+        assertThat(failureOne.statusCode()).isEqualTo(failureTwo.statusCode());
+        assertThat(failureOne.redirectChain()).isEqualTo(failureTwo.redirectChain());
+        // Same logical failure, but distinct Throwable instances - equals() is intentionally not
+        // guaranteed here, and CrawlResult#equals would report these two runs as unequal.
+        assertThat(failureOne.cause()).isNotEqualTo(failureTwo.cause());
+        assertThat(first).isNotEqualTo(second);
+    }
+
+    @Test
     void theSameScriptedCrawlProducesAnIdenticalResultEveryTime() {
         CrawlResult first = runScriptedDeterminismCrawl();
         CrawlResult second = runScriptedDeterminismCrawl();

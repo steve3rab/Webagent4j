@@ -77,6 +77,96 @@ class CrawlFailureTest {
     }
 
     @Test
+    void alreadyFetchedAcceptsZeroAttempts() {
+        CrawlFailure failure =
+                new CrawlFailure(
+                        SEED,
+                        SEED,
+                        0,
+                        CrawlFailureType.ALREADY_FETCHED,
+                        "already fetched earlier in this crawl",
+                        Optional.empty(),
+                        Optional.empty(),
+                        0,
+                        Optional.empty(),
+                        List.of());
+
+        assertThat(failure.attempts()).isZero();
+    }
+
+    @Test
+    void httpServerErrorRejectsZeroAttempts() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                new CrawlFailure(
+                                        SEED,
+                                        SEED,
+                                        0,
+                                        CrawlFailureType.HTTP_SERVER_ERROR,
+                                        "HTTP status 503",
+                                        Optional.of(503),
+                                        Optional.empty(),
+                                        0,
+                                        Optional.empty(),
+                                        List.of()));
+    }
+
+    @Test
+    void networkRejectsZeroAttempts() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                new CrawlFailure(
+                                        SEED,
+                                        SEED,
+                                        0,
+                                        CrawlFailureType.NETWORK,
+                                        "connection reset",
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        0,
+                                        Optional.empty(),
+                                        List.of()));
+    }
+
+    @Test
+    void backendFailureRejectsZeroAttempts() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                new CrawlFailure(
+                                        SEED,
+                                        SEED,
+                                        0,
+                                        CrawlFailureType.BACKEND_FAILURE,
+                                        "boom",
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        0,
+                                        Optional.empty(),
+                                        List.of()));
+    }
+
+    @Test
+    void crawlLimitReachedRejectsNonZeroAttempts() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                new CrawlFailure(
+                                        SEED,
+                                        SEED,
+                                        0,
+                                        CrawlFailureType.CRAWL_LIMIT_REACHED,
+                                        "maxPages already reached",
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        1,
+                                        Optional.empty(),
+                                        List.of()));
+    }
+
+    @Test
     void rejectsNegativeAttempts() {
         assertThatIllegalArgumentException()
                 .isThrownBy(

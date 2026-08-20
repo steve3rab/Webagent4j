@@ -1,25 +1,34 @@
 package io.webagent4j.crawler.api;
 
 /**
- * Immutable crawl-wide counters. Every field has one precise definition - never an ambiguous "count
- * of something."
+ * Immutable crawl-wide counters. Every field has one precise, independent definition. Deliberately
+ * <strong>no</strong> general mathematical relationship is asserted between {@link #fetchedUrls()},
+ * {@link #successfulPages()}, and {@link #failedUrls()}: a {@link CrawlFailure} can be recorded for
+ * a URL that was never actually requested - {@link CrawlFailureType#CRAWL_LIMIT_REACHED} and {@link
+ * CrawlFailureType#ALREADY_FETCHED} both add an entry to {@link CrawlResult#failures()} (and so to
+ * {@code failedUrls}) without adding a new fetch identity (so without increasing {@code
+ * fetchedUrls}) - so {@code failedUrls} is never derivable from {@code fetchedUrls}, in either
+ * direction, in general.
  *
- * @param discoveredUrls distinct normalized URLs claimed by navigation/frontier discovery during
- *     this crawl - seeds and links found while parsing a page, never a redirect hop (a redirect
- *     target is a fetch-time identity, not a discovered one; see {@link #fetchedUrls()}). Includes
- *     URLs never actually fetched because {@code maxPages} was reached first
- * @param fetchedUrls distinct normalized URLs for which a real HTTP request was actually started -
- *     every redirect hop actually followed counts as its own unique fetched URL, in addition to
- *     each task's own starting URL. This is exactly the quantity {@link CrawlRequest#maxPages()}
- *     bounds, checked immediately before every one of these requests, including a redirect hop -
- *     never discovered only after the request was already sent. {@code fetchedUrls >=
- *     successfulPages + failedUrls}: a single task consumes one fetched-URL unit for a direct
- *     success/failure, or more than one when it followed one or more redirects first, since only
- *     the task's own final outcome becomes a page or a failure, never each intermediate hop
+ * @param discoveredUrls distinct normalized URLs admitted into navigation/frontier discovery during
+ *     this crawl - every seed and every HTML link accepted by the scope/depth/dedup checks that
+ *     gate frontier entry. A redirect target is never a discovered URL, only a fetched one; see
+ *     {@link #fetchedUrls()}. Includes URLs enqueued but never actually fetched because {@code
+ *     maxPages} was reached first
+ * @param fetchedUrls distinct normalized URLs for which at least one real HTTP request was actually
+ *     started - every redirect hop actually followed counts as its own fetched URL, in addition to
+ *     each task's own starting URL; retries of the same URL never count more than once. This is
+ *     exactly the quantity {@link CrawlRequest#maxPages()} bounds, claimed immediately before every
+ *     one of these requests, including a redirect hop - never discovered only after the request was
+ *     already sent
  * @param successfulPages number of {@link CrawlResult#pages()} entries; always equal to {@code
  *     pages.size()}
  * @param failedUrls number of {@link CrawlResult#failures()} entries; always equal to {@code
- *     failures.size()}
+ *     failures.size()}. This is a count of crawl-task outcomes that ended in failure, not of
+ *     network requests that failed - a failure can be recorded for a URL that was never actually
+ *     fetched (see {@link CrawlFailureType#CRAWL_LIMIT_REACHED}, {@link
+ *     CrawlFailureType#ALREADY_FETCHED}), so this value must never be assumed derivable from {@code
+ *     fetchedUrls}
  * @param rejectedUrls discovered candidate links that scope policy, depth, URL filters, or the
  *     deduplicator rejected before ever entering the frontier
  * @param redirects total redirect hops actually followed across every fetch attempt
@@ -31,7 +40,11 @@ package io.webagent4j.crawler.api;
  *     (successful or a terminal HTTP status), across every retry and every redirect hop. A response
  *     aborted for exceeding {@link CrawlRequest#maxResponseBytes()} contributes nothing to this
  *     total: the byte count at the moment of abortion is not tracked
- * @param maxDepthReached the greatest depth among all actually-fetched URLs
+ * @param maxDepthReached the greatest crawl-task depth among tasks for which at least one real HTTP
+ *     request was actually started - a task whose fetch identity claim failed before any request
+ *     was sent ({@code maxPages} exhausted, or the identity already fetched) never contributes
+ *     here, even though it may still produce a {@link CrawlFailure}. Redirect hops followed while
+ *     resolving a task never change that task's depth
  */
 public record CrawlStatistics(
         int discoveredUrls,

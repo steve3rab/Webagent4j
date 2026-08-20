@@ -160,7 +160,6 @@ public final class HttpCrawler implements ICrawler {
             }
             while (!frontier.isEmpty() && !stopRequested) {
                 CrawlTask task = frontier.poll().orElseThrow();
-                maxDepthReached = Math.max(maxDepthReached, task.depth());
                 processTask(task);
             }
             CrawlTerminationReason terminationReason =
@@ -410,9 +409,23 @@ public final class HttpCrawler implements ICrawler {
                             attempts,
                             task.discoveredFrom(),
                             redirectChain));
-            if (request.failFast()) {
+            if (request.failFast() && isFatal(type)) {
                 stopRequested = true;
             }
+        }
+
+        /**
+         * Whether {@code type} represents a genuine, unexpected fetch failure that {@code failFast}
+         * should abort the whole crawl for. {@link CrawlFailureType#CRAWL_LIMIT_REACHED} and {@link
+         * CrawlFailureType#ALREADY_FETCHED} are ordinary, expected outcomes of the crawl's own
+         * graph (a user-requested page budget, or two paths converging on the same URL) - never a
+         * backend problem - so {@code failFast} never turns either into a {@link
+         * CrawlTerminationReason#FATAL_ERROR}; the crawl keeps processing the rest of the frontier
+         * instead.
+         */
+        private static boolean isFatal(CrawlFailureType type) {
+            return type != CrawlFailureType.CRAWL_LIMIT_REACHED
+                    && type != CrawlFailureType.ALREADY_FETCHED;
         }
 
         /**
@@ -466,6 +479,10 @@ public final class HttpCrawler implements ICrawler {
                         chain);
             }
             visited.add(current);
+            // A real HTTP request is actually about to be sent for this task - only now does its
+            // depth count toward maxDepthReached. Redirect hops resolved below never change it: a
+            // task's depth is fixed, regardless of how many hops its own request chain follows.
+            maxDepthReached = Math.max(maxDepthReached, task.depth());
 
             while (true) {
                 RetryOutcome retryOutcome = fetchWithRetries(current);

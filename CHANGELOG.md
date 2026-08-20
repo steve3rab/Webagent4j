@@ -12,9 +12,10 @@ All notable changes to this project will be documented in this file. The format 
   `CrawlRequest` (immutable, builder, fully validated at construction - a bad `maxDepth`,
   `maxPages`, timeout, `maxResponseBytes`, `maxRedirects`, non-HTTP(S) seed, or
   `TraversalStrategy.DEPTH_FIRST` never surfaces only mid-crawl), `CrawlResult`, `CrawledPage`
-  (immutable, every collection defensively copied), `CrawlFailure`/`CrawlFailureType` (12 types,
-  including `BACKEND_FAILURE` for an opaque fetcher exception - never silently reclassified as
-  another type), `CrawlStatistics`, `CrawlTerminationReason`, `DiscoveredLink`, `CrawlDecision`/
+  (immutable, every collection defensively copied), `CrawlFailure`/`CrawlFailureType` (a structured
+  taxonomy covering network, timeout, redirect, HTTP-status, crawl-limit, duplicate-fetch, content,
+  and backend failures, including `BACKEND_FAILURE` for an opaque fetcher exception - never silently
+  reclassified as another type), `CrawlStatistics`, `CrawlTerminationReason`, `DiscoveredLink`, `CrawlDecision`/
   `CrawlDecisionType`, `RedirectHop`, `CrawlPageProvenance`, `QueryParameterPolicy`
   (`KEEP_ALL`/`DROP_ALL`/`DROP_KNOWN_TRACKING`, conservative by design - only the five standard
   `utm_*` parameters), `TraversalStrategy`, `LinkKind`, and the `ICrawler`/`IUrlNormalizer`/
@@ -91,9 +92,10 @@ All notable changes to this project will be documented in this file. The format 
   detection), so a fragment or dot-segment disguise can no longer hide a duplicate or a loop.
   Discovery identity (`CrawlStatistics#discoveredUrls()`, seeds and links only) and fetch identity
   (`fetchedUrls()`, every real network target including redirect hops) are now two separate
-  tracked sets rather than one conflated counter - `fetchedUrls() >= discoveredUrls()` is the new,
-  correct relationship, replacing the previous (now false) `fetchedUrls == successfulPages +
-  failedUrls` invariant this Javadoc used to claim.
+  tracked sets rather than one conflated counter, replacing the previous (now false) `fetchedUrls
+  == successfulPages + failedUrls` invariant this Javadoc used to claim. No general mathematical
+  relationship is asserted between `discoveredUrls`, `fetchedUrls`, `successfulPages`, and
+  `failedUrls` - each has its own precise, independent definition instead; see `CrawlStatistics`.
 - **`CrawlFailure.attempts()` silently dropped the real retry count on a terminal HTTP status.**
   `RetryOutcome`'s success factory hardcoded `attempts = 0`, and every terminal-status branch in
   `HttpCrawler` hardcoded `attempts = 1` regardless of how many attempts were actually made - three
@@ -139,6 +141,60 @@ All notable changes to this project will be documented in this file. The format 
 - Updated Javadoc on `CrawlRequest`, `CrawlStatistics`, `CrawledPage`, `CrawlFailure`,
   `DiscoveredLink`, `CrawlDecisionType`, `HttpFetchResult`, and `JavaHttpFetcher` to match the
   corrected behavior exactly; updated `docs/http-crawler.md`.
+
+### Fixed (HTTP Crawler — final pre-merge consolidation)
+
+- **`CrawlStatistics`'s Javadoc still asserted `fetchedUrls >= successfulPages + failedUrls`.**
+  False in general: `CrawlFailureType.CRAWL_LIMIT_REACHED`/`ALREADY_FETCHED` add a `failedUrls`
+  entry without ever claiming a new fetch identity. Rewrote `discoveredUrls`, `fetchedUrls`,
+  `successfulPages`, and `failedUrls` to each carry one independent, precise definition, with no
+  mathematical relationship asserted between them. The same over-claim (`fetchedUrls() >=
+  discoveredUrls()`) was also present in `docs/http-crawler.md`'s Deduplication section and in this
+  CHANGELOG's own previous entry - also false: the proactive `maxPages` check at discovery time only
+  compares against the budget claimed *so far*, so a sibling task's own fetch can exhaust the
+  budget between a link's discovery and its later, reactive `CRAWL_LIMIT_REACHED`. Both corrected,
+  and a new `HttpCrawlerTest` scenario demonstrates `discoveredUrls > fetchedUrls` concretely.
+- **`CrawlStatistics#maxDepthReached()` counted a task's depth before knowing whether it would ever
+  send a real request.** `HttpCrawler.Session#run()` updated `maxDepthReached` right after dequeuing
+  a task, before `processTask` even ran - so a task that was immediately blocked by
+  `CRAWL_LIMIT_REACHED` or `ALREADY_FETCHED` (`attempts == 0`, no network call ever made) still
+  inflated `maxDepthReached`. Moved the update into `fetchWithRedirects`, immediately after a task's
+  own initial fetch-identity claim actually succeeds - the first point a real request is guaranteed
+  to be sent for that task. Redirect hops still never change a task's own depth.
+- **`CrawlFailure` allowed `attempts == 0` for any failure type**, not just the two outcomes decided
+  before any request is sent. Added a constructor invariant: `attempts == 0` if and only if `type`
+  is `CRAWL_LIMIT_REACHED` or `ALREADY_FETCHED`; every other type now requires `attempts >= 1`,
+  rejected at construction otherwise - so a genuine network/HTTP/backend failure can never silently
+  carry `attempts == 0`.
+- **`failFast` could turn `CRAWL_LIMIT_REACHED`/`ALREADY_FETCHED` into `FATAL_ERROR`.**
+  `HttpCrawler.Session#recordFailure` unconditionally set `stopRequested = true` for any recorded
+  failure when `failFast` was `true`, including these two ordinary, expected outcomes of the crawl's
+  own graph (a user-requested page budget, or two discovery paths converging on the same URL) -
+  never a backend problem. A `maxPages` limit hit under `failFast = true` could therefore report
+  `FATAL_ERROR` instead of `MAX_PAGES_REACHED`. `recordFailure` now only sets `stopRequested` for a
+  genuine fetch failure; `CRAWL_LIMIT_REACHED` still sets `terminationReason() ==
+  MAX_PAGES_REACHED`, and an `ALREADY_FETCHED` outcome lets the crawl keep processing the rest of
+  the frontier even under `failFast`.
+- **The determinism claim ("same input... always produce the same `CrawlResult`") did not account
+  for `CrawlFailure#cause()`.** A `Throwable` never compares equal across two independently
+  constructed instances, so two structurally identical failing runs (same type, same URLs, same
+  `attempts`, same message) are never `CrawlResult#equals`. Re-scoped the guarantee to
+  **deterministic logical crawl behavior** (frontier order, normalization, discovery, dedup, scope,
+  redirect, retry, and page/failure ordering, statistics, provenance, and termination reason) and
+  explicitly excluded `Throwable` identity from it, in `HttpCrawler`'s Javadoc, `CrawlFailure`'s
+  Javadoc, and `docs/http-crawler.md`. `cause()` itself is unchanged - still the real exception, not
+  a summarized DTO - preserving fail-closed diagnostics. Added a test comparing two identically
+  scripted failing runs field-by-field rather than via `CrawlResult#equals`.
+- Replaced the fragile `"12 CrawlFailureTypes"` count in the PR description and CHANGELOG with a
+  description of the taxonomy's shape, so a future addition to `CrawlFailureType` does not silently
+  make either document wrong.
+- New `HttpCrawlerTest` scenarios: 4 `maxDepthReached` cases (never fetched, actually fetched,
+  redirect-hop-count-independent, `ALREADY_FETCHED`-before-any-request), 3 `failFast` non-fatal
+  cases (`CRAWL_LIMIT_REACHED`, `ALREADY_FETCHED` with continuation, and a genuine
+  `BACKEND_FAILURE` still reaching `FATAL_ERROR`), 2 `CrawlStatistics` invariant cases, 1
+  discovered-vs-fetched divergence case, and 1 failing-run field-equality case. New `CrawlFailureTest`
+  cases for the `attempts`/`type` invariant (`ALREADY_FETCHED` accepts `0`; `HTTP_SERVER_ERROR`,
+  `NETWORK`, `BACKEND_FAILURE` reject `0`; `CRAWL_LIMIT_REACHED` rejects a nonzero value).
 
 ### Added (Extraction — Phase 0.5)
 
