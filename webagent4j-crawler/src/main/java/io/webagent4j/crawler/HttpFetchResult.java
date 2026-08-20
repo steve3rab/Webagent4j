@@ -19,7 +19,9 @@ import java.util.Objects;
  * @param headers the response headers, preserving multi-value order
  * @param body the raw, undecoded response body
  * @param contentType the raw {@code Content-Type} header value, or {@code ""} if absent
- * @param elapsed wall-clock time spent on this one round trip
+ * @param elapsed monotonic-clock-measured time spent on this one round trip - distinct from {@link
+ *     io.webagent4j.crawler.api.CrawledPage#fetchDuration()}, which accumulates every retry and
+ *     redirect hop for the whole page, not just one request
  */
 public record HttpFetchResult(
         URI requestedUri,

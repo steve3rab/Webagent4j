@@ -11,6 +11,11 @@ public final class HttpResponseClassifier {
         // utility class
     }
 
+    /** Returns whether {@code statusCode} is a {@code 1xx} informational response. */
+    public static boolean isInformational(int statusCode) {
+        return statusCode >= 100 && statusCode <= 199;
+    }
+
     /** Returns whether {@code statusCode} is a {@code 2xx} success. */
     public static boolean isSuccess(int statusCode) {
         return statusCode >= 200 && statusCode <= 299;

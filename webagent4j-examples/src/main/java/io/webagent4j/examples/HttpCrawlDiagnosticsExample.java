@@ -40,7 +40,7 @@ public final class HttpCrawlDiagnosticsExample {
                         failure ->
                                 System.out.println(
                                         "  "
-                                                + failure.url()
+                                                + failure.failedUrl()
                                                 + "  ["
                                                 + failure.type()
                                                 + "]  "

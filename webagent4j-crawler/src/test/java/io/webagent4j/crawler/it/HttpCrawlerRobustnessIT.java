@@ -7,6 +7,7 @@ import io.webagent4j.crawler.HttpCrawler;
 import io.webagent4j.crawler.IHttpFetcher;
 import io.webagent4j.crawler.JsoupHtmlLinkExtractor;
 import io.webagent4j.crawler.api.CrawlDecisionType;
+import io.webagent4j.crawler.api.CrawlFailure;
 import io.webagent4j.crawler.api.CrawlFailureType;
 import io.webagent4j.crawler.api.CrawlRequest;
 import io.webagent4j.crawler.api.CrawlResult;
@@ -19,9 +20,11 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 /**
- * Robustness scenarios CRAWL-001 through CRAWL-010, plus the specification's mandated full
+ * Robustness scenarios CRAWL-001 through CRAWL-014, plus the specification's mandated full
  * end-to-end scenario: pathological and adversarial graphs a real crawl must survive without
- * hanging, exploding memory, or silently misclassifying a failure.
+ * hanging, exploding memory, or silently misclassifying a failure. CRAWL-011 through CRAWL-014
+ * exercise the redirect-identity consolidation fix (fetch identity claiming, normalized redirect
+ * targets, and failure provenance) against a real HTTP server rather than a fake fetcher.
  */
 class HttpCrawlerRobustnessIT {
 
@@ -162,6 +165,66 @@ class HttpCrawlerRobustnessIT {
         assertThat(result.failures().get(0).cause()).isPresent();
     }
 
+    // CRAWL-011: two independently discovered seeds redirecting to the same final URL fetch it
+    // only once, globally.
+    @Test
+    void redirectDestinationsFromDifferentSeedsDedupGlobally() {
+        CrawlResult result =
+                crawl(
+                        CrawlRequest.builder()
+                                .seed(server.url("/c11/a"))
+                                .seed(server.url("/c11/b"))
+                                .maxDepth(0));
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(server.callCount("/c11/final")).isEqualTo(1);
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.ALREADY_FETCHED);
+    }
+
+    // CRAWL-012: maxPages cannot be bypassed by a redirect chain - it bounds a redirect hop
+    // exactly as it bounds any other fetch.
+    @Test
+    void maxPagesCannotBeBypassedByARedirectChain() {
+        CrawlResult result = crawl(request("/c12/a").maxDepth(0).maxPages(1));
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.CRAWL_LIMIT_REACHED);
+        assertThat(server.callCount("/c12/b")).isZero();
+        assertThat(result.terminationReason()).isEqualTo(CrawlTerminationReason.MAX_PAGES_REACHED);
+    }
+
+    // CRAWL-013: a redirect loop hidden behind a fragment and a dot-segment variant of the same
+    // normalized identity is still detected as a loop.
+    @Test
+    void aNormalizedRedirectLoopIsDetectedDespiteFragmentAndDotSegmentDisguises() {
+        CrawlResult result = crawl(request("/c13/a").maxDepth(0));
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.REDIRECT_LOOP);
+    }
+
+    // CRAWL-014: a failure two redirect hops deep reports the real requested URL, the real
+    // failing URL, and every hop actually followed - never misattributed to the seed alone.
+    @Test
+    void failureProvenanceIsPreservedThroughTwoRedirects() {
+        CrawlResult result = crawl(request("/c14/a").maxDepth(0));
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.HTTP_SERVER_ERROR);
+        assertThat(failure.requestedUrl().getPath()).isEqualTo("/c14/a");
+        assertThat(failure.failedUrl().getPath()).isEqualTo("/c14/c");
+        assertThat(failure.redirectChain()).hasSize(2);
+        assertThat(failure.redirectChain().get(0).from().getPath()).isEqualTo("/c14/a");
+        assertThat(failure.redirectChain().get(0).to().getPath()).isEqualTo("/c14/b");
+        assertThat(failure.redirectChain().get(1).from().getPath()).isEqualTo("/c14/b");
+        assertThat(failure.redirectChain().get(1).to().getPath()).isEqualTo("/c14/c");
+    }
+
     /**
      * Section 72's mandated end-to-end scenario: a small graph mixing successful pages, a redirect,
      * a terminal server failure, a duplicate via fragment, a duplicate self-link, an external link,
@@ -181,7 +244,7 @@ class HttpCrawlerRobustnessIT {
         assertThat(aboutPage.redirectChain()).hasSize(1);
 
         assertThat(result.failures()).hasSize(1);
-        assertThat(result.failures().get(0).url().getPath()).isEqualTo("/e2e/products/2");
+        assertThat(result.failures().get(0).failedUrl().getPath()).isEqualTo("/e2e/products/2");
         assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.HTTP_SERVER_ERROR);
 
         // rejectedUrls() carries every non-allowed link, scope rejections and duplicate
@@ -197,7 +260,10 @@ class HttpCrawlerRobustnessIT {
                         CrawlDecisionType.REJECT_DUPLICATE);
 
         assertThat(result.statistics().discoveredUrls()).isEqualTo(5);
-        assertThat(result.statistics().fetchedUrls()).isEqualTo(5);
+        // fetchedUrls counts every real network identity, including the /e2e/about -> /e2e/company
+        // redirect hop, so it is one higher than discoveredUrls here: seed, products, about,
+        // company (the redirect target), products/1, products/2.
+        assertThat(result.statistics().fetchedUrls()).isEqualTo(6);
         assertThat(result.statistics().successfulPages()).isEqualTo(4);
         assertThat(result.statistics().failedUrls()).isEqualTo(1);
         assertThat(result.statistics().rejectedUrls()).isEqualTo(4);

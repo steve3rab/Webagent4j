@@ -1,5 +1,6 @@
 package io.webagent4j.crawler.api;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import java.net.URI;
@@ -17,7 +18,7 @@ class DiscoveredLinkTest {
                         () ->
                                 new DiscoveredLink(
                                         URL,
-                                        URL,
+                                        Optional.of(URL),
                                         "a",
                                         Optional.empty(),
                                         LinkKind.ANCHOR,
@@ -36,7 +37,7 @@ class DiscoveredLinkTest {
                         () ->
                                 new DiscoveredLink(
                                         URL,
-                                        URL,
+                                        Optional.of(URL),
                                         "a",
                                         Optional.empty(),
                                         LinkKind.ANCHOR,
@@ -46,13 +47,47 @@ class DiscoveredLinkTest {
     }
 
     @Test
+    void anAllowedLinkMustCarryANormalizedUrl() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                new DiscoveredLink(
+                                        URL,
+                                        Optional.empty(),
+                                        "a",
+                                        Optional.empty(),
+                                        LinkKind.ANCHOR,
+                                        true,
+                                        Optional.empty(),
+                                        0));
+    }
+
+    @Test
+    void aLinkRejectedBeforeNormalizationCarriesNoNormalizedUrl() {
+        DiscoveredLink rejected =
+                new DiscoveredLink(
+                        URI.create("mailto:test@example.test"),
+                        Optional.empty(),
+                        "mailto:test@example.test",
+                        Optional.empty(),
+                        LinkKind.ANCHOR,
+                        false,
+                        Optional.of(
+                                CrawlDecision.reject(
+                                        CrawlDecisionType.REJECT_SCHEME, "scheme not allowed")),
+                        0);
+
+        assertThat(rejected.normalizedUrl()).isEmpty();
+    }
+
+    @Test
     void rejectsNegativeDocumentOrder() {
         assertThatIllegalArgumentException()
                 .isThrownBy(
                         () ->
                                 new DiscoveredLink(
                                         URL,
-                                        URL,
+                                        Optional.of(URL),
                                         "a",
                                         Optional.empty(),
                                         LinkKind.ANCHOR,

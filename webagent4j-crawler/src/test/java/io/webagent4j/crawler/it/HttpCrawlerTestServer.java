@@ -278,6 +278,28 @@ public final class HttpCrawlerTestServer implements AutoCloseable {
                 // calling sendResponseHeaders(), which the client observes as a connection failure.
             }
 
+            // CRAWL-011: two independently discovered seeds redirect to the same final URL - it
+            // must be fetched only once, globally, across the whole crawl.
+            case "/c11/a" -> redirect(exchange, 302, "/c11/final");
+            case "/c11/b" -> redirect(exchange, 302, "/c11/final");
+            case "/c11/final" -> html(exchange, page("<p>ok</p>"));
+
+            // CRAWL-012: maxPages must bound a redirect hop exactly as it bounds any other fetch.
+            case "/c12/a" -> redirect(exchange, 302, "/c12/b");
+            case "/c12/b" -> html(exchange, page("<p>ok</p>"));
+
+            // CRAWL-013: a redirect loop hidden behind a fragment and a dot-segment variant of the
+            // same normalized identity must still be detected as a loop.
+            case "/c13/a" -> redirect(exchange, 302, "/c13/b#one");
+            case "/c13/b" -> redirect(exchange, 302, "/c13/a/../a#two");
+
+            // CRAWL-014: a failure two redirect hops deep must report the real requested URL, the
+            // real failing URL, and the full chain of hops actually followed.
+            case "/c14/a" -> redirect(exchange, 302, "/c14/b");
+            case "/c14/b" -> redirect(exchange, 302, "/c14/c");
+            case "/c14/c" ->
+                    respond(exchange, 500, "text/plain", "boom".getBytes(StandardCharsets.UTF_8));
+
             // Section 72 end-to-end scenario.
             case "/e2e/" ->
                     html(

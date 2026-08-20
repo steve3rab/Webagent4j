@@ -20,9 +20,14 @@ CrawlRequest -> HttpCrawler -> CrawlResult
               CrawledPage / CrawlFailure -> CrawlResult
 ```
 
-Same input, same HTTP responses, same `CrawlRequest` always produce the same logical crawl order
-and the same `CrawlResult` - the engine is intentionally sequential (no concurrency) for this
-phase, precisely so that guarantee holds without a benchmark-only carve-out.
+Same input, same HTTP responses, same `CrawlRequest` always produce the same logical crawl order,
+the same scope/dedup/redirect decisions, and the same page/failure content - the engine is
+intentionally sequential (no concurrency) for this phase, precisely so that guarantee holds without
+a benchmark-only carve-out. The one field this excludes is `CrawledPage#fetchDuration()`: under the
+production `IMonotonicClock.systemClock()` it reflects real elapsed time and so varies between
+runs like any wall-clock measurement would; injecting a fixed clock (as a determinism test does)
+makes it, and therefore the whole `CrawlResult`, reproducible byte-for-byte across repeated runs of
+the same script. See [Time and determinism](#time-and-determinism).
 
 ## Modules
 
@@ -78,7 +83,7 @@ no configuration error surfaces only mid-crawl.
 | `maxPages` | 100 | Bounds unique URLs *claimed* (see [Deduplication](#deduplication)) |
 | `sameHostOnly` | `true` | Each seed is its own allowed-host root |
 | `includeSubdomains` | `false` | True subdomains only, never a lookalike-domain match |
-| `allowedSchemes` | `http`, `https` | `mailto:`, `javascript:`, `data:`, etc. never enter the frontier |
+| `allowedSchemes` | `http`, `https` | Always a subset of `http`/`https` - rejected at construction otherwise, since `JavaHttpFetcher` cannot fetch anything else; `mailto:`, `javascript:`, `data:`, etc. never enter the frontier |
 | `requestTimeout` | 10s | Per fetch attempt |
 | `maxResponseBytes` | 5,000,000 | Enforced while streaming, never after full buffering |
 | `maxRedirects` | 5 | Per fetch attempt (one task, many hops) |
@@ -97,8 +102,11 @@ no configuration error surfaces only mid-crawl.
 `BrowserCrawler` (0.7) could implement the same interface if its semantics turn out to be
 genuinely compatible - this phase does not force that unification, and does not create a
 `BrowserCrawler`. `HttpCrawler implements ICrawler`, with a no-arg constructor for production use
-and a fully-injected constructor (`IHttpFetcher`, `IHtmlLinkExtractor`, `ICrawlScopePolicy`,
-`IWaitSleeper`) that tests use to avoid the network and real sleeping.
+and two injectable constructors tests use to avoid the network, real sleeping, and wall-clock
+timing: `(IHttpFetcher, IHtmlLinkExtractor, ICrawlScopePolicy, IWaitSleeper)` defaults the clock to
+`IMonotonicClock.systemClock()`; a fifth `IMonotonicClock` parameter overrides it, the seam a
+determinism test uses to make `CrawledPage#fetchDuration()` reproducible across two runs of the
+same scripted crawl.
 
 ## CrawledPage
 
@@ -157,15 +165,44 @@ rejected at `CrawlRequest` construction time, never silently downgraded to bread
 
 ## Deduplication
 
-Identity is the *normalized* URL. `InMemoryCrawlDeduplicator#tryClaim(URI)` returns `true` only
-the first time a given normalized identity is seen in one crawl - `/products`, `/products#top`,
-and `/a/../products` all collapse to the same identity and are fetched at most once.
+Identity is always the *normalized* URL, but the engine tracks two genuinely different identity
+sets rather than conflating them into one:
 
-`maxPages` bounds the number of URLs *claimed* (proactively checked immediately before every
-`tryClaim` call, for both seeds and discovered links), not the number of *successful* pages - a
-site that is mostly 404s cannot bypass the limit by failing. This guarantees
-`fetchedUrls <= maxPages` structurally, and the frontier never accumulates unreachable stragglers
-past the limit.
+- **Discovery identity** (`InMemoryCrawlDeduplicator`, one instance per crawl): "has this URL been
+  discovered by navigation - a seed or an `<a href>`/`<area href>` link - already?"
+  `tryClaim(URI)` returns `true` only the first time a given normalized identity is discovered.
+  `CrawlStatistics#discoveredUrls()` counts these claims; a redirect target is never one of them,
+  since a redirect is an HTTP-level hop, not a discovered link.
+- **Fetch identity** (a plain `Set<URI>` local to one crawl session, claimed by a single internal
+  `claimFetchIdentity` gate): "has a real HTTP request already been started for this URL?" Every
+  request the engine ever sends - a task's own starting URL *and* every redirect hop it follows -
+  claims this budget first. `CrawlStatistics#fetchedUrls()` counts these claims, so it is always
+  `>= discoveredUrls` (a redirect-heavy crawl fetches strictly more identities than it discovers)
+  and never confuses the two concepts the way a single deduplicator would.
+
+`/products`, `/products#top`, and `/a/../products` all normalize to the same identity in both
+sets, so they are discovered/fetched at most once regardless of which one a link happens to use.
+
+`maxPages` bounds **fetch identity**, not discovery identity, and is enforced twice for different
+reasons:
+
+- **Proactively**, at discovery time (`enqueueSeed`/`processOneLink`), comparing against the fetch
+  budget already claimed so far - a best-effort optimization that keeps the frontier from growing
+  past what could ever be fetched, producing a `REJECT_MAX_PAGES` `DiscoveredLink` rejection when
+  it catches the case.
+- **Authoritatively**, immediately before every real HTTP request - a task's own URL and every
+  redirect hop - via the same `claimFetchIdentity` gate the fetch-identity set above uses. This is
+  the guarantee that actually holds: a redirect chain can never silently consume more fetch budget
+  than `maxPages` allows, because each of its hops is claimed one at a time, in order, and the
+  chain stops the instant the budget is exhausted - never fetched first and discovered to be
+  over budget afterward. A blocked hop (or a blocked task's own starting URL) becomes a structured
+  `CrawlFailureType.CRAWL_LIMIT_REACHED` `CrawlFailure`, and the crawl's `terminationReason()` is
+  `MAX_PAGES_REACHED`.
+
+A redirect converging on an identity some *other* task already fetched (two seeds redirecting to
+the same final URL, for example) is never fetched a second time: the claim fails as
+`ALREADY_FETCHED` rather than being silently re-requested, and rather than fabricating a second
+`CrawledPage` from a page cache this phase does not keep. See [Redirect handling](#redirect-handling).
 
 Duplicate rejections are recorded twice: once in `CrawlStatistics#duplicateUrls()`, and once as a
 `REJECT_DUPLICATE` entry in `CrawlResult#rejectedUrls()` - the aggregate list carries every
@@ -206,15 +243,28 @@ and `responseBytes()` is therefore unambiguously the decoded content length.
 ## Redirect handling
 
 `JavaHttpFetcher` is built with `HttpClient.Redirect.NEVER`; `HttpCrawler` follows each redirect
-hop itself, one at a time, and checks every redirect target against the scope policy *before*
-following it - scope control stays under WebAgent4J's responsibility, never an opaque HttpClient
-auto-follow. A redirect to an out-of-scope host (for example, external while `sameHostOnly` is
-`true`) is never fetched; it fails as `INVALID_REDIRECT` with the scope decision's reason.
+hop itself, one at a time. Every redirect target is **normalized first** (dropping its fragment,
+resolving dot segments, lowercasing scheme/host - the same rule any other URL follows), and only
+then loop-checked, scope-checked, and claimed against the fetch identity budget, in that order -
+never fetched before all three have passed:
 
-A redirect chain revisiting a URL already seen earlier in the *same* chain fails as
-`REDIRECT_LOOP`. A chain longer than `maxRedirects` fails as `TOO_MANY_REDIRECTS`; a chain of
-exactly `maxRedirects` hops succeeds. `CrawledPage` exposes `requestedUrl`, `finalUrl`, and the
-full `redirectChain()` (`RedirectHop(from, to, statusCode)` per hop).
+1. **Loop check** - a target already visited earlier in *this* chain (by normalized identity, so a
+   fragment or dot-segment disguise cannot hide it) fails as `REDIRECT_LOOP`.
+2. **Scope check** - a target rejected by the scope policy (for example, external while
+   `sameHostOnly` is `true`) fails as `INVALID_REDIRECT` with the scope decision's reason; scope
+   control stays under WebAgent4J's responsibility, never an opaque HttpClient auto-follow.
+3. **Fetch identity claim** - a target that would exceed `maxPages` fails as
+   `CRAWL_LIMIT_REACHED`; a target some other task already fetched fails as `ALREADY_FETCHED`
+   (see [Deduplication](#deduplication)) rather than being fetched again.
+
+A chain longer than `maxRedirects` fails as `TOO_MANY_REDIRECTS`; a chain of exactly `maxRedirects`
+hops succeeds. `CrawledPage` exposes `requestedUrl`, `finalUrl`, and the full `redirectChain()`
+(`RedirectHop(from, to, statusCode)` per hop, each hop's `to` already normalized) - and so does
+`CrawlFailure`, when the failure happens partway through a chain: `requestedUrl` is always where
+the task started, `failedUrl` is the URL actually being fetched at the moment of failure (equal to
+`requestedUrl` only when no hop was followed first), and `redirectChain()` holds every hop actually
+followed before the failure - never misattributing a failure two hops deep to the original seed
+alone.
 
 ## Retry behavior
 
@@ -225,16 +275,29 @@ go through the injected `IWaitSleeper` (the same abstraction `webagent4j-wait`'s
 uses) - never `Thread.sleep` directly - so a test can inject a recording or no-op sleeper and stay
 deterministic. A 4xx status is never retried by default; only the configured retryable codes are.
 
+`CrawlFailure#attempts()` is always the exact number of real HTTP requests made for `failedUrl`
+alone - three attempts at 500, three timeouts, or three transient I/O errors all report `attempts()
+== 3`, whether the run ultimately succeeded after retrying or exhausted its budget and failed.
+Retrying earlier hops in the same redirect chain is never folded into this count: it counts
+requests to `failedUrl`, not the whole chain. `attempts()` is `0` only for the two outcomes decided
+before any request is ever sent - `CRAWL_LIMIT_REACHED` and `ALREADY_FETCHED`.
+
 ## Failure taxonomy
 
 Every `CrawlFailure` carries a `CrawlFailureType`, a message, an optional status code, an optional
-cause, an attempt count, and the discovering URL. Types: `NETWORK`, `TIMEOUT`,
+cause, an attempt count, the discovering URL, and - since [Redirect handling](#redirect-handling)
+can put many hops between the original request and the actual failure - both `requestedUrl` and
+`failedUrl` plus the `redirectChain()` actually followed. Types: `NETWORK`, `TIMEOUT`,
 `INVALID_REDIRECT`, `REDIRECT_LOOP`, `TOO_MANY_REDIRECTS`, `HTTP_CLIENT_ERROR` (terminal 4xx),
-`HTTP_SERVER_ERROR` (5xx that exhausted its retry budget), `RESPONSE_TOO_LARGE`,
-`UNSUPPORTED_CONTENT_TYPE`, `INVALID_CONTENT`, `INVALID_URL`, and `BACKEND_FAILURE` - an opaque,
-unexpected fetcher exception, preserving WebAgent4J's fail-closed philosophy from earlier phases:
-an unexpected backend failure never silently becomes an empty page, a skipped link, a fabricated
-`404`, or an unsignaled partial success.
+`HTTP_SERVER_ERROR` (terminal 5xx that exhausted its retry budget), `UNEXPECTED_HTTP_STATUS` (a
+response outside every other classified range - a 1xx, or a 3xx this crawler does not treat as a
+followable redirect such as `304 Not Modified`, which this phase has no HTTP cache to make use of -
+never folded into `HTTP_SERVER_ERROR`), `RESPONSE_TOO_LARGE`, `UNSUPPORTED_CONTENT_TYPE`,
+`INVALID_CONTENT`, `INVALID_URL`, `CRAWL_LIMIT_REACHED` and `ALREADY_FETCHED` (both decided by the
+fetch identity gate before any request is sent - see [Deduplication](#deduplication)), and
+`BACKEND_FAILURE` - an opaque, unexpected fetcher exception, preserving WebAgent4J's fail-closed
+philosophy from earlier phases: an unexpected backend failure never silently becomes an empty
+page, a skipped link, a fabricated `404`, or an unsignaled partial success.
 
 By default (`failFast = false`) one page's failure is recorded and the crawl continues - a page
 failing with a 500 does not stop its siblings from being fetched. With `failFast = true`, the
@@ -268,6 +331,20 @@ malformed.
 Charset detection order: the `Content-Type` header's `charset` parameter, then a byte-order mark
 (UTF-8/UTF-16LE/UTF-16BE), then a UTF-8 fallback. HTML `<meta charset>` sniffing is deliberately
 not implemented in this phase, favoring one simple, fully deterministic rule over a heavier one.
+
+## Time and determinism
+
+`HttpCrawler` never calls `Instant.now()`: `CrawledPage#fetchDuration()` is measured against an
+injected `IMonotonicClock` (reused directly from `webagent4j-wait`, the same port `WaitEngine`
+uses), never a wall clock that can jump backwards or forwards independently of elapsed time.
+`JavaHttpFetcher#elapsed()` on `HttpFetchResult` (one round trip) uses the same abstraction for the
+same reason - it is a different measurement from `fetchDuration()` (the whole page's resolution,
+retries and redirects included), not a duplicate of it.
+
+`CrawlStatistics#totalBytes()` sums `responseBytes()` from every response that was read in full
+across every retry and every redirect hop of every task - not just the final successful one. A
+response aborted for exceeding `maxResponseBytes` contributes nothing to the total, since the
+partial byte count at the moment of abortion is not tracked.
 
 ## Provenance
 

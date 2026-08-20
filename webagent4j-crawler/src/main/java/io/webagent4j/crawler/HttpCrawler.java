@@ -21,6 +21,7 @@ import io.webagent4j.crawler.internal.CrawlTask;
 import io.webagent4j.crawler.internal.HttpResponseClassifier;
 import io.webagent4j.crawler.internal.ICrawlFrontier;
 import io.webagent4j.crawler.internal.InMemoryCrawlDeduplicator;
+import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.IWaitSleeper;
 import java.io.IOException;
 import java.net.URI;
@@ -29,7 +30,6 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -44,11 +44,22 @@ import java.util.Set;
  * Deterministic, sequential HTTP crawler. One {@link #crawl(CrawlRequest)} call processes the
  * frontier strictly in breadth-first order, resolving redirects and retries itself - {@link
  * IHttpFetcher} performs one HTTP round trip at a time, never an automatic multi-hop follow - so
- * every redirect target is checked against crawl scope before it is ever requested.
+ * every redirect target is checked against crawl scope, and claimed against the crawl-wide fetch
+ * identity budget, before it is ever requested.
  *
  * <p>No concurrency, no {@code Thread.sleep} (retry backoff goes through the injected {@link
- * IWaitSleeper}), and no second parsing pass: the same {@link IHtmlLinkExtractor} result both
+ * IWaitSleeper}) and no {@code Instant.now()} (durations go through the injected {@link
+ * IMonotonicClock}), and no second parsing pass: the same {@link IHtmlLinkExtractor} result both
  * populates {@link CrawledPage#links()} and drives frontier discovery.
+ *
+ * <h2>Fetch identity</h2>
+ *
+ * <p>{@link CrawlRequest#maxPages()} bounds the number of distinct normalized URLs for which a real
+ * HTTP request is ever started - a task's own URL and every redirect hop it follows alike, retries
+ * of the same URL never counted twice. This is enforced by one central check, {@code
+ * Session#claimFetchIdentity}, immediately before every such request; a redirect can never bypass
+ * the limit by escaping the URL that discovered it, and a redirect converging on an already
+ * -fetched identity is never silently re-fetched.
  */
 public final class HttpCrawler implements ICrawler {
 
@@ -56,28 +67,48 @@ public final class HttpCrawler implements ICrawler {
     private final IHtmlLinkExtractor linkExtractor;
     private final ICrawlScopePolicy scopePolicy;
     private final IWaitSleeper sleeper;
+    private final IMonotonicClock clock;
 
-    /** Creates a crawler using the real network, jsoup, and default host-scope policy. */
+    /**
+     * Creates a crawler using the real network, jsoup, the default host-scope policy, and a real
+     * clock.
+     */
     public HttpCrawler() {
         this(
                 new JavaHttpFetcher(),
                 new JsoupHtmlLinkExtractor(),
                 new HostScopePolicy(),
-                IWaitSleeper.parking());
+                IWaitSleeper.parking(),
+                IMonotonicClock.systemClock());
     }
 
     /**
-     * Creates a crawler with every collaborator injected - the seam tests use to avoid the network.
+     * Creates a crawler with every collaborator injected except the clock, which defaults to {@link
+     * IMonotonicClock#systemClock()} - the seam tests use to avoid the network and real sleeping.
      */
     public HttpCrawler(
             IHttpFetcher fetcher,
             IHtmlLinkExtractor linkExtractor,
             ICrawlScopePolicy scopePolicy,
             IWaitSleeper sleeper) {
+        this(fetcher, linkExtractor, scopePolicy, sleeper, IMonotonicClock.systemClock());
+    }
+
+    /**
+     * Creates a crawler with every collaborator injected, including the clock - the seam a
+     * determinism test uses to make {@link CrawledPage#fetchDuration()} reproducible.
+     */
+    public HttpCrawler(
+            IHttpFetcher fetcher,
+            IHtmlLinkExtractor linkExtractor,
+            ICrawlScopePolicy scopePolicy,
+            IWaitSleeper sleeper,
+            IMonotonicClock clock) {
         this.fetcher = Objects.requireNonNull(fetcher, "fetcher");
         this.linkExtractor = Objects.requireNonNull(linkExtractor, "linkExtractor");
         this.scopePolicy = Objects.requireNonNull(scopePolicy, "scopePolicy");
         this.sleeper = Objects.requireNonNull(sleeper, "sleeper");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     @Override
@@ -92,12 +123,25 @@ public final class HttpCrawler implements ICrawler {
         private final CrawlRequest request;
         private final IUrlNormalizer normalizer;
         private final ICrawlFrontier frontier = new BreadthFirstCrawlFrontier();
+
+        /**
+         * Discovery-level identity: URLs claimed by navigation/frontier discovery (never a redirect
+         * hop).
+         */
         private final InMemoryCrawlDeduplicator dedup = new InMemoryCrawlDeduplicator();
+
+        /**
+         * Fetch-level identity: normalized URLs for which a real HTTP request was actually claimed
+         * - a task's own URL and every redirect hop, distinct from {@link #dedup} so a discovery
+         * dedup never gets silently conflated with the separate "was this URL actually requested"
+         * question a redirect chain raises.
+         */
+        private final Set<URI> fetchedIdentities = new LinkedHashSet<>();
+
         private final List<CrawledPage> pages = new ArrayList<>();
         private final List<CrawlFailure> failures = new ArrayList<>();
         private final List<DiscoveredLink> rejectedUrls = new ArrayList<>();
         private int discoveredUrls;
-        private int fetchedUrls;
         private int redirectCount;
         private int duplicateUrls;
         private long totalBytes;
@@ -116,7 +160,6 @@ public final class HttpCrawler implements ICrawler {
             }
             while (!frontier.isEmpty() && !stopRequested) {
                 CrawlTask task = frontier.poll().orElseThrow();
-                fetchedUrls++;
                 maxDepthReached = Math.max(maxDepthReached, task.depth());
                 processTask(task);
             }
@@ -129,7 +172,7 @@ public final class HttpCrawler implements ICrawler {
             CrawlStatistics statistics =
                     new CrawlStatistics(
                             discoveredUrls,
-                            fetchedUrls,
+                            fetchedIdentities.size(),
                             pages.size(),
                             failures.size(),
                             rejectedUrls.size(),
@@ -142,7 +185,7 @@ public final class HttpCrawler implements ICrawler {
 
         private void enqueueSeed(URI seed) {
             URI normalized = normalizer.normalize(seed);
-            if (discoveredUrls >= request.maxPages()) {
+            if (fetchedIdentities.size() >= request.maxPages()) {
                 maxPagesHit = true;
                 return;
             }
@@ -155,9 +198,9 @@ public final class HttpCrawler implements ICrawler {
         }
 
         private void processTask(CrawlTask task) {
-            Instant started = Instant.now();
+            long startNanos = clock.nanoTime();
             FetchOutcome outcome = fetchWithRedirects(task);
-            Duration fetchDuration = Duration.between(started, Instant.now());
+            Duration fetchDuration = Duration.ofNanos(clock.nanoTime() - startNanos);
             totalBytes += outcome.bytesRead();
             redirectCount += outcome.chain().size();
 
@@ -166,9 +209,11 @@ public final class HttpCrawler implements ICrawler {
                         task,
                         outcome.failureType(),
                         outcome.message(),
+                        outcome.failedUrl(),
                         outcome.statusCode(),
                         outcome.cause(),
-                        outcome.attempts());
+                        outcome.attempts(),
+                        outcome.chain());
                 return;
             }
 
@@ -180,9 +225,11 @@ public final class HttpCrawler implements ICrawler {
                         task,
                         CrawlFailureType.UNSUPPORTED_CONTENT_TYPE,
                         "unsupported Content-Type: " + response.contentType(),
+                        finalUrl,
                         Optional.of(response.statusCode()),
                         Optional.empty(),
-                        1);
+                        outcome.attempts(),
+                        outcome.chain());
                 return;
             }
 
@@ -195,9 +242,11 @@ public final class HttpCrawler implements ICrawler {
                         task,
                         CrawlFailureType.INVALID_CONTENT,
                         "could not decode response body: " + malformed.getMessage(),
+                        finalUrl,
                         Optional.of(response.statusCode()),
                         Optional.of(malformed),
-                        1);
+                        outcome.attempts(),
+                        outcome.chain());
                 return;
             }
 
@@ -246,7 +295,7 @@ public final class HttpCrawler implements ICrawler {
             CrawlDecision scopeDecision =
                     scopePolicy.evaluate(link.resolvedUrl(), pageUrl, request);
             if (!scopeDecision.allowed()) {
-                DiscoveredLink rejected = rejectedLink(link, link.resolvedUrl(), scopeDecision);
+                DiscoveredLink rejected = rejectedLink(link, Optional.empty(), scopeDecision);
                 rejectedUrls.add(rejected);
                 return rejected;
             }
@@ -258,7 +307,7 @@ public final class HttpCrawler implements ICrawler {
                 DiscoveredLink rejected =
                         rejectedLink(
                                 link,
-                                link.resolvedUrl(),
+                                Optional.empty(),
                                 CrawlDecision.reject(
                                         CrawlDecisionType.REJECT_URL_FILTER,
                                         "could not be normalized: "
@@ -272,7 +321,7 @@ public final class HttpCrawler implements ICrawler {
                 DiscoveredLink rejected =
                         rejectedLink(
                                 link,
-                                normalizedCandidate,
+                                Optional.of(normalizedCandidate),
                                 CrawlDecision.reject(
                                         CrawlDecisionType.REJECT_DEPTH,
                                         "depth "
@@ -283,12 +332,12 @@ public final class HttpCrawler implements ICrawler {
                 return rejected;
             }
 
-            if (discoveredUrls >= request.maxPages()) {
+            if (fetchedIdentities.size() >= request.maxPages()) {
                 maxPagesHit = true;
                 DiscoveredLink rejected =
                         rejectedLink(
                                 link,
-                                normalizedCandidate,
+                                Optional.of(normalizedCandidate),
                                 CrawlDecision.reject(
                                         CrawlDecisionType.REJECT_MAX_PAGES,
                                         "maxPages " + request.maxPages() + " already claimed"));
@@ -301,7 +350,7 @@ public final class HttpCrawler implements ICrawler {
                 DiscoveredLink rejected =
                         rejectedLink(
                                 link,
-                                normalizedCandidate,
+                                Optional.of(normalizedCandidate),
                                 CrawlDecision.reject(
                                         CrawlDecisionType.REJECT_DUPLICATE,
                                         "already discovered in this crawl"));
@@ -318,7 +367,7 @@ public final class HttpCrawler implements ICrawler {
                             Optional.of(pageUrl)));
             return new DiscoveredLink(
                     link.resolvedUrl(),
-                    normalizedCandidate,
+                    Optional.of(normalizedCandidate),
                     link.rawHref(),
                     link.anchorText(),
                     link.kind(),
@@ -328,7 +377,7 @@ public final class HttpCrawler implements ICrawler {
         }
 
         private DiscoveredLink rejectedLink(
-                ExtractedLink link, URI normalizedUrl, CrawlDecision decision) {
+                ExtractedLink link, Optional<URI> normalizedUrl, CrawlDecision decision) {
             return new DiscoveredLink(
                     link.resolvedUrl(),
                     normalizedUrl,
@@ -344,31 +393,79 @@ public final class HttpCrawler implements ICrawler {
                 CrawlTask task,
                 CrawlFailureType type,
                 String message,
+                URI failedUrl,
                 Optional<Integer> statusCode,
                 Optional<Throwable> cause,
-                int attempts) {
+                int attempts,
+                List<RedirectHop> redirectChain) {
             failures.add(
                     new CrawlFailure(
                             task.url(),
+                            failedUrl,
                             task.depth(),
                             type,
                             message,
                             statusCode,
                             cause,
                             attempts,
-                            task.discoveredFrom()));
+                            task.discoveredFrom(),
+                            redirectChain));
             if (request.failFast()) {
                 stopRequested = true;
             }
         }
 
-        /** Follows redirects for {@code task}'s URL, one hop at a time, each hop scope-checked. */
+        /**
+         * Claims {@code normalizedUrl} against the crawl-wide fetch identity budget - the one gate
+         * every real HTTP request passes through, whether it is a task's own URL or a redirect hop.
+         */
+        private FetchClaimOutcome claimFetchIdentity(URI normalizedUrl) {
+            if (fetchedIdentities.contains(normalizedUrl)) {
+                return FetchClaimOutcome.ALREADY_FETCHED;
+            }
+            if (fetchedIdentities.size() >= request.maxPages()) {
+                maxPagesHit = true;
+                return FetchClaimOutcome.LIMIT_REACHED;
+            }
+            fetchedIdentities.add(normalizedUrl);
+            return FetchClaimOutcome.CLAIMED;
+        }
+
+        /**
+         * Follows redirects for {@code task}'s URL, one hop at a time - every hop normalized,
+         * scope-checked, and claimed against the fetch identity budget before it is ever requested.
+         */
         private FetchOutcome fetchWithRedirects(CrawlTask task) {
             URI current = task.url();
             List<RedirectHop> chain = new ArrayList<>();
             Set<URI> visited = new LinkedHashSet<>();
-            visited.add(current);
             long bytesRead = 0;
+
+            FetchClaimOutcome initialClaim = claimFetchIdentity(current);
+            if (initialClaim == FetchClaimOutcome.LIMIT_REACHED) {
+                return FetchOutcome.failure(
+                        CrawlFailureType.CRAWL_LIMIT_REACHED,
+                        "maxPages " + request.maxPages() + " already reached",
+                        current,
+                        Optional.empty(),
+                        Optional.empty(),
+                        0,
+                        bytesRead,
+                        chain);
+            }
+            if (initialClaim == FetchClaimOutcome.ALREADY_FETCHED) {
+                return FetchOutcome.failure(
+                        CrawlFailureType.ALREADY_FETCHED,
+                        "already fetched earlier in this crawl, reached again via a different"
+                                + " discovery path",
+                        current,
+                        Optional.empty(),
+                        Optional.empty(),
+                        0,
+                        bytesRead,
+                        chain);
+            }
+            visited.add(current);
 
             while (true) {
                 RetryOutcome retryOutcome = fetchWithRetries(current);
@@ -377,6 +474,7 @@ public final class HttpCrawler implements ICrawler {
                     return FetchOutcome.failure(
                             retryOutcome.failureType(),
                             retryOutcome.message(),
+                            current,
                             Optional.empty(),
                             retryOutcome.cause(),
                             retryOutcome.attempts(),
@@ -385,37 +483,55 @@ public final class HttpCrawler implements ICrawler {
                 }
                 HttpFetchResult response = retryOutcome.result().get();
                 int status = response.statusCode();
+                int attemptsMade = retryOutcome.attempts();
 
                 if (HttpResponseClassifier.isRedirect(status)) {
                     if (chain.size() >= request.maxRedirects()) {
                         return FetchOutcome.failure(
                                 CrawlFailureType.TOO_MANY_REDIRECTS,
                                 "exceeded maxRedirects=" + request.maxRedirects(),
+                                current,
                                 Optional.of(status),
                                 Optional.empty(),
-                                1,
+                                attemptsMade,
                                 bytesRead,
                                 chain);
                     }
-                    Optional<URI> location = redirectLocation(response, current);
-                    if (location.isEmpty()) {
+                    Optional<URI> locationRaw = redirectLocation(response, current);
+                    if (locationRaw.isEmpty()) {
                         return FetchOutcome.failure(
                                 CrawlFailureType.INVALID_REDIRECT,
                                 "missing or invalid Location header",
+                                current,
                                 Optional.of(status),
                                 Optional.empty(),
-                                1,
+                                attemptsMade,
                                 bytesRead,
                                 chain);
                     }
-                    URI target = location.get();
+                    URI target;
+                    try {
+                        target = normalizer.normalize(locationRaw.get());
+                    } catch (IllegalArgumentException notNormalizable) {
+                        return FetchOutcome.failure(
+                                CrawlFailureType.INVALID_REDIRECT,
+                                "redirect target could not be normalized: "
+                                        + notNormalizable.getMessage(),
+                                current,
+                                Optional.of(status),
+                                Optional.empty(),
+                                attemptsMade,
+                                bytesRead,
+                                chain);
+                    }
                     if (!visited.add(target)) {
                         return FetchOutcome.failure(
                                 CrawlFailureType.REDIRECT_LOOP,
                                 "redirect loop detected at " + target,
+                                target,
                                 Optional.of(status),
                                 Optional.empty(),
-                                1,
+                                attemptsMade,
                                 bytesRead,
                                 chain);
                     }
@@ -424,9 +540,39 @@ public final class HttpCrawler implements ICrawler {
                         return FetchOutcome.failure(
                                 CrawlFailureType.INVALID_REDIRECT,
                                 "redirect target rejected by scope policy: " + decision.reason(),
+                                target,
                                 Optional.of(status),
                                 Optional.empty(),
-                                1,
+                                attemptsMade,
+                                bytesRead,
+                                chain);
+                    }
+                    FetchClaimOutcome hopClaim = claimFetchIdentity(target);
+                    if (hopClaim == FetchClaimOutcome.LIMIT_REACHED) {
+                        return FetchOutcome.failure(
+                                CrawlFailureType.CRAWL_LIMIT_REACHED,
+                                "maxPages "
+                                        + request.maxPages()
+                                        + " already reached; cannot fetch redirect target "
+                                        + target,
+                                target,
+                                Optional.of(status),
+                                Optional.empty(),
+                                0,
+                                bytesRead,
+                                chain);
+                    }
+                    if (hopClaim == FetchClaimOutcome.ALREADY_FETCHED) {
+                        return FetchOutcome.failure(
+                                CrawlFailureType.ALREADY_FETCHED,
+                                "redirect target "
+                                        + target
+                                        + " was already fetched earlier in"
+                                        + " this crawl",
+                                target,
+                                Optional.of(status),
+                                Optional.empty(),
+                                0,
                                 bytesRead,
                                 chain);
                     }
@@ -436,19 +582,24 @@ public final class HttpCrawler implements ICrawler {
                 }
 
                 if (HttpResponseClassifier.isSuccess(status)) {
-                    return FetchOutcome.success(response, current, bytesRead, chain);
+                    return FetchOutcome.success(response, current, bytesRead, chain, attemptsMade);
                 }
 
-                CrawlFailureType type =
-                        HttpResponseClassifier.isClientError(status)
-                                ? CrawlFailureType.HTTP_CLIENT_ERROR
-                                : CrawlFailureType.HTTP_SERVER_ERROR;
+                CrawlFailureType type;
+                if (HttpResponseClassifier.isClientError(status)) {
+                    type = CrawlFailureType.HTTP_CLIENT_ERROR;
+                } else if (HttpResponseClassifier.isServerError(status)) {
+                    type = CrawlFailureType.HTTP_SERVER_ERROR;
+                } else {
+                    type = CrawlFailureType.UNEXPECTED_HTTP_STATUS;
+                }
                 return FetchOutcome.failure(
                         type,
                         "HTTP status " + status,
+                        current,
                         Optional.of(status),
                         Optional.empty(),
-                        1,
+                        attemptsMade,
                         bytesRead,
                         chain);
             }
@@ -456,7 +607,8 @@ public final class HttpCrawler implements ICrawler {
 
         /**
          * Retries one hop's fetch per {@link CrawlRequest#retryPolicy()}, sleeping via {@link
-         * IWaitSleeper}.
+         * IWaitSleeper}. The returned {@link RetryOutcome} always carries the real attempt count,
+         * whether it ultimately succeeded or exhausted its retry budget.
          */
         private RetryOutcome fetchWithRetries(URI url) {
             RetryPolicy policy = request.retryPolicy();
@@ -473,7 +625,7 @@ public final class HttpCrawler implements ICrawler {
                         attempt++;
                         continue;
                     }
-                    return RetryOutcome.success(result, bytesRead);
+                    return RetryOutcome.success(result, bytesRead, attempt);
                 } catch (HttpTimeoutException timeout) {
                     if (attempt < policy.maxAttempts()) {
                         sleeper.sleep(policy.delayBeforeAttempt(attempt + 1));
@@ -537,6 +689,16 @@ public final class HttpCrawler implements ICrawler {
         }
     }
 
+    /** Outcome of claiming a normalized URL against the crawl-wide fetch identity budget. */
+    private enum FetchClaimOutcome {
+        /** First claim for this identity - the caller may proceed to fetch it. */
+        CLAIMED,
+        /** This identity was already claimed and fetched earlier in the same crawl. */
+        ALREADY_FETCHED,
+        /** {@link CrawlRequest#maxPages()} identities are already claimed; this one cannot be. */
+        LIMIT_REACHED
+    }
+
     /** Looks up a header case-insensitively, since HTTP header names are case-insensitive. */
     private static Optional<String> firstHeaderValue(
             Map<String, List<String>> headers, String name) {
@@ -596,6 +758,7 @@ public final class HttpCrawler implements ICrawler {
     private record FetchOutcome(
             Optional<HttpFetchResult> response,
             URI finalUrl,
+            URI failedUrl,
             long bytesRead,
             List<RedirectHop> chain,
             CrawlFailureType failureType,
@@ -605,22 +768,28 @@ public final class HttpCrawler implements ICrawler {
             int attempts) {
 
         static FetchOutcome success(
-                HttpFetchResult response, URI finalUrl, long bytesRead, List<RedirectHop> chain) {
+                HttpFetchResult response,
+                URI finalUrl,
+                long bytesRead,
+                List<RedirectHop> chain,
+                int attempts) {
             return new FetchOutcome(
                     Optional.of(response),
                     finalUrl,
+                    null,
                     bytesRead,
                     List.copyOf(chain),
                     null,
                     "",
                     Optional.empty(),
                     Optional.empty(),
-                    0);
+                    attempts);
         }
 
         static FetchOutcome failure(
                 CrawlFailureType failureType,
                 String message,
+                URI failedUrl,
                 Optional<Integer> statusCode,
                 Optional<Throwable> cause,
                 int attempts,
@@ -629,6 +798,7 @@ public final class HttpCrawler implements ICrawler {
             return new FetchOutcome(
                     Optional.empty(),
                     null,
+                    failedUrl,
                     bytesRead,
                     List.copyOf(chain),
                     failureType,
@@ -648,8 +818,9 @@ public final class HttpCrawler implements ICrawler {
             Optional<Throwable> cause,
             int attempts) {
 
-        static RetryOutcome success(HttpFetchResult result, long bytesRead) {
-            return new RetryOutcome(Optional.of(result), bytesRead, null, "", Optional.empty(), 0);
+        static RetryOutcome success(HttpFetchResult result, long bytesRead, int attempts) {
+            return new RetryOutcome(
+                    Optional.of(result), bytesRead, null, "", Optional.empty(), attempts);
         }
 
         static RetryOutcome failure(

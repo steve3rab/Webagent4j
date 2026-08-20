@@ -29,7 +29,10 @@ import java.util.regex.Pattern;
  *     allowed host - never a bare {@code endsWith} suffix match, which would also accept a
  *     lookalike host such as {@code evil-example.com} for {@code example.com}
  * @param allowedHosts additional allowed host roots beyond the seeds themselves
- * @param allowedSchemes schemes a discovered link may use to enter the frontier
+ * @param allowedSchemes schemes a discovered link may use to enter the frontier - always a subset
+ *     of {@code http}/{@code https}: this is an HTTP crawler backed by {@code
+ *     java.net.http.HttpClient}, so a scheme it cannot fetch is rejected at construction rather
+ *     than discovered mid-crawl
  * @param requestTimeout the per-request timeout for one fetch attempt
  * @param maxResponseBytes the greatest response body size this crawl will read
  * @param maxRedirects the greatest number of redirect hops followed for one fetch attempt
@@ -83,6 +86,15 @@ public record CrawlRequest(
         allowedSchemes = lowercased(allowedSchemes);
         if (allowedSchemes.isEmpty()) {
             throw new IllegalArgumentException("allowedSchemes cannot be empty");
+        }
+        for (String scheme : allowedSchemes) {
+            if (!scheme.equals("http") && !scheme.equals("https")) {
+                throw new IllegalArgumentException(
+                        "allowedSchemes must be a subset of {http, https} - this is an HTTP"
+                                + " crawler, backed by java.net.http.HttpClient, not a general"
+                                + " URI fetcher: "
+                                + scheme);
+            }
         }
         for (URI seed : seeds) {
             requireAbsoluteHttpSeed(seed);

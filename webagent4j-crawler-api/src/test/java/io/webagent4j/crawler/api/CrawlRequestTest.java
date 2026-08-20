@@ -134,6 +134,28 @@ class CrawlRequestTest {
     }
 
     @Test
+    void allowedSchemesRejectsFtp() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed("https://example.test/")
+                                        .allowedSchemes("http", "ftp")
+                                        .build());
+    }
+
+    @Test
+    void allowedSchemesAcceptsHttpHttpsCaseInsensitively() {
+        CrawlRequest request =
+                CrawlRequest.builder()
+                        .seed("https://example.test/")
+                        .allowedSchemes("HTTP", "HTTPS")
+                        .build();
+
+        assertThat(request.allowedSchemes()).containsExactlyInAnyOrder("http", "https");
+    }
+
+    @Test
     void everyConfigurationErrorIsDiscoveredAtBuildTimeNotMidCrawl() {
         assertThatExceptionOfType(IllegalArgumentException.class)
                 .isThrownBy(

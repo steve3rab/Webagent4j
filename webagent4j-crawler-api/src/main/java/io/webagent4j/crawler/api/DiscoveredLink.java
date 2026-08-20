@@ -12,7 +12,10 @@ import java.util.Optional;
  * @param resolvedUrl the href resolved to an absolute URL against the page's base URI, before
  *     normalization
  * @param normalizedUrl the deduplication identity ({@link IUrlNormalizer#normalize(URI)} applied to
- *     {@code resolvedUrl})
+ *     {@code resolvedUrl}), present only when normalization was actually attempted and succeeded -
+ *     a link rejected before normalization (an unsupported scheme, an out-of-scope host) or one
+ *     whose {@code resolvedUrl} {@link IUrlNormalizer} itself could not normalize carries {@link
+ *     Optional#empty()} here rather than a value that was never actually computed
  * @param rawHref the exact {@code href} attribute value as it appeared in the HTML
  * @param anchorText the link's visible text, when present and non-blank
  * @param kind which HTML element produced this link
@@ -23,7 +26,7 @@ import java.util.Optional;
  */
 public record DiscoveredLink(
         URI resolvedUrl,
-        URI normalizedUrl,
+        Optional<URI> normalizedUrl,
         String rawHref,
         Optional<String> anchorText,
         LinkKind kind,
@@ -31,7 +34,7 @@ public record DiscoveredLink(
         Optional<CrawlDecision> rejection,
         int documentOrder) {
 
-    /** Validates required fields and the allowed/rejection consistency invariant. */
+    /** Validates required fields and the allowed/rejection/normalizedUrl consistency invariants. */
     public DiscoveredLink {
         Objects.requireNonNull(resolvedUrl, "resolvedUrl");
         Objects.requireNonNull(normalizedUrl, "normalizedUrl");
@@ -44,6 +47,10 @@ public record DiscoveredLink(
         }
         if (!allowed && rejection.isEmpty()) {
             throw new IllegalArgumentException("a rejected link must carry a rejection decision");
+        }
+        if (allowed && normalizedUrl.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "an allowed link must carry the normalized URL it was allowed under");
         }
         if (documentOrder < 0) {
             throw new IllegalArgumentException("documentOrder cannot be negative");

@@ -3,12 +3,14 @@ package io.webagent4j.crawler;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.webagent4j.crawler.api.CrawlDecisionType;
+import io.webagent4j.crawler.api.CrawlFailure;
 import io.webagent4j.crawler.api.CrawlFailureType;
 import io.webagent4j.crawler.api.CrawlRequest;
 import io.webagent4j.crawler.api.CrawlResult;
 import io.webagent4j.crawler.api.CrawlTerminationReason;
 import io.webagent4j.crawler.api.CrawledPage;
 import io.webagent4j.crawler.api.LinkKind;
+import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.IWaitSleeper;
 import java.io.IOException;
 import java.net.URI;
@@ -309,6 +311,319 @@ class HttpCrawlerTest {
         CrawledPage seedPage = result.pages().get(0);
         assertThat(seedPage.links()).hasSize(1);
         assertThat(seedPage.links().get(0).allowed()).isFalse();
+    }
+
+    // --- Redirect identity, maxPages-during-redirect, attempts, and determinism (consolidation)
+    // ---
+
+    @Test
+    void maxPagesOfOneAllowsTheSeedButBlocksItsOwnRedirectHopExplicitly() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, b));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0).maxPages(1));
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.CRAWL_LIMIT_REACHED);
+        assertThat(result.failures().get(0).failedUrl()).isEqualTo(b);
+        assertThat(result.failures().get(0).attempts()).isZero();
+        assertThat(result.terminationReason()).isEqualTo(CrawlTerminationReason.MAX_PAGES_REACHED);
+        assertThat(fetcher.requested()).containsExactly(a);
+    }
+
+    @Test
+    void maxPagesOfTwoAllowsTwoHopsButBlocksAThird() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        URI c = URI.create("https://example.test/c");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, b));
+        fetcher.respond(b, redirectResponse(b, 302, c));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0).maxPages(2));
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.CRAWL_LIMIT_REACHED);
+        assertThat(result.failures().get(0).failedUrl()).isEqualTo(c);
+        assertThat(fetcher.requested()).containsExactly(a, b);
+    }
+
+    @Test
+    void maxPagesExactlyEqualToTheChainLengthSucceeds() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, b));
+        fetcher.respond(b, htmlResponse(b, 200));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0).maxPages(2));
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(result.pages().get(0).finalUrl()).isEqualTo(b);
+        assertThat(result.terminationReason()).isEqualTo(CrawlTerminationReason.COMPLETED);
+    }
+
+    @Test
+    void aRedirectTargetAlreadyFetchedByAnotherTaskIsNeverFetchedTwice() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        URI target = URI.create("https://example.test/target");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, target));
+        fetcher.respond(b, redirectResponse(b, 302, target));
+        fetcher.respond(target, htmlResponse(target, 200));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).seed(b).maxDepth(0));
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(result.pages().get(0).requestedUrl()).isEqualTo(a);
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.ALREADY_FETCHED);
+        assertThat(result.failures().get(0).requestedUrl()).isEqualTo(b);
+        assertThat(result.failures().get(0).failedUrl()).isEqualTo(target);
+        assertThat(fetcher.fetchCount(target)).isEqualTo(1);
+    }
+
+    @Test
+    void aRedirectTargetIsNormalizedBeforeItIsClaimedOrFetched() {
+        URI a = URI.create("https://example.test/a");
+        URI target = URI.create("https://example.test/target");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(
+                a,
+                new HttpFetchResult(
+                        a,
+                        302,
+                        Map.of("Location", List.of("https://EXAMPLE.test/target#ignored")),
+                        new byte[0],
+                        "",
+                        Duration.ZERO));
+        fetcher.respond(target, htmlResponse(target, 200));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0));
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(result.pages().get(0).finalUrl()).isEqualTo(target);
+        assertThat(fetcher.requested()).containsExactly(a, target);
+    }
+
+    @Test
+    void aFailureReportsTheActualRedirectTargetNotTheOriginalRequest() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, b));
+        fetcher.respond(b, new HttpFetchResult(b, 503, Map.of(), new byte[0], "", Duration.ZERO));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0).retryableStatusCodes());
+
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.requestedUrl()).isEqualTo(a);
+        assertThat(failure.failedUrl()).isEqualTo(b);
+        assertThat(failure.redirectChain()).hasSize(1);
+        assertThat(failure.redirectChain().get(0).from()).isEqualTo(a);
+        assertThat(failure.redirectChain().get(0).to()).isEqualTo(b);
+    }
+
+    @Test
+    void retryAttemptsAreExactlyPreservedForATerminalServerError() {
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        HttpFetchResult serverError =
+                new HttpFetchResult(SEED, 500, Map.of(), new byte[0], "", Duration.ZERO);
+        fetcher.respond(SEED, serverError);
+        fetcher.respond(SEED, serverError);
+        fetcher.respond(SEED, serverError);
+
+        CrawlRequest request =
+                CrawlRequest.builder()
+                        .seed(SEED)
+                        .maxDepth(0)
+                        .retryPolicy(
+                                new io.webagent4j.common.RetryPolicy(
+                                        3, Duration.ZERO, 1.0, Duration.ZERO))
+                        .build();
+        HttpCrawler crawler =
+                new HttpCrawler(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        new HostScopePolicy(),
+                        duration -> {});
+        CrawlResult result = crawler.crawl(request);
+
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.HTTP_SERVER_ERROR);
+        assertThat(result.failures().get(0).attempts()).isEqualTo(3);
+        assertThat(fetcher.fetchCount(SEED)).isEqualTo(3);
+    }
+
+    @Test
+    void retryAttemptsAreExactlyPreservedForARepeatedTimeout() {
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.throwIo(SEED, new HttpTimeoutException("timed out"));
+        fetcher.throwIo(SEED, new HttpTimeoutException("timed out"));
+        fetcher.throwIo(SEED, new HttpTimeoutException("timed out"));
+
+        CrawlRequest request =
+                CrawlRequest.builder()
+                        .seed(SEED)
+                        .maxDepth(0)
+                        .retryPolicy(
+                                new io.webagent4j.common.RetryPolicy(
+                                        3, Duration.ZERO, 1.0, Duration.ZERO))
+                        .build();
+        HttpCrawler crawler =
+                new HttpCrawler(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        new HostScopePolicy(),
+                        duration -> {});
+        CrawlResult result = crawler.crawl(request);
+
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.TIMEOUT);
+        assertThat(result.failures().get(0).attempts()).isEqualTo(3);
+    }
+
+    @Test
+    void fetchedUrlsCountsEveryRedirectHopAsItsOwnNetworkTargetWhileDiscoveredUrlsDoesNot() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(a, redirectResponse(a, 302, b));
+        fetcher.respond(b, htmlResponse(b, 200));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(a).maxDepth(0));
+
+        assertThat(result.statistics().fetchedUrls()).isEqualTo(2);
+        assertThat(result.statistics().discoveredUrls()).isEqualTo(1);
+    }
+
+    @Test
+    void totalBytesSumsEveryRetryAndRedirectResponseBody() {
+        URI a = URI.create("https://example.test/a");
+        URI b = URI.create("https://example.test/b");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(
+                a, new HttpFetchResult(a, 500, Map.of(), bodyOfSize(100), "", Duration.ZERO));
+        fetcher.respond(
+                a, new HttpFetchResult(a, 500, Map.of(), bodyOfSize(100), "", Duration.ZERO));
+        fetcher.respond(
+                a,
+                new HttpFetchResult(
+                        a,
+                        302,
+                        Map.of("Location", List.of(b.toString())),
+                        bodyOfSize(10),
+                        "",
+                        Duration.ZERO));
+        fetcher.respond(
+                b,
+                new HttpFetchResult(b, 200, Map.of(), bodyOfSize(500), "text/html", Duration.ZERO));
+
+        CrawlRequest request =
+                CrawlRequest.builder()
+                        .seed(a)
+                        .maxDepth(0)
+                        .retryPolicy(
+                                new io.webagent4j.common.RetryPolicy(
+                                        3, Duration.ZERO, 1.0, Duration.ZERO))
+                        .build();
+        HttpCrawler crawler =
+                new HttpCrawler(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        new HostScopePolicy(),
+                        duration -> {});
+        CrawlResult result = crawler.crawl(request);
+
+        assertThat(result.statistics().totalBytes()).isEqualTo(710L);
+    }
+
+    @Test
+    void anUnexpectedHttpStatusIsNeverMisclassifiedAsAServerError() {
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(
+                SEED, new HttpFetchResult(SEED, 304, Map.of(), new byte[0], "", Duration.ZERO));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(SEED).maxDepth(0));
+
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(CrawlFailureType.UNEXPECTED_HTTP_STATUS);
+    }
+
+    @Test
+    void theSameScriptedCrawlProducesAnIdenticalResultEveryTime() {
+        CrawlResult first = runScriptedDeterminismCrawl();
+        CrawlResult second = runScriptedDeterminismCrawl();
+
+        assertThat(first).isEqualTo(second);
+        assertThat(first.pages()).hasSize(2);
+        assertThat(first.pages().get(1).redirectChain()).hasSize(1);
+        assertThat(first.statistics().duplicateUrls()).isEqualTo(1);
+    }
+
+    private static CrawlResult runScriptedDeterminismCrawl() {
+        URI a = URI.create("https://example.test/a");
+        URI aFinal = URI.create("https://example.test/a-final");
+        URI aWithFragment = URI.create("https://example.test/a#dup");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(SEED, htmlResponse(SEED, 200));
+        fetcher.respond(a, new HttpFetchResult(a, 500, Map.of(), new byte[0], "", Duration.ZERO));
+        fetcher.respond(a, redirectResponse(a, 302, aFinal));
+        fetcher.respond(aFinal, htmlResponse(aFinal, 200));
+        FakeHtmlLinkExtractor extractor = new FakeHtmlLinkExtractor();
+        extractor.stub(SEED, linksTo(a, aWithFragment));
+        extractor.stub(aFinal, title("A Final"));
+
+        HttpCrawler crawler =
+                new HttpCrawler(
+                        fetcher,
+                        extractor,
+                        new HostScopePolicy(),
+                        duration -> {},
+                        (IMonotonicClock) (() -> 0L));
+        return crawler.crawl(CrawlRequest.builder().seed(SEED).maxDepth(1).build());
+    }
+
+    private static byte[] bodyOfSize(int size) {
+        byte[] body = new byte[size];
+        java.util.Arrays.fill(body, (byte) 'a');
+        return body;
     }
 
     private static CrawlResult crawl(

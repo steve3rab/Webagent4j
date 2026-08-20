@@ -1,5 +1,6 @@
 package io.webagent4j.crawler;
 
+import io.webagent4j.wait.IMonotonicClock;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
@@ -8,7 +9,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -26,14 +26,25 @@ import java.util.concurrent.Flow;
  * <p>No {@code Accept-Encoding} header is sent, so a well-behaved server responds uncompressed;
  * this phase does not implement transparent gzip/deflate decoding, and {@link
  * HttpFetchResult#responseBytes()} is therefore unambiguously the decoded content length.
+ *
+ * <p>{@link HttpFetchResult#elapsed()} times one round trip against an injected {@link
+ * IMonotonicClock}, never {@code Instant.now()} - a wall clock can jump backwards or forwards
+ * independently of elapsed time.
  */
 public final class JavaHttpFetcher implements IHttpFetcher {
 
     private final HttpClient client;
+    private final IMonotonicClock clock;
 
     /** Creates a fetcher with a dedicated, redirect-never {@link HttpClient}. */
     public JavaHttpFetcher() {
+        this(IMonotonicClock.systemClock());
+    }
+
+    /** Creates a fetcher timing each round trip with {@code clock} rather than a wall clock. */
+    public JavaHttpFetcher(IMonotonicClock clock) {
         this.client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     @Override
@@ -44,7 +55,7 @@ public final class JavaHttpFetcher implements IHttpFetcher {
         request.headers().forEach(builder::header);
         HttpRequest httpRequest = builder.build();
 
-        Instant started = Instant.now();
+        long startNanos = clock.nanoTime();
         HttpResponse<byte[]> response;
         try {
             response =
@@ -65,7 +76,7 @@ public final class JavaHttpFetcher implements IHttpFetcher {
             }
             throw wrapped;
         }
-        Duration elapsed = Duration.between(started, Instant.now());
+        Duration elapsed = Duration.ofNanos(clock.nanoTime() - startNanos);
 
         return new HttpFetchResult(
                 request.uri(),

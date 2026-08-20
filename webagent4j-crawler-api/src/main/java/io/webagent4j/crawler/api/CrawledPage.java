@@ -31,8 +31,9 @@ import java.util.Optional;
  *     rejected ones
  * @param redirectChain every redirect hop followed to reach {@code finalUrl}
  * @param responseBytes the final response body's size in bytes
- * @param fetchDuration wall-clock time spent on this page's entire fetch attempt, including
- *     redirects and retries
+ * @param fetchDuration monotonic-clock-measured time spent on this page's entire fetch attempt,
+ *     including every redirect and retry - never measured against a wall clock, which can jump
+ *     backwards or forwards independently of elapsed time
  * @param provenance where this page came from
  */
 public record CrawledPage(

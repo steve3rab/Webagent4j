@@ -32,7 +32,13 @@ public enum CrawlDecisionType {
     /** The candidate's depth would exceed {@link CrawlRequest#maxDepth()}. */
     REJECT_DEPTH,
 
-    /** {@link CrawlRequest#maxPages()} unique fetch attempts have already been started. */
+    /**
+     * {@link CrawlRequest#maxPages()} unique fetch identities have already been claimed at the
+     * moment this link was discovered - a proactive, best-effort check: it can still miss a case
+     * where the limit is reached by a redirect hop consumed after this link was already enqueued,
+     * in which case the authoritative rejection instead surfaces later as a {@link
+     * CrawlFailureType#CRAWL_LIMIT_REACHED} {@link CrawlFailure}, never a silently dropped fetch.
+     */
     REJECT_MAX_PAGES,
 
     /** The candidate's normalized URL was already discovered earlier in this crawl. */

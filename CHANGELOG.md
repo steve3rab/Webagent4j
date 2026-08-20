@@ -75,6 +75,71 @@ All notable changes to this project will be documented in this file. The format 
   classified as `BACKEND_FAILURE` - never silently becoming a fabricated `404`; plus the
   specification's mandated full end-to-end scenario, verified against every documented statistic).
 
+### Fixed (HTTP Crawler — redirect identity, `maxPages`, attempts, and determinism)
+
+- **A redirect chain could bypass `maxPages` entirely and re-fetch an already-fetched identity.**
+  `fetchedUrls`/`maxPages` previously counted one unit per dequeued `CrawlTask`, never the redirect
+  hops a task's chain actually requested over the network - so `maxPages=1` on `/a -> 302 /b -> 302
+  /c` could still send 3 real requests, and two tasks whose redirects converged on the same final
+  URL could fetch it twice. Introduced one central `claimFetchIdentity` gate in `HttpCrawler`,
+  checked immediately before every real HTTP request (a task's own URL and every redirect hop
+  alike): first claim proceeds, an identity already claimed by another task fails as the new
+  `CrawlFailureType.ALREADY_FETCHED` (no page cache is kept to reuse - a structured signal instead
+  of a silent re-fetch or a fabricated duplicate page), and a claim that would exceed `maxPages`
+  fails as the new `CrawlFailureType.CRAWL_LIMIT_REACHED`, setting `terminationReason() ==
+  MAX_PAGES_REACHED`. Every redirect target is normalized before this claim (and before loop
+  detection), so a fragment or dot-segment disguise can no longer hide a duplicate or a loop.
+  Discovery identity (`CrawlStatistics#discoveredUrls()`, seeds and links only) and fetch identity
+  (`fetchedUrls()`, every real network target including redirect hops) are now two separate
+  tracked sets rather than one conflated counter - `fetchedUrls() >= discoveredUrls()` is the new,
+  correct relationship, replacing the previous (now false) `fetchedUrls == successfulPages +
+  failedUrls` invariant this Javadoc used to claim.
+- **`CrawlFailure.attempts()` silently dropped the real retry count on a terminal HTTP status.**
+  `RetryOutcome`'s success factory hardcoded `attempts = 0`, and every terminal-status branch in
+  `HttpCrawler` hardcoded `attempts = 1` regardless of how many attempts were actually made - three
+  `500` responses in a row reported `attempts = 1`, not `3`. Both call sites now thread the real
+  attempt count through `RetryOutcome` and `FetchOutcome` end to end.
+  `CrawlFailure.attempts()` also now allows `0` (relaxed from `>= 1`), the correct value for
+  `CRAWL_LIMIT_REACHED`/`ALREADY_FETCHED`, decided before any request is ever sent.
+- **`CrawlFailure` only ever reported the task's starting URL, never the URL that actually
+  failed.** A failure two redirect hops deep (`A -> B -> C` failing on `C`) was reported as
+  `url = A`, with no way to tell which hop actually failed. `CrawlFailure` now carries
+  `requestedUrl` and `failedUrl` separately (equal only when no redirect was followed first) plus
+  the full `redirectChain()` leading up to the failure.
+- **`DiscoveredLink.normalizedUrl()` lied about links rejected before normalization was ever
+  attempted** (an unsupported scheme, an out-of-scope host, or a URL `IUrlNormalizer` itself could
+  not normalize) by placing the raw, un-normalized `resolvedUrl` there instead. Changed to
+  `Optional<URI>`, empty exactly when normalization was never attempted or failed; a new invariant
+  requires an *allowed* link to always carry its normalized URL.
+- **A response outside the 2xx/3xx-redirect/4xx range fell into `HTTP_SERVER_ERROR` by
+  elimination**, so a `304 Not Modified` (this phase has no HTTP cache to make use of one) or an
+  unexpected `1xx` was misreported as a server error. Added `CrawlFailureType.UNEXPECTED_HTTP_STATUS`
+  for exactly this range, reserving `HTTP_SERVER_ERROR` for genuine `5xx` responses.
+- **`CrawlRequest.allowedSchemes()` accepted schemes `JavaHttpFetcher` cannot fetch** (`ftp`,
+  `file`, arbitrary custom schemes), contradicting the "fully validated at construction" contract.
+  Now validated to always be a non-empty subset of `{http, https}`, rejected at construction like
+  every other misconfiguration.
+- **`fetchDuration`/`elapsed` were measured with `Instant.now()`**, a wall clock that can jump
+  independently of elapsed time and made two runs of the identical scripted crawl structurally
+  unequal. `HttpCrawler` now accepts an injected `IMonotonicClock` (reused directly from
+  `webagent4j-wait`, defaulting to `IMonotonicClock.systemClock()` in production; a new
+  five-argument constructor overload exposes the seam), and `JavaHttpFetcher` does the same for
+  `HttpFetchResult#elapsed()`. A new determinism test runs an identical scripted crawl (two pages,
+  a redirect, a retry, and a rejected duplicate) twice against a fixed clock and asserts full
+  `CrawlResult` equality.
+- Bumped jsoup `1.18.3` -> `1.23.1`, resolving a moderate Dependency Review advisory
+  (GHSA-pmhh-3w7g-xqp8, a `Cleaner`/Safelist issue this crawler's `Jsoup.parse`-only usage never
+  reaches, flagged regardless).
+- 4 new integration scenarios in `HttpCrawlerRobustnessIT` (CRAWL-011..CRAWL-014, against the real
+  local HTTP server): redirect destinations from different seeds dedup globally, `maxPages` cannot
+  be bypassed by a redirect chain, a redirect loop disguised behind a fragment/dot-segment variant
+  is still detected, and failure provenance survives two redirect hops intact. 13 new
+  `HttpCrawlerTest` unit scenarios covering the same fixes with a fake fetcher, plus new
+  `CrawlFailureTest` (5 tests) and 2 new `CrawlRequestTest`/2 new `DiscoveredLinkTest` cases.
+- Updated Javadoc on `CrawlRequest`, `CrawlStatistics`, `CrawledPage`, `CrawlFailure`,
+  `DiscoveredLink`, `CrawlDecisionType`, `HttpFetchResult`, and `JavaHttpFetcher` to match the
+  corrected behavior exactly; updated `docs/http-crawler.md`.
+
 ### Added (Extraction — Phase 0.5)
 
 - New `webagent4j-extraction-api` module (backend-neutral, depends only on `webagent4j-locator-api`):
