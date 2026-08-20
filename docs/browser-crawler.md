@@ -64,15 +64,20 @@ Internal engine types (`io.webagent4j.browsercrawler.internal`) are `public` by 
 
 ## Session model
 
-One `IBrowser` instance **is** the crawl session: cookies, storage, and authentication state are
-already shared across every page it opens, since that is exactly what one isolated browser context
-already provides. `BrowserCrawlRequest.browser()` is required; the crawler creates exactly **one**
+The caller-supplied `IBrowser` instance **is** the crawl's session boundary - `BrowserCrawler` does
+not create or guarantee any isolation of its own. Cookies, storage, and authentication state already
+reachable through that `IBrowser` are shared across every page this crawl opens, exactly as they
+would be for any other caller of the same instance. If the caller reuses one `IBrowser` across
+several crawls (or alongside other automation on it), those crawls intentionally share that session
+state - isolating one crawl's session from another is the caller's responsibility, not something this
+engine does for them. `BrowserCrawlRequest.browser()` is required; the crawler creates exactly **one**
 page, lazily, on its first navigation, and reuses that same page for every URL the crawl visits -
 mirroring how a single browser tab browses from page to page, not one tab per task. That
 crawler-owned page is always closed when the crawl ends. The crawler never closes the browser itself
-unless `closeBrowserOnCompletion(true)` is set - respecting caller ownership by default. A second,
-independent crawl on a *different* `IBrowser` never inherits the first crawl's session state. See
-[Concurrency model](#concurrency-model) for why there is only ever one page, never a pool of them.
+unless `closeBrowserOnCompletion(true)` is set - respecting caller ownership by default. Two crawls
+each given their *own*, separately-launched `IBrowser` never share session state with each other.
+See [Concurrency model](#concurrency-model) for why there is only ever one page, never a pool of
+them.
 
 To crawl authenticated content: launch and log in a browser yourself, then pass it to
 `BrowserCrawlRequest.builder(browser)`. There is no generic login-form automation in this phase.
@@ -103,6 +108,45 @@ URL (`element.href` semantics) and exposes it as the `href-resolved` attribute; 
 reads that value (falling back to `URI.resolve()` against the document's own URL if it is ever
 absent), so relative/root-relative/protocol-relative/base-href resolution is exactly what the browser
 itself already computed - never re-implemented.
+
+## Navigation timeout
+
+`navigationTimeout` is one authoritative, monotonic budget covering both the navigation attempt
+itself and the subsequent stability wait - not merely a client-side check performed after a call
+that a backend's own default timeout already bounded to something longer. `BrowserCrawler` passes
+the remaining budget into `IPage.navigate(String, Duration)` on every attempt, so a backend that
+honors that overload (the Playwright adapter maps it directly to the native driver's own per-call
+navigation timeout option) is genuinely stopped by the crawler's own configured timeout, regardless
+of what its own default would otherwise allow. If navigation itself exceeds the deadline, the
+failure is `NAVIGATION_TIMEOUT`; if navigation succeeds but the page cannot reach the configured
+stability window before the same deadline, it is `PAGE_STABILITY_TIMEOUT`. Both are classified
+through the budget's own `expired()` state, never by matching an exception message.
+
+## Stability
+
+`PageStabilityWaiter` polls a small, deterministic JavaScript fingerprint every 100ms until it
+reads identically for `stabilityWindow`: `document.readyState`, the current element count, and a
+document-order digest of every `<a href>` attribute (capped at the first 500 anchors, so the probe
+stays cheap and bounded even on a link-heavy page). The href digest exists because a link's target
+can change without changing the element count at all - an SPA hydration step rewriting `href`
+attributes in place, for example - which the element-count signal alone cannot see. This is still a
+bounded, purely DOM-shape-based heuristic, not a network-idle signal and not a general
+content-change detector: an anchor's visible text or any non-anchor content changing without an
+accompanying element-count or href change is not detected, and the engine takes exactly one
+observation snapshot per navigation - it never continues monitoring the DOM after stability is
+accepted (see [Dynamic DOM](#dynamic-dom)).
+
+## Observation truncation
+
+`BrowserCrawler` observes each page through a bounded `ObservationOptions` (`maxElements(2000)`).
+If that capture hits the limit - `Observation.statistics().truncated()` is `true` - the page is
+never recorded as a complete, successful discovery: it becomes a `BrowserCrawlFailureType
+.OBSERVATION_TRUNCATED` failure instead, with a diagnostic message built from `ObservationStatistics
+.truncations()` (which limit was hit, how many elements were retained versus how many existed). No
+links from a truncated observation are ever claimed or enqueued - an incomplete snapshot could be
+missing exactly the links past the retained boundary, so treating it as complete would silently
+under-crawl the site. The bound itself is not relaxed to work around this: raising `maxElements`
+only moves the same problem to a larger page.
 
 ## Dynamic DOM
 
@@ -179,9 +223,13 @@ multi-page crawl and asserting all of them land on the one thread that called `c
 
 `CancellationToken` is a minimal, self-contained primitive (none existed anywhere in the codebase -
 audited before adding it) - cooperative, not forceful: an in-flight navigation is never forcibly
-aborted (no such operation exists in the backend-neutral browser API). Once observed, no new
-navigation is claimed; already-claimed, in-flight navigations are allowed to finish, so
-already-discovered results remain part of the deterministic output.
+aborted (no such operation exists in the backend-neutral browser API). Once observed, **no new
+navigation identity may be claimed** - checked centrally, before both a seed claim and a discovered
+child's claim, so no code path can accidentally claim past a cancellation. A navigation already
+claimed and in flight when cancellation is observed is allowed to finish and its result is retained
+deterministically, but the links it discovers are rejected (`CrawlDecisionType.REJECT_CANCELLED`,
+visible in `rejectedUrls()`) rather than claimed - the frontier stops growing the moment cancellation
+is observed, it does not merely stop being drained.
 
 ## Deduplication
 
@@ -195,7 +243,8 @@ validated at `BrowserCrawlRequest.Builder.build()`, never discovered invalid mid
 ## Failure model
 
 `BrowserCrawlFailureType`: `NAVIGATION_TIMEOUT`, `NAVIGATION_FAILED`, `PAGE_STABILITY_TIMEOUT`,
-`OUT_OF_SCOPE_REDIRECT`, `FRAME_ACCESS_FAILED` (unreachable until frame crawling is implemented -
+`OUT_OF_SCOPE_REDIRECT`, `OBSERVATION_TRUNCATED` (see [Observation truncation](#observation-truncation)),
+`FRAME_ACCESS_FAILED` (unreachable until frame crawling is implemented -
 see [Frames](#frames)), `PAGE_CLOSED`, `BROWSER_BACKEND_FAILURE`, `CANCELLED`. A separate taxonomy
 from `CrawlFailureType` ({webagent4j-crawler-api}) - most of that one is HTTP-response-shaped
 (status codes, redirect hop counts) with no honest browser equivalent. `failFast` stops claiming new
@@ -252,6 +301,11 @@ See `webagent4j-examples` for runnable `BrowserCrawlSimpleExample` and
   [URL identities](#url-identities-and-deduplication).
 - No download detection: if navigation triggers a browser download instead of a rendered document,
   behavior is backend-defined - `IPage` exposes no content-type/download signal to detect this.
+- The stability fingerprint detects DOM element-count and anchor-`href` changes, not every possible
+  content mutation - see [Stability](#stability) for the exact, deliberately bounded contract.
+- Observation is bounded (`maxElements(2000)`); a page that exceeds it becomes an explicit
+  `OBSERVATION_TRUNCATED` failure rather than a silently incomplete success - see
+  [Observation truncation](#observation-truncation).
 - `BrowserCrawlerRobustnessIT` (BC-ROB-001..014, real Playwright, in `webagent4j-integration-tests`)
   covers the adversarial scenario matrix this phase's own instructions asked for; it does not
   duplicate the dedicated `webagent4j-robustness-tests` 100-scenario corpus's element-level model,

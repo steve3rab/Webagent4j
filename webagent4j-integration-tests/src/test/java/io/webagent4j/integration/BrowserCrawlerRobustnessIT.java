@@ -25,7 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..014) for {@link
+ * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..016) for {@link
  * BrowserCrawler} - pathological and boundary-case graphs the engine must survive without hanging,
  * losing pages, exceeding a configured limit, or leaking a crawler-owned page, against a local HTTP
  * fixture only. Mirrors {@code HttpCrawlerRobustnessIT}'s naming and structure for the sibling HTTP
@@ -35,7 +35,9 @@ import org.junit.jupiter.api.Test;
  * concurrency left to race - {@link BrowserCrawlerIT}'s {@code
  * maxConcurrencyAboveOneIsRejectedAndTheSequentialCrawlStillReachesEveryPage} and {@code
  * widerGraphIsCrawledCompletelyAndExactlyOnceAcrossRepeatedRuns} cover that engine's actual
- * concurrency contract instead.
+ * concurrency contract instead. BC-ROB-016 does run the crawl itself from a second thread, but only
+ * to call {@code cancel()} concurrently from the test - the crawl's own single execution lane is
+ * unaffected.
  */
 class BrowserCrawlerRobustnessIT {
 
@@ -217,6 +219,72 @@ class BrowserCrawlerRobustnessIT {
                 "/rob/deterministic/a", exchange -> respond(exchange, html("DetA", "")));
         server.createContext(
                 "/rob/deterministic/b", exchange -> respond(exchange, html("DetB", "")));
+
+        // BC-ROB-015: an href-only attribute churn (element count constant throughout) settles
+        // through three values before stopping - a count-only stability fingerprint cannot see the
+        // churn at all and would declare stability at a fixed point regardless of it.
+        server.createContext(
+                "/rob/hrefmutation",
+                exchange ->
+                        respond(
+                                exchange,
+                                """
+                                <!doctype html>
+                                <html><head><title>HrefMutation</title></head>
+                                <body>
+                                <a id="l" href="/rob/hrefmutation/initial">L</a>
+                                <script>
+                                  var hrefs = ['/rob/hrefmutation/wrong1',
+                                               '/rob/hrefmutation/wrong2',
+                                               '/rob/hrefmutation/final'];
+                                  var delays = [100, 150, 150];
+                                  var link = document.getElementById('l');
+                                  function schedule(idx) {
+                                    if (idx >= hrefs.length) { return; }
+                                    setTimeout(function() {
+                                      link.setAttribute('href', hrefs[idx]);
+                                      schedule(idx + 1);
+                                    }, delays[idx]);
+                                  }
+                                  schedule(0);
+                                </script>
+                                </body></html>
+                                """));
+        server.createContext(
+                "/rob/hrefmutation/initial", exchange -> respond(exchange, html("Initial", "")));
+        server.createContext(
+                "/rob/hrefmutation/wrong1", exchange -> respond(exchange, html("Wrong1", "")));
+        server.createContext(
+                "/rob/hrefmutation/wrong2", exchange -> respond(exchange, html("Wrong2", "")));
+        server.createContext(
+                "/rob/hrefmutation/final", exchange -> respond(exchange, html("Final", "")));
+
+        // BC-ROB-016: cancellation observed while a navigation is genuinely in flight. The handler
+        // sleeps 800ms before responding so a cancel() call from another thread lands well within
+        // that window; the page then links to three children that must never be claimed.
+        server.createContext(
+                "/rob/cancelmidflight",
+                exchange -> {
+                    try {
+                        Thread.sleep(800);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    respond(
+                            exchange,
+                            html(
+                                    "CancelMidFlight",
+                                    "<a href=\"/rob/cancelmidflight/x\">X</a>"
+                                            + "<a href=\"/rob/cancelmidflight/y\">Y</a>"
+                                            + "<a href=\"/rob/cancelmidflight/z\">Z</a>"));
+                });
+        server.createContext(
+                "/rob/cancelmidflight/x", exchange -> respond(exchange, html("X", "")));
+        server.createContext(
+                "/rob/cancelmidflight/y", exchange -> respond(exchange, html("Y", "")));
+        server.createContext(
+                "/rob/cancelmidflight/z", exchange -> respond(exchange, html("Z", "")));
 
         serverExecutor = Executors.newVirtualThreadPerTaskExecutor();
         server.setExecutor(serverExecutor);
@@ -486,6 +554,71 @@ class BrowserCrawlerRobustnessIT {
             assertThat(result.failures()).isEmpty();
             assertThat(result.terminationReason())
                     .isEqualTo(BrowserCrawlTerminationReason.COMPLETED);
+        }
+    }
+
+    // BC-ROB-015: an href-only mutation sequence (element count constant throughout) is not
+    // considered stable until the href itself stops changing. A count-only fingerprint would
+    // declare stability at a fixed point (page load + stabilityWindow) regardless of the churn and
+    // could capture a transient, non-final href instead of the settled one.
+    @Test
+    void bcRob015HrefOnlyMutationIsNotConsideredStableUntilItSettles() {
+        BrowserCrawlResult result =
+                new BrowserCrawler()
+                        .crawl(
+                                requestFor("/rob/hrefmutation")
+                                        .maxDepth(1)
+                                        .stabilityWindow(Duration.ofMillis(300))
+                                        .navigationTimeout(Duration.ofSeconds(5))
+                                        .build());
+
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .contains(baseUrl + "/rob/hrefmutation", baseUrl + "/rob/hrefmutation/final");
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .noneMatch(url -> url.contains("wrong1") || url.contains("wrong2"));
+    }
+
+    // BC-ROB-016: cancellation observed while a navigation is genuinely in flight (from another
+    // thread, mid-navigate()) still lets that navigation complete and its own page be recorded, but
+    // the children it discovers are rejected rather than claimed, and no further navigation occurs.
+    @Test
+    void bcRob016CancellationDuringAnInFlightNavigationPreventsDiscoveredChildrenFromBeingClaimed()
+            throws InterruptedException {
+        CancellationToken token = CancellationToken.create();
+        ExecutorService crawlExecutor = Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<BrowserCrawlResult> future =
+                    crawlExecutor.submit(
+                            () ->
+                                    new BrowserCrawler()
+                                            .crawl(
+                                                    requestFor("/rob/cancelmidflight")
+                                                            .cancellationToken(token)
+                                                            .build()));
+            Thread.sleep(200); // well within the fixture's 800ms in-flight response delay
+            token.cancel();
+
+            BrowserCrawlResult result = future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+
+            assertThat(result.terminationReason())
+                    .isEqualTo(BrowserCrawlTerminationReason.CANCELLED);
+            assertThat(result.pages())
+                    .extracting(p -> p.finalUrl().toString())
+                    .containsExactly(baseUrl + "/rob/cancelmidflight");
+            assertThat(result.statistics().claimedNavigations()).isEqualTo(1);
+            assertThat(result.rejectedUrls()).hasSize(3);
+            assertThat(result.rejectedUrls())
+                    .allSatisfy(
+                            link ->
+                                    assertThat(link.rejection().map(d -> d.type()).orElseThrow())
+                                            .isEqualTo(CrawlDecisionType.REJECT_CANCELLED));
+        } catch (java.util.concurrent.ExecutionException
+                | java.util.concurrent.TimeoutException e) {
+            throw new AssertionError("crawl did not complete as expected", e);
+        } finally {
+            crawlExecutor.shutdownNow();
         }
     }
 }

@@ -42,5 +42,13 @@ public enum CrawlDecisionType {
     REJECT_MAX_PAGES,
 
     /** The candidate's normalized URL was already discovered earlier in this crawl. */
-    REJECT_DUPLICATE
+    REJECT_DUPLICATE,
+
+    /**
+     * The crawl was cancelled before this candidate could be claimed. Cooperative cancellation is
+     * not yet implemented by every crawler engine in this project (see {@code
+     * io.webagent4j.browsercrawler.CancellationToken} for the one that does), but the reason itself
+     * is engine-neutral, so it lives here rather than being duplicated per engine.
+     */
+    REJECT_CANCELLED
 }

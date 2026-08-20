@@ -21,11 +21,16 @@ import java.util.regex.Pattern;
  * field to expose, unlike {@code CrawlRequest}, since a field accepting only one value adds surface
  * without adding a real choice (see {@code docs/browser-crawler.md#public-api-minimization}).
  *
- * @param browser the already-launched browser this crawl navigates within. One isolated
- *     session/context per crawl is exactly what one {@code IBrowser} instance already is (cookies,
- *     storage, and authentication state are shared across every page the crawl opens on it) - see
- *     {@code docs/browser-crawler.md#session-model}. Never closed by the crawler unless {@link
- *     #closeBrowserOnCompletion()} is {@code true}.
+ * @param browser the already-launched browser this crawl runs within - the caller-supplied {@code
+ *     IBrowser} instance IS the crawl's session boundary, not something {@code BrowserCrawler}
+ *     creates or isolates itself. Cookies, storage, and authentication state already reachable
+ *     through it are shared across every page this crawl opens, exactly as they would be for any
+ *     other caller of the same {@code IBrowser} - if the caller reuses the same instance across
+ *     multiple crawls (or alongside other automation on it), those crawls intentionally share that
+ *     session state; isolating one crawl's session from another is the caller's responsibility. See
+ *     {@code docs/browser-crawler.md#session-model}. The crawler owns only the {@code IPage} it
+ *     creates and always closes it; {@code browser} itself is never closed by the crawler unless
+ *     {@link #closeBrowserOnCompletion()} is {@code true}.
  * @param seeds absolute {@code http}/{@code https} URLs to start from, depth {@code 0}
  * @param maxDepth the greatest depth a claimed navigation may have
  * @param maxPages the greatest number of navigations this crawl may claim - enforced exactly by
@@ -35,8 +40,12 @@ import java.util.regex.Pattern;
  *     #includeSubdomains()}) are in scope
  * @param includeSubdomains whether subdomains of an in-scope host are also in scope
  * @param allowedHosts additional hosts considered in scope, beyond the seeds' own hosts
- * @param navigationTimeout the greatest time one navigation attempt (including reaching stability)
- *     may take before {@link BrowserCrawlFailureType#NAVIGATION_TIMEOUT}
+ * @param navigationTimeout the authoritative total budget for one navigation attempt - covering
+ *     both the {@code navigate()} call itself (via {@link
+ *     io.webagent4j.browser.IPage#navigate(String, java.time.Duration)}, not a backend's own
+ *     default) and the subsequent stability wait, from a single monotonic deadline. Exceeded during
+ *     navigation itself: {@link BrowserCrawlFailureType#NAVIGATION_TIMEOUT}; exceeded while waiting
+ *     for stability: {@link BrowserCrawlFailureType#PAGE_STABILITY_TIMEOUT}
  * @param stabilityWindow how long the page's DOM must report the same stability fingerprint before
  *     a page is considered stable - see {@code docs/browser-crawler.md#stability}
  * @param maxConcurrency must currently be exactly {@code 1}. Neither {@link IBrowser} nor its pages

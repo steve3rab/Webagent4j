@@ -16,6 +16,8 @@ import io.webagent4j.crawler.api.IUrlNormalizer;
 import io.webagent4j.crawler.api.LinkKind;
 import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationOptions;
+import io.webagent4j.observation.ObservationStatistics;
+import io.webagent4j.observation.ObservationTruncation;
 import io.webagent4j.wait.WaitBudget;
 import io.webagent4j.wait.WaitEngine;
 import io.webagent4j.wait.WaitResult;
@@ -153,7 +155,23 @@ public final class BrowserCrawler implements IBrowserCrawler {
 
         // ---- discovery-time decisions (single-threaded: called only from run()/commit()) ----
 
+        /**
+         * Centralizes the "no new navigation identity may be claimed once cancellation has been
+         * observed" invariant - both {@link #claimAndEnqueue} (seeds) and {@link
+         * #processDiscoveredLink} (children discovered from a committed page) check this before
+         * doing anything else, so neither path can accidentally claim past a cancellation any
+         * future change routes through. Already-claimed, in-flight navigations are still allowed to
+         * finish (see {@link CancellationToken}) - this only ever blocks a claim that has not
+         * happened yet.
+         */
+        private boolean cancellationBlocksNewClaims() {
+            return request.cancellationToken().isCancelled();
+        }
+
         private void claimAndEnqueue(URI candidate, int depth, Optional<URI> discoveredFrom) {
+            if (cancellationBlocksNewClaims()) {
+                return;
+            }
             CrawlDecision scopeDecision = ScopeEvaluator.evaluate(candidate, request);
             if (!scopeDecision.allowed()) {
                 outOfScopeUrls++;
@@ -245,8 +263,17 @@ public final class BrowserCrawler implements IBrowserCrawler {
             }
             IPage page = page();
             WaitBudget budget = WaitBudget.start(request.navigationTimeout(), waitEngine.clock());
+            if (budget.expired()) {
+                return new NavigationFailure(
+                        BrowserCrawlFailureType.NAVIGATION_TIMEOUT,
+                        "navigationTimeout budget already elapsed before navigation began",
+                        Optional.empty());
+            }
             try {
-                page.navigate(task.url().toString());
+                // The remaining budget, not the backend's own default, is the authoritative bound -
+                // see docs/browser-crawler.md#navigation-timeout. A backend that cannot honor a
+                // caller-supplied timeout falls back to its own default via IPage's default method.
+                page.navigate(task.url().toString(), budget.remaining());
             } catch (RuntimeException e) {
                 return new NavigationFailure(
                         classifyNavigationException(e, budget), e.getMessage(), Optional.of(e));
@@ -280,6 +307,16 @@ public final class BrowserCrawler implements IBrowserCrawler {
                 }
                 Observation observation =
                         page.observe(ObservationOptions.builder().maxElements(2000).build());
+                if (observation.statistics().truncated()) {
+                    // A truncated observation may be missing links past the retained boundary - it
+                    // must never be recorded as a complete, successful discovery (see
+                    // docs/browser-crawler.md#observation-truncation). The bound itself is not
+                    // relaxed: raising maxElements only moves the same problem to a larger page.
+                    return new NavigationFailure(
+                            BrowserCrawlFailureType.OBSERVATION_TRUNCATED,
+                            describeTruncation(observation.statistics()),
+                            Optional.empty());
+                }
                 List<RawLink> rawLinks = LinkDiscoverer.discover(observation, finalUrl);
                 String title = page.title();
                 return new NavigationSuccess(
@@ -297,6 +334,10 @@ public final class BrowserCrawler implements IBrowserCrawler {
 
         private static BrowserCrawlFailureType classifyNavigationException(
                 RuntimeException e, WaitBudget budget) {
+            // budget.expired() is a deterministic, backend-neutral signal - checked first, and
+            // authoritative, precisely because navigate() is now itself bounded by this same budget
+            // (see execute()), so a real backend timeout and budget expiry coincide by
+            // construction.
             if (budget.expired()) {
                 return BrowserCrawlFailureType.NAVIGATION_TIMEOUT;
             }
@@ -305,6 +346,26 @@ public final class BrowserCrawler implements IBrowserCrawler {
                 return BrowserCrawlFailureType.PAGE_CLOSED;
             }
             return BrowserCrawlFailureType.NAVIGATION_FAILED;
+        }
+
+        /**
+         * Bounded, backend-neutral diagnostics for an {@link ObservationStatistics#truncated()}.
+         */
+        private static String describeTruncation(ObservationStatistics statistics) {
+            StringBuilder message = new StringBuilder("observation truncated: ");
+            List<ObservationTruncation> truncations = statistics.truncations();
+            for (int i = 0; i < truncations.size(); i++) {
+                if (i > 0) {
+                    message.append(", ");
+                }
+                ObservationTruncation truncation = truncations.get(i);
+                message.append(truncation.type())
+                        .append(" retained ")
+                        .append(truncation.retainedCount())
+                        .append('/')
+                        .append(truncation.originalCount());
+            }
+            return message.toString();
         }
 
         // ---- single-threaded commit: appends results in strict frontier order ----
@@ -346,6 +407,14 @@ public final class BrowserCrawler implements IBrowserCrawler {
         }
 
         private DiscoveredLink processDiscoveredLink(RawLink raw, BrowserCrawlTask parent) {
+            if (cancellationBlocksNewClaims()) {
+                CrawlDecision cancelled =
+                        CrawlDecision.reject(
+                                CrawlDecisionType.REJECT_CANCELLED, "crawl was cancelled");
+                DiscoveredLink rejected = toDiscoveredLink(raw, Optional.empty(), false, cancelled);
+                rejectedUrls.add(rejected);
+                return rejected;
+            }
             CrawlDecision scopeDecision = ScopeEvaluator.evaluate(raw.resolvedUrl(), request);
             if (!scopeDecision.allowed()) {
                 outOfScopeUrls++;

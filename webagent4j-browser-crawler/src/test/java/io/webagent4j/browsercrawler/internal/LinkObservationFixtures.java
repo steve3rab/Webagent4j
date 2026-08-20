@@ -6,6 +6,7 @@ import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.observation.ObservationId;
 import io.webagent4j.observation.ObservationStatistics;
+import io.webagent4j.observation.ObservationTruncation;
 import io.webagent4j.observation.ObservedElementState;
 import io.webagent4j.observation.ObservedValue;
 import io.webagent4j.observation.PageMetadata;
@@ -58,6 +59,14 @@ public final class LinkObservationFixtures {
     /** A minimal, valid {@code Observation} whose {@code links()} returns exactly {@code links}. */
     public static io.webagent4j.observation.Observation withLinks(
             String pageUrl, List<SemanticElement> links) {
+        return withLinks(pageUrl, links, List.of());
+    }
+
+    /**
+     * Same as {@link #withLinks(String, List)}, with an explicit, possibly non-empty truncation.
+     */
+    public static io.webagent4j.observation.Observation withLinks(
+            String pageUrl, List<SemanticElement> links, List<ObservationTruncation> truncations) {
         PageMetadata metadata =
                 new PageMetadata(
                         pageUrl,
@@ -80,7 +89,7 @@ public final class LinkObservationFixtures {
                         0,
                         0,
                         Duration.ZERO,
-                        List.of());
+                        truncations);
         return new ObservationBuilder(new ObservationId("test-observation"), metadata)
                 .semantic(links, List.of(), List.of(), new SemanticTree(List.of(), false))
                 .diagnostics(statistics, List.of())

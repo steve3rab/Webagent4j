@@ -12,6 +12,8 @@ import static org.mockito.Mockito.when;
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IPage;
 import io.webagent4j.browsercrawler.internal.LinkObservationFixtures;
+import io.webagent4j.observation.ObservationTruncation;
+import io.webagent4j.observation.ObservationTruncationType;
 import io.webagent4j.observation.SemanticElement;
 import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.IWaitSleeper;
@@ -22,7 +24,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 /**
  * Engine-level tests using scripted {@link IPage} mocks (never real Playwright/network) and a fake
@@ -32,13 +36,32 @@ import org.junit.jupiter.api.Test;
 class BrowserCrawlerTest {
 
     private record PageScript(
-            String finalUrl, String title, List<SemanticElement> links, RuntimeException failure) {
+            String finalUrl,
+            String title,
+            List<SemanticElement> links,
+            RuntimeException failure,
+            List<ObservationTruncation> truncations,
+            Runnable onNavigate) {
         static PageScript ok(String finalUrl, String title, List<SemanticElement> links) {
-            return new PageScript(finalUrl, title, links, null);
+            return new PageScript(finalUrl, title, links, null, List.of(), () -> {});
         }
 
         static PageScript failing(RuntimeException failure) {
-            return new PageScript(null, null, List.of(), failure);
+            return new PageScript(null, null, List.of(), failure, List.of(), () -> {});
+        }
+
+        static PageScript truncated(
+                String finalUrl,
+                String title,
+                List<SemanticElement> links,
+                List<ObservationTruncation> truncations) {
+            return new PageScript(finalUrl, title, links, null, truncations, () -> {});
+        }
+
+        /** Same as {@link #ok}, but runs {@code onNavigate} as a side effect of navigating here. */
+        static PageScript okWithSideEffect(
+                String finalUrl, String title, List<SemanticElement> links, Runnable onNavigate) {
+            return new PageScript(finalUrl, title, links, null, List.of(), onNavigate);
         }
     }
 
@@ -71,6 +94,7 @@ class BrowserCrawlerTest {
                             if (script == null) {
                                 throw new IllegalStateException("unscripted URL: " + requestedUrl);
                             }
+                            script.onNavigate().run();
                             if (script.failure() != null) {
                                 throw script.failure();
                             }
@@ -80,11 +104,13 @@ class BrowserCrawlerTest {
                             when(page.observe(any()))
                                     .thenReturn(
                                             LinkObservationFixtures.withLinks(
-                                                    script.finalUrl(), script.links()));
+                                                    script.finalUrl(),
+                                                    script.links(),
+                                                    script.truncations()));
                             return null;
                         })
                 .when(page)
-                .navigate(anyString());
+                .navigate(anyString(), any(Duration.class));
         return page;
     }
 
@@ -357,7 +383,7 @@ class BrowserCrawlerTest {
     }
 
     @Test
-    void cancellationBeforeCrawlStartsProducesNoPages() {
+    void cancellationBeforeCrawlStartsClaimsNothingAndNeverOpensAPage() {
         IBrowser browser = scriptedBrowser();
         scripts.put(
                 "https://example.com/", PageScript.ok("https://example.com/", "Home", List.of()));
@@ -371,8 +397,51 @@ class BrowserCrawlerTest {
                                 .build());
 
         assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).isEmpty();
         assertThat(result.terminationReason()).isEqualTo(BrowserCrawlTerminationReason.CANCELLED);
-        assertThat(result.statistics().cancelledTasks()).isEqualTo(1);
+        assertThat(result.statistics().cancelledTasks()).isEqualTo(0);
+        assertThat(result.statistics().claimedNavigations()).isEqualTo(0);
+        verify(browser, times(0)).newPage();
+    }
+
+    @Test
+    void cancellationObservedDuringNavigationPreventsDiscoveredChildrenFromBeingClaimed() {
+        IBrowser browser = scriptedBrowser();
+        CancellationToken token = CancellationToken.create();
+        List<SemanticElement> manyLinks = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            String url = "https://example.com/p" + i;
+            manyLinks.add(LinkObservationFixtures.linkElement(i + 1, "/p" + i, url, "P" + i));
+        }
+        // Simulates cancel() being called from another thread while this navigation is in flight:
+        // deterministic in this single-threaded test because the crawler itself only ever calls
+        // into the page from its own thread, so running this as a navigate() side effect reliably
+        // makes cancellation observed exactly once the seed's own navigation has committed.
+        scripts.put(
+                "https://example.com/",
+                PageScript.okWithSideEffect(
+                        "https://example.com/", "Home", manyLinks, token::cancel));
+
+        BrowserCrawlResult result =
+                crawler.crawl(
+                        requestFor(browser, "https://example.com/")
+                                .cancellationToken(token)
+                                .build());
+
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .containsExactly("https://example.com/");
+        assertThat(result.terminationReason()).isEqualTo(BrowserCrawlTerminationReason.CANCELLED);
+        assertThat(result.statistics().claimedNavigations()).isEqualTo(1);
+        assertThat(result.rejectedUrls()).hasSize(5);
+        assertThat(result.rejectedUrls())
+                .allSatisfy(
+                        link ->
+                                assertThat(link.rejection().map(d -> d.type()).orElseThrow())
+                                        .isEqualTo(
+                                                io.webagent4j.crawler.api.CrawlDecisionType
+                                                        .REJECT_CANCELLED));
+        verify(browser, times(1)).newPage();
     }
 
     @Test
@@ -408,6 +477,73 @@ class BrowserCrawlerTest {
                 requestFor(browser, "https://example.com/").closeBrowserOnCompletion(true).build());
 
         verify(browser, times(1)).close();
+    }
+
+    @Test
+    void navigateReceivesTheRemainingNavigationTimeoutBudgetNotABackendDefault() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/", PageScript.ok("https://example.com/", "Home", List.of()));
+
+        crawler.crawl(
+                requestFor(browser, "https://example.com/")
+                        .navigationTimeout(Duration.ofSeconds(7))
+                        .build());
+
+        ArgumentCaptor<Duration> timeoutCaptor = ArgumentCaptor.forClass(Duration.class);
+        verify(createdPages.get(0)).navigate(anyString(), timeoutCaptor.capture());
+        // No time has elapsed on the fake clock between WaitBudget.start() and this call, so the
+        // remaining budget is exactly the configured navigationTimeout - proving BrowserCrawler
+        // threads its own deadline into navigate() rather than letting a backend default apply.
+        assertThat(timeoutCaptor.getValue()).isEqualTo(Duration.ofSeconds(7));
+    }
+
+    @Test
+    void navigationConsumingMostOfTheBudgetLeavesOnlyTheRemainderForStability() {
+        IBrowser browser = scriptedBrowser();
+        // The navigate() call itself "spends" 900ms of fake time as a side effect, simulating a
+        // slow real navigation - proving navigation and stability share one monotonic budget rather
+        // than each independently getting the full configured navigationTimeout.
+        scripts.put(
+                "https://example.com/",
+                PageScript.okWithSideEffect(
+                        "https://example.com/",
+                        "Home",
+                        List.of(),
+                        () -> fakeTime.sleep(Duration.ofMillis(900))));
+
+        BrowserCrawlResult result =
+                crawler.crawl(
+                        requestFor(browser, "https://example.com/")
+                                .navigationTimeout(Duration.ofSeconds(1))
+                                .stabilityWindow(Duration.ofMillis(200))
+                                .build());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.PAGE_STABILITY_TIMEOUT);
+    }
+
+    @Test
+    void observationTruncatedBecomesAFailureNeverASilentIncompleteSuccess() {
+        IBrowser browser = scriptedBrowser();
+        ObservationTruncation truncation =
+                new ObservationTruncation(
+                        ObservationTruncationType.ELEMENTS, 5000, 2000, Optional.empty());
+        scripts.put(
+                "https://example.com/",
+                PageScript.truncated(
+                        "https://example.com/", "Home", List.of(), List.of(truncation)));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.OBSERVATION_TRUNCATED);
+        assertThat(result.failures().get(0).message()).contains("ELEMENTS").contains("2000/5000");
     }
 
     @Test
@@ -465,7 +601,7 @@ class BrowserCrawlerTest {
                                                 return null;
                                             })
                                     .when(page)
-                                    .navigate(anyString());
+                                    .navigate(anyString(), any(Duration.class));
                             return page;
                         });
 

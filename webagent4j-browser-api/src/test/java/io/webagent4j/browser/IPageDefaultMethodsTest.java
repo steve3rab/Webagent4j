@@ -27,10 +27,12 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves {@link IPage}'s two default methods delegate exactly as documented - the same contract
- * {@link IFrame} mirrors, see {@link IFrameDefaultMethodsTest}: {@link
- * IPage#resolve(LocatorDefinition)} must call through to {@code locate(definition).element()}, and
- * {@link IPage#find(InteractionContext)} must call through to {@code find().inContext(context)}.
+ * Proves {@link IPage}'s default methods delegate exactly as documented - the same contract {@link
+ * IFrame} mirrors, see {@link IFrameDefaultMethodsTest}: {@link IPage#resolve(LocatorDefinition)}
+ * must call through to {@code locate(definition).element()}, {@link IPage#find(InteractionContext)}
+ * must call through to {@code find().inContext(context)}, and {@link IPage#navigate(String,
+ * Duration)} must call through to {@code navigate(url)} for a backend that does not override it to
+ * honor the timeout itself.
  */
 class IPageDefaultMethodsTest {
 
@@ -57,12 +59,38 @@ class IPageDefaultMethodsTest {
         assertThat(page.recordingFind.lastScope).isSameAs(context);
     }
 
+    @Test
+    void navigateWithTimeoutDelegatesToPlainNavigate() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        page.navigate("https://example.com/", Duration.ofSeconds(5));
+
+        assertThat(page.lastNavigatedUrl).isEqualTo("https://example.com/");
+    }
+
+    @Test
+    void navigateWithTimeoutRejectsZeroOrNegativeTimeout() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.navigate("https://example.com/", Duration.ZERO)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () ->
+                                        page.navigate(
+                                                "https://example.com/", Duration.ofSeconds(-1))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     /** Minimal {@link IPage} test double recording the calls its default methods make. */
     private static final class RecordingPage implements IPage {
 
         private final IElement element;
         private final RecordingFind recordingFind = new RecordingFind();
         private LocatorDefinition lastLocateDefinition;
+        private String lastNavigatedUrl;
 
         RecordingPage(IElement element) {
             this.element = element;
@@ -80,7 +108,7 @@ class IPageDefaultMethodsTest {
 
         @Override
         public void navigate(String url) {
-            throw new UnsupportedOperationException();
+            lastNavigatedUrl = url;
         }
 
         @Override

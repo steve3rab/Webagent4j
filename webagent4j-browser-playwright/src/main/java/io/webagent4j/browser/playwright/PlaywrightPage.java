@@ -24,6 +24,7 @@ import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationEngine;
 import io.webagent4j.observation.ObservationOptions;
 import io.webagent4j.observation.spi.PageSnapshot;
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 
@@ -76,6 +77,19 @@ final class PlaywrightPage implements IPage {
                 url,
                 new Page.NavigateOptions()
                         .setTimeout((double) options.timeouts().navigation().toMillis()));
+    }
+
+    @Override
+    public void navigate(String url, Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        PlaywrightUrlValidator.requireAbsoluteHttp(url);
+        // Math.max(1, ...): a sub-millisecond-but-positive remaining budget must never floor to 0,
+        // since Playwright treats a timeout of exactly 0 as "disabled" rather than "immediate".
+        page.navigate(
+                url,
+                new Page.NavigateOptions().setTimeout((double) Math.max(1L, timeout.toMillis())));
     }
 
     @Override

@@ -13,6 +13,7 @@ import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationOptions;
 import io.webagent4j.observation.spi.IObservationSource;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -24,6 +25,28 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
 
     /** Navigates to an absolute HTTP(S) URL. */
     void navigate(String url);
+
+    /**
+     * Navigates to an absolute HTTP(S) URL, bounding the navigation attempt itself to {@code
+     * timeout}.
+     *
+     * <p>The default implementation ignores {@code timeout} and delegates to {@link
+     * #navigate(String)} - this backend's own configured navigation timeout applies instead. A
+     * backend that can honor a caller-supplied navigation timeout (the Playwright adapter does,
+     * mapping it to the native driver's own per-call navigation timeout option) overrides this
+     * method. A caller that needs an authoritative upper bound on the navigation attempt itself -
+     * such as the browser crawler, whose own configured timeout must be the real bound regardless
+     * of what a backend would otherwise default to - must use this overload rather than {@link
+     * #navigate(String)} alone.
+     *
+     * @throws IllegalArgumentException if {@code timeout} is {@code null}, zero, or negative
+     */
+    default void navigate(String url, Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        navigate(url);
+    }
 
     /** Reloads the current document. */
     void reload();

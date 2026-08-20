@@ -43,6 +43,35 @@ All notable changes to this project will be documented in this file. The format 
 - Updated `docs/crawler.md`, `docs/modules.md`, `docs/architecture.md`, `docs/roadmap.md`,
   `docs/index.md`, `docs/public-api.md`, `docs/limitations.md`, and `README.md` to reflect Phase 0.7.
 
+### Fixed (Browser Crawler — Phase 0.7 correction round)
+
+- `navigationTimeout` is now the real, authoritative bound on a navigation attempt, not merely a
+  client-side check performed after a call a backend's own (longer) default could already have
+  bounded. New backend-neutral `IPage#navigate(String, Duration)` (default method delegates to
+  `navigate(String)` for backends that cannot honor a caller timeout; the Playwright adapter maps it
+  to the native driver's per-call navigation timeout). `BrowserCrawler` now passes the remaining
+  `WaitBudget` into every navigation call.
+- An observation that hits its configured capture limit (`ObservationStatistics#truncated()`) is no
+  longer recorded as a complete, successful page - it becomes a new `BrowserCrawlFailureType
+  .OBSERVATION_TRUNCATED` failure instead, so a link past the retained boundary is never silently
+  missed.
+- Cancellation now centrally blocks every new claim (seed or discovered child), not only new
+  navigation - closing a gap where an already-cancelled crawl could still claim its seeds, and a
+  cancellation observed mid-crawl could still let already-in-flight discovery keep expanding the
+  frontier. New `CrawlDecisionType.REJECT_CANCELLED` (`webagent4j-crawler-api`) records a
+  cancelled-out discovered link with the same honesty as any other rejection reason.
+- Corrected `BrowserCrawlRequest`/`docs/browser-crawler.md` wording that implied the crawler creates
+  or guarantees session isolation - the caller-supplied `IBrowser` is the session boundary, and
+  isolating one crawl's session from another (or from other automation on the same instance) is the
+  caller's responsibility.
+- The stability fingerprint now also digests every anchor's `href` in document order (bounded to the
+  first 500), so a link-target-only mutation with a constant element count no longer goes unnoticed
+  - a real gap a count-only fingerprint could not see (common in SPA hydration rewriting `href`
+  attributes in place).
+- New `BrowserCrawlerRobustnessIT` scenarios BC-ROB-015/016 (href-only mutation stability, real
+  in-flight-navigation cancellation) plus new `BrowserCrawlerIT`/`BrowserCrawlerTest` coverage for
+  the timeout and observation-truncation fixes.
+
 ### Added (Public API documentation consolidation)
 
 - New `docs/public-api.md`: a comprehensive public API reference spanning every implemented module

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sun.net.httpserver.HttpServer;
 import io.webagent4j.browser.IBrowser;
+import io.webagent4j.browsercrawler.BrowserCrawlFailureType;
 import io.webagent4j.browsercrawler.BrowserCrawlRequest;
 import io.webagent4j.browsercrawler.BrowserCrawlResult;
 import io.webagent4j.browsercrawler.BrowserCrawlTerminationReason;
@@ -103,6 +104,38 @@ class BrowserCrawlerIT {
                 "/wide/1/child", exchange -> respond(exchange, html("Wide1Child", "")));
         server.createContext(
                 "/wide/2/child", exchange -> respond(exchange, html("Wide2Child", "")));
+        // The Playwright browser's own default navigation timeout is 30s (Timeouts.defaults()) -
+        // this handler sleeps 5s, well under that default but well over the 1s navigationTimeout
+        // the test below configures, so only an authoritative crawler-side timeout stops it early.
+        server.createContext(
+                "/hang",
+                exchange -> {
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    respond(exchange, html("Hang", ""));
+                });
+        // More elements than the crawler's fixed 2000-element observation bound, with one more
+        // link past that boundary that must never be discovered from a truncated snapshot.
+        server.createContext(
+                "/truncated",
+                exchange -> {
+                    StringBuilder body = new StringBuilder();
+                    for (int i = 0; i < 2500; i++) {
+                        body.append("<a href=\"/truncated/item")
+                                .append(i)
+                                .append("\">Item ")
+                                .append(i)
+                                .append("</a>");
+                    }
+                    body.append("<a href=\"/truncated/hidden\">Hidden</a>");
+                    respond(exchange, html("Truncated", body.toString()));
+                });
+        server.createContext(
+                "/truncated/hidden", exchange -> respond(exchange, html("Hidden", "")));
         server.createContext(
                 "/session-start",
                 exchange -> {
@@ -315,5 +348,48 @@ class BrowserCrawlerIT {
         // the page only renders this title when it receives the cookie /session-start set - proving
         // the crawl's two navigations shared one browser session/context, not independent ones
         assertThat(sessionOnlyPage.title()).contains("Authenticated");
+    }
+
+    /**
+     * P0 regression: {@code navigationTimeout} must be the real, authoritative bound on a
+     * navigation attempt - not merely a client-side check performed after a call a backend's own
+     * (longer) default timeout already bounded. {@code /hang} takes 5s to respond and the
+     * Playwright browser's own default navigation timeout is 30s; only a crawler-side timeout
+     * threaded into the navigation call itself can stop this in ~1s.
+     */
+    @Test
+    void navigationTimeoutShorterThanTheBrowserDefaultIsRespected() {
+        long startNanos = System.nanoTime();
+
+        BrowserCrawlResult result =
+                new BrowserCrawler()
+                        .crawl(
+                                requestFor("/hang")
+                                        .navigationTimeout(Duration.ofSeconds(1))
+                                        .build());
+
+        Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.NAVIGATION_TIMEOUT);
+        assertThat(elapsed).isLessThan(Duration.ofSeconds(4));
+    }
+
+    /**
+     * P0 regression: an observation that hits the crawler's fixed capture bound must never be
+     * recorded as a complete, successful discovery - a link past the retained boundary would
+     * otherwise be silently missed rather than explicitly failed.
+     */
+    @Test
+    void observationExceedingTheCaptureLimitBecomesAnExplicitFailureNotASilentPartialSuccess() {
+        BrowserCrawlResult result = new BrowserCrawler().crawl(requestFor("/truncated").build());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.OBSERVATION_TRUNCATED);
+        assertThat(result.rejectedUrls())
+                .noneMatch(link -> link.resolvedUrl().toString().contains("/truncated/hidden"));
     }
 }

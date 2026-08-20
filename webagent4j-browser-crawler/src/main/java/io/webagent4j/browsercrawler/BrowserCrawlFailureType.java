@@ -24,6 +24,14 @@ public enum BrowserCrawlFailureType {
     OUT_OF_SCOPE_REDIRECT,
 
     /**
+     * The page's observation hit a configured capture limit (see {@link
+     * io.webagent4j.observation.ObservationStatistics#truncated()}) before it could be captured
+     * completely. An incomplete snapshot is never treated as a complete, successful link discovery
+     * - see {@code docs/browser-crawler.md#observation-truncation}.
+     */
+    OBSERVATION_TRUNCATED,
+
+    /**
      * A configured frame could not be resolved or inspected (see {@link FrameCrawlPolicy}).
      * Currently unreachable: only {@link FrameCrawlPolicy#TOP_LEVEL_ONLY} is implemented, so no
      * task ever attempts frame access. Declared now for the same forward-compatibility reason
