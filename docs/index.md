@@ -1,8 +1,10 @@
 # WebAgent4J documentation
 
 WebAgent4J is a Java 21 foundation for deterministic web automation. Start with
-[Getting started](getting-started.md), then use the focused guides below.
+[Getting started](getting-started.md), then read the [Public API reference](public-api.md) for a
+map of every module and entry point, and use the focused guides below for full detail.
 
+- [Public API reference](public-api.md)
 - [Architecture and dependency rules](architecture.md)
 - [Module graph](modules.md)
 - [Browser lifecycle](browser.md)

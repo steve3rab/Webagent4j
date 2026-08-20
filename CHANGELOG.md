@@ -6,6 +6,30 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Public API documentation consolidation)
+
+- New `docs/public-api.md`: a comprehensive public API reference spanning every implemented module
+  (0.1–0.6) - a module-selection table, the API layering diagram, core principles (determinism,
+  fail-closed behavior, structured results, backend-neutrality, live re-resolution), a per-domain
+  section (Browser, Locators, Wait and stability, Observation, Actions, Verification, Extraction,
+  HTTP Crawler) with entry points and minimal examples, an error/result-semantics table across every
+  domain, an explicit determinism contract (logical determinism vs. environment-dependent values),
+  a fail-closed contract, an API-stability statement, and the API-module-vs-implementation-module
+  split with minimal Maven snippets.
+- New `package-info.java` for the primary public packages (`io.webagent4j.core`,
+  `io.webagent4j.browser`, `io.webagent4j.locator.api`, `io.webagent4j.wait`,
+  `io.webagent4j.action`, `io.webagent4j.verification`, `io.webagent4j.extraction.api`,
+  `io.webagent4j.crawler.api`, `io.webagent4j.crawler`, `io.webagent4j.observation`,
+  `io.webagent4j.dom`), each documenting the package's responsibility, entry points, and relation to
+  its neighboring module - none existed before.
+- `docs/index.md` and `README.md` now link to the Public API reference as a primary entry point.
+
+### Fixed (documentation drift found during the public API audit)
+
+- `docs/modules.md` described `webagent4j-testing` as an implemented "Shared test-fixture boundary."
+  It currently has no source code at all (only its `pom.xml`) - corrected to say so explicitly, and
+  it is no longer listed as a usable module in `docs/public-api.md`.
+
 ### Added (HTTP Crawler — Phase 0.6)
 
 - New `webagent4j-crawler-api` module (backend-neutral, depends only on `webagent4j-common`):

@@ -96,6 +96,9 @@ try (IBrowser browser = WebAgent.browser()
 Additional runnable examples are available in
 [`webagent4j-examples`](webagent4j-examples/src/main/java/io/webagent4j/examples).
 
+`./mvnw clean verify` also builds the aggregated Javadoc (`target/reports/apidocs/index.html`) for
+the full method-level API reference alongside the [Public API guide](docs/public-api.md).
+
 ## Architecture
 
 The repository is organized as a Maven multi-module build. Public contracts remain separate from
@@ -114,6 +117,7 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
+- [Public API reference](docs/public-api.md) - which module to depend on, entry points, and contracts
 - [Semantic locators](docs/locators.md)
 - [Semantic observations](docs/observation.md)
 - [Actions](docs/actions.md)
