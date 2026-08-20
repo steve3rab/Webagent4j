@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added (Browser Crawler — Phase 0.7)
 
-- New `webagent4j-browser-crawler` module: a deterministic, bounded-concurrency browser crawler.
+- New `webagent4j-browser-crawler` module: a deterministic, single-lane browser crawler.
   `IBrowserCrawler`/`BrowserCrawler` (the sole implementation), `BrowserCrawlRequest` (immutable,
   builder, fully validated), `BrowserCrawlResult`/`BrowserCrawledPage`/`BrowserCrawlFailure`/
   `BrowserCrawlStatistics`, `BrowserCrawlFailureType`, `BrowserCrawlTerminationReason`,
@@ -18,20 +18,28 @@ All notable changes to this project will be documented in this file. The format 
   `webagent4j-wait`) - never Playwright directly, enforced by new ArchUnit rules
   (`browserCrawlerRemainsIndependentFromPlaywright`, `browserCrawlerRemainsIndependentFromAiLibraries`).
 - One `IBrowser` instance is the crawl session (cookies/storage/auth state shared across every page
-  it opens); the crawler creates and always closes its own worker pages but never closes a
+  it opens); the crawler creates and always closes its own crawler-owned page but never closes a
   caller-supplied browser unless `closeBrowserOnCompletion(true)` is set.
-- Bounded concurrency (`maxConcurrency`, default `1`) with a documented, tested guarantee: physical
-  navigation completion order never changes the logical, frontier-ordered result order. Claiming
-  (dedup + `maxPages`) happens on a single coordinator thread through one synchronized gate, so it
-  is exact regardless of concurrency.
+- Single navigation lane: every backend call (`IBrowser#newPage()`, every `IPage` operation) runs on
+  the one thread that calls `crawl(...)` - `maxConcurrency` must be exactly `1` and is rejected
+  otherwise. This replaces an earlier worker-pool design that navigated concurrently through
+  per-thread `IPage`s sharing one `IBrowser`; that violated `IBrowser`/`IPage`'s own documented
+  "not thread-safe" contract and, under real Playwright, silently lost a discovered page from the
+  committed result (caught by `BrowserCrawlerIT` on real CI, not by mocks). Determinism of result
+  ordering is now structural, not merely a scheduling guarantee. Claiming (dedup + `maxPages`)
+  happens through one gate that stays exact regardless.
+- New real-Playwright adversarial suite `BrowserCrawlerRobustnessIT` (BC-ROB-001..014): cyclic
+  graphs, duplicate fan-out, normalization dedup, exact `maxPages`/`maxDepth` bounds, cancellation/
+  failFast resource cleanup, unreachable-backend failures, stability timeouts, dynamic-DOM discovery
+  boundaries, out-of-scope links/redirects, and deterministic repeated runs.
 - Page stability reuses `webagent4j-wait`'s `WaitEngine`/`WaitPolicy.stableFor` (a DOM-fingerprint
   probe) - no `Thread.sleep`, no second timing implementation. Link discovery reuses
   `IPage.observe()`'s already browser-resolved `href` values - no raw HTML parsing.
-- New unit tests (`webagent4j-browser-crawler`), a real-Playwright `BrowserCrawlerIT` suite
-  (`webagent4j-integration-tests`), and two ArchUnit rules. See
+- New unit tests (`webagent4j-browser-crawler`), real-Playwright `BrowserCrawlerIT` and
+  `BrowserCrawlerRobustnessIT` suites (`webagent4j-integration-tests`), and two ArchUnit rules. See
   [docs/browser-crawler.md](docs/browser-crawler.md) for the full contract, determinism guarantee,
-  and this phase's documented limitations (top-level frames only, no SPA `pushState` tracking, no
-  redirect hop list, no dedicated robustness-tests suite in this phase).
+  and this phase's documented limitations (single navigation lane, top-level frames only, no SPA
+  `pushState` tracking, no redirect hop list).
 - Updated `docs/crawler.md`, `docs/modules.md`, `docs/architecture.md`, `docs/roadmap.md`,
   `docs/index.md`, `docs/public-api.md`, `docs/limitations.md`, and `README.md` to reflect Phase 0.7.
 

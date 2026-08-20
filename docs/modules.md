@@ -23,7 +23,7 @@ Arrows below mean "depends on."
 | `webagent4j-extraction` | common, dom, extraction-api, locator, locator-api, wait | Deterministic extraction engine reusing the existing locator engine - no second DOM resolution engine |
 | `webagent4j-crawler-api` | common | Backend-neutral HTTP crawler contracts: `CrawlRequest`/`CrawlResult`/`CrawledPage`, failure taxonomy, scope/dedup ports - no HTTP client, no HTML parser, no Playwright |
 | `webagent4j-crawler` | common, crawler-api, wait | Deterministic, sequential HTTP crawler engine: `java.net.http.HttpClient` fetcher, jsoup link extraction, BFS frontier, URL normalization/deduplication/scope policy, redirect and retry handling. No browser. See [http-crawler.md](http-crawler.md) |
-| `webagent4j-browser-crawler` | common, crawler-api, browser-api, wait | Deterministic, bounded-concurrency browser crawler engine: JavaScript-rendered link discovery via `IPage.observe()`, one `IBrowser` session per crawl, page stability reused from `webagent4j-wait`, top-level frame scope, cancellation. No Playwright import. See [browser-crawler.md](browser-crawler.md) |
+| `webagent4j-browser-crawler` | common, crawler-api, browser-api, wait | Deterministic, single-lane browser crawler engine: JavaScript-rendered link discovery via `IPage.observe()`, one `IBrowser` session per crawl, page stability reused from `webagent4j-wait`, top-level frame scope, cancellation. No Playwright import. See [browser-crawler.md](browser-crawler.md) |
 | `webagent4j-workflow` | action | Reserved workflow boundary |
 | `webagent4j-recording` | workflow | Reserved record/replay boundary |
 | `webagent4j-plugin-api` | locator | Reserved plugin boundary |

@@ -94,6 +94,25 @@ class BrowserCrawlRequestTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /**
+     * IBrowser/IPage are not documented as thread-safe (see their Javadoc), and one IBrowser
+     * instance is the crawl session, so this engine only ever supports a single navigation lane -
+     * see docs/browser-crawler.md#concurrency-model and the regression this guards against
+     * (BrowserCrawlerIT's former boundedConcurrencyCompletesTheSameCrawlAsSequential failure, where
+     * concurrent navigation against one shared Playwright browser silently lost a page).
+     */
+    @Test
+    void maxConcurrencyGreaterThanOneIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                BrowserCrawlRequest.builder(browser)
+                                        .seed("https://example.com/")
+                                        .maxConcurrency(3)
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exactly 1");
+    }
+
     @Test
     void zeroNavigationTimeoutRejected() {
         assertThatThrownBy(

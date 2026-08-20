@@ -1,7 +1,7 @@
 # Browser Crawler
 
-Phase 0.7: a deterministic, bounded-concurrency crawler that discovers and navigates pages through a
-real browser, for content the HTTP crawler ([docs/http-crawler.md](http-crawler.md)) cannot render.
+Phase 0.7: a deterministic, single-lane crawler that discovers and navigates pages through a real
+browser, for content the HTTP crawler ([docs/http-crawler.md](http-crawler.md)) cannot render.
 
 ## Purpose
 
@@ -19,8 +19,8 @@ content you need is present in the raw HTML response.
 
 The target renders links or content through JavaScript, requires an authenticated session, uses
 frames, or performs client-side navigation you still want to follow. More expensive: a real browser
-process, bounded concurrency to keep it usable on modest hardware, and a stability wait instead of a
-single HTTP round trip.
+process, single-lane navigation (see [Concurrency model](#concurrency-model)), and a stability wait
+instead of a single HTTP round trip.
 
 Neither crawler automatically falls back to the other. The caller chooses explicitly.
 
@@ -32,16 +32,19 @@ IBrowserCrawler.crawl(BrowserCrawlRequest)
         v
 BrowserCrawler (only implementation)
         |
-        +-- Session (per-call mutable state)
+        +-- Session (per-call mutable state, entirely single-threaded)
               |
-              +-- frontier (FIFO, BFS)         -- single coordinator thread only
-              +-- ClaimGate (dedup + maxPages)  -- synchronized, single authoritative gate
-              +-- bounded worker pool (maxConcurrency)
+              +-- frontier (FIFO, BFS)
+              +-- ClaimGate (dedup + maxPages)
+              +-- one IPage, created lazily, reused for every navigation this crawl makes
               |      |
               |      +-- IPage.navigate() -> PageStabilityWaiter (webagent4j-wait) -> IPage.observe()
               |
-              +-- commit (single-threaded): scope + dedup decisions, frontier expansion, result assembly
+              +-- commit: scope + dedup decisions, frontier expansion, result assembly
 ```
+
+Every step - frontier expansion, claiming, navigation, and result assembly alike - runs on the one
+thread that calls `crawl(...)`. See [Concurrency model](#concurrency-model) for why.
 
 `BrowserCrawler` never imports `com.microsoft.playwright.*` - enforced by
 `browserCrawlerRemainsIndependentFromPlaywright` in `ArchitectureTest`.
@@ -63,11 +66,13 @@ Internal engine types (`io.webagent4j.browsercrawler.internal`) are `public` by 
 
 One `IBrowser` instance **is** the crawl session: cookies, storage, and authentication state are
 already shared across every page it opens, since that is exactly what one isolated browser context
-already provides. `BrowserCrawlRequest.browser()` is required; the crawler creates one page per
-worker thread (bounded by `maxConcurrency`) via `browser.newPage()` and always closes those
-crawler-owned pages when the crawl ends. It never closes the browser itself unless
-`closeBrowserOnCompletion(true)` is set - respecting caller ownership by default. A second,
-independent crawl on a *different* `IBrowser` never inherits the first crawl's session state.
+already provides. `BrowserCrawlRequest.browser()` is required; the crawler creates exactly **one**
+page, lazily, on its first navigation, and reuses that same page for every URL the crawl visits -
+mirroring how a single browser tab browses from page to page, not one tab per task. That
+crawler-owned page is always closed when the crawl ends. The crawler never closes the browser itself
+unless `closeBrowserOnCompletion(true)` is set - respecting caller ownership by default. A second,
+independent crawl on a *different* `IBrowser` never inherits the first crawl's session state. See
+[Concurrency model](#concurrency-model) for why there is only ever one page, never a pool of them.
 
 To crawl authenticated content: launch and log in a browser yourself, then pass it to
 `BrowserCrawlRequest.builder(browser)`. There is no generic login-form automation in this phase.
@@ -132,20 +137,43 @@ intermediate hop list, no HTTP status codes - the current backend-neutral browse
 neither, and none are fabricated. Covers HTTP 30x, JavaScript redirects, and meta-refresh alike,
 since all of them simply change the committed URL by the time navigation is observed complete.
 
-## Bounded concurrency
+## Concurrency model
 
-`maxConcurrency` bounds both the worker thread pool size and (via one `IPage` per worker thread,
-created lazily and reused) the number of active browser pages - never more than `maxConcurrency`
-pages exist at once. Default `1` (conservative, per-hardware-friendly default).
+This engine performs **no physical navigation concurrency**. Every operation - frontier expansion,
+claiming, `IBrowser#newPage()`, every `IPage` call, and result assembly - runs on the single thread
+that calls `crawl(...)`. `maxConcurrency` must be exactly `1`; any other value is rejected at
+`BrowserCrawlRequest.build()`. The field is kept (not removed) so a future phase that can honestly
+offer more than one lane does not need a breaking API change to add it.
 
-**Frontier expansion, claiming, and result assembly all happen on a single coordinator thread; only
-navigation is offloaded to worker threads.** Tasks are submitted to the executor in strict frontier
-order; the coordinator always waits on the *oldest* still-outstanding task's `Future` before
-committing its outcome - so a faster task finishing before an earlier one just sits in its own
-`Future`, ready, while the coordinator still processes results in frontier order. Physical completion
-order therefore never changes the logical result order. See `BrowserCrawlerTest
-.logicalResultOrderIsUnaffectedByCompletionTimingUnderConcurrency` for a scenario with deliberately
-different per-page navigation delays proving this holds.
+**This was not the original Phase 0.7 design**, and the change is deliberate, not cosmetic. The
+first cut of this engine navigated up to `maxConcurrency` pages at once through a bounded worker-
+thread pool, one `IPage` per worker thread (`ThreadLocal`), all created from the same caller-supplied
+`IBrowser`. That violated a contract that was already documented, in this exact codebase, before this
+phase existed: both [`IBrowser`](../webagent4j-browser-api/src/main/java/io/webagent4j/browser/IBrowser.java)
+and [`IPage`](../webagent4j-browser-api/src/main/java/io/webagent4j/browser/IPage.java) are Javadoc'd
+as **not thread-safe**, and the concrete Playwright adapter backs that with unsynchronized state
+(`PlaywrightBrowser` tracks its pages in a plain `IdentityHashMap`) over one native Playwright
+browser/context that the Playwright Java driver itself expects single-threaded access to. Under real
+concurrent navigation (`maxConcurrency(3)` against three real pages), this silently corrupted a real
+crawl: a page that was correctly discovered simply never appeared in the committed result - caught by
+`BrowserCrawlerIT`'s own concurrency test on real CI, not by any mock-based unit test, because the
+mocks had no way to reproduce a native-driver-level race.
+
+One caller-supplied `IBrowser` is the crawl session (cookies/storage/auth all live on it - see
+[Session model](#session-model)), and WebAgent4J has no supported way to clone or fan a session out
+across independent browser instances. Given that, and given neither `IBrowser` nor `IPage` offers a
+thread-safety contract to build concurrent navigation on, offering physical concurrency here would
+mean either quietly violating that contract again or inventing session-sharing behavior the platform
+does not actually support - both rejected. A single execution lane is the only architecture that is
+simultaneously correct against real Playwright, honest about what it does, and consistent with the
+session guarantee this engine already promises.
+
+Because there is exactly one execution lane, logical determinism (seed order, frontier order, dedup,
+depth, scope decisions, discovered-link order, statistics, termination reason) is now structural
+rather than merely provable-under-concurrency: there is no second thread whose completion timing
+could ever reorder anything. `BrowserCrawlerTest.everyBackendCallHappensOnTheSingleCallingThread`
+proves the thread-confinement half of this directly, instrumenting every backend call across a
+multi-page crawl and asserting all of them land on the one thread that called `crawl(...)`.
 
 ## Cancellation
 
@@ -171,17 +199,16 @@ validated at `BrowserCrawlRequest.Builder.build()`, never discovered invalid mid
 see [Frames](#frames)), `PAGE_CLOSED`, `BROWSER_BACKEND_FAILURE`, `CANCELLED`. A separate taxonomy
 from `CrawlFailureType` ({webagent4j-crawler-api}) - most of that one is HTTP-response-shaped
 (status codes, redirect hop counts) with no honest browser equivalent. `failFast` stops claiming new
-navigations after a fatal failure (cancellation is never treated as fatal); already-in-flight
-navigations still complete and commit.
+navigations after a fatal failure (cancellation is never treated as fatal).
 
 ## Determinism contract
 
 Given identical `BrowserCrawlRequest`, deterministic seed/link discovery order, and deterministic
 scope/dedup decisions, WebAgent4J guarantees deterministic logical: seed ordering, frontier ordering,
 normalized identities, dedup decisions, depth assignment, scope decisions, **page result ordering**
-(even under concurrency - see [Bounded concurrency](#bounded-concurrency)), failure ordering, link
-discovery ordering (document order), statistics, and termination reason (with explicit precedence:
-`CANCELLED` > `FAIL_FAST` > `MAX_PAGES_REACHED` > `COMPLETED`).
+(structural, not merely provable - see [Concurrency model](#concurrency-model)), failure ordering,
+link discovery ordering (document order), statistics, and termination reason (with explicit
+precedence: `CANCELLED` > `FAIL_FAST` > `MAX_PAGES_REACHED` > `COMPLETED`).
 
 **Not** guaranteed deterministic: wall-clock duration, browser scheduling/JavaScript execution
 timing, or `Throwable` identity in a failure's `cause()` - the same exclusions the HTTP crawler's own
@@ -189,9 +216,11 @@ determinism contract documents, for the same reason.
 
 ## Resource ownership
 
-Crawler-owned pages (created via `browser.newPage()`) are always closed when the crawl ends -
+The one crawler-owned page (created via `browser.newPage()` on first use, reused for every
+navigation - see [Concurrency model](#concurrency-model)) is always closed when the crawl ends -
 success, failure, `failFast`, or cancellation - verified by `BrowserCrawlerTest
-.crawlerOwnedPagesAreAlwaysClosed`. The caller-supplied `IBrowser` is never closed unless
+.crawlerOwnedPagesAreAlwaysClosed` and, against a real browser, `BrowserCrawlerRobustnessIT
+.bcRob013CrawlerOwnedPagesAreAlwaysClosed`. The caller-supplied `IBrowser` is never closed unless
 `closeBrowserOnCompletion(true)` is explicitly set.
 
 ## Examples
@@ -203,7 +232,6 @@ try (IBrowser browser = WebAgent.browser().playwright().chromium().headless(true
                     .seed("https://example.com/")
                     .maxDepth(2)
                     .maxPages(50)
-                    .maxConcurrency(4)
                     .build();
     BrowserCrawlResult result = new BrowserCrawler().crawl(request);
     result.pages().forEach(page -> System.out.println(page.finalUrl()));
@@ -215,6 +243,8 @@ See `webagent4j-examples` for runnable `BrowserCrawlSimpleExample` and
 
 ## Current limitations
 
+- Only a single navigation lane is supported - `maxConcurrency` must be `1` - see
+  [Concurrency model](#concurrency-model).
 - Only `FrameCrawlPolicy.TOP_LEVEL_ONLY` is implemented - see [Frames](#frames).
 - `history.pushState()`-only SPA transitions are not tracked - see [SPA support](#spa-support).
 - No intermediate redirect hop list - see [Redirect semantics](#redirect-semantics).
@@ -222,11 +252,10 @@ See `webagent4j-examples` for runnable `BrowserCrawlSimpleExample` and
   [URL identities](#url-identities-and-deduplication).
 - No download detection: if navigation triggers a browser download instead of a rendered document,
   behavior is backend-defined - `IPage` exposes no content-type/download signal to detect this.
-- No robustness-tests-module adversarial suite was added in this phase (unlike Phase 0.6's
-  `HttpCrawlerRobustnessIT`) - the integration suite (`BrowserCrawlerIT`) and the unit suite
-  (`BrowserCrawlerTest`, including the concurrency-determinism and resource-leak scenarios) cover the
-  critical invariants, but not the full adversarial scenario matrix. A follow-up PR is the right size
-  for that, rather than growing this one further.
+- `BrowserCrawlerRobustnessIT` (BC-ROB-001..014, real Playwright, in `webagent4j-integration-tests`)
+  covers the adversarial scenario matrix this phase's own instructions asked for; it does not
+  duplicate the dedicated `webagent4j-robustness-tests` 100-scenario corpus's element-level model,
+  which was never designed for a crawl-graph concept.
 - No CLI `crawl-browser` command was added - out of scope per this phase's own instructions unless it
   fits cleanly, and a real browser process/session argument does not fit the existing CLI's
   argument model without its own design pass.

@@ -32,41 +32,28 @@ import org.junit.jupiter.api.Test;
 class BrowserCrawlerTest {
 
     private record PageScript(
-            String finalUrl,
-            String title,
-            List<SemanticElement> links,
-            RuntimeException failure,
-            Duration delay) {
+            String finalUrl, String title, List<SemanticElement> links, RuntimeException failure) {
         static PageScript ok(String finalUrl, String title, List<SemanticElement> links) {
-            return new PageScript(finalUrl, title, links, null, Duration.ZERO);
-        }
-
-        static PageScript delayed(String finalUrl, String title, Duration delay) {
-            return new PageScript(finalUrl, title, List.of(), null, delay);
+            return new PageScript(finalUrl, title, links, null);
         }
 
         static PageScript failing(RuntimeException failure) {
-            return new PageScript(null, null, List.of(), failure, Duration.ZERO);
+            return new PageScript(null, null, List.of(), failure);
         }
     }
 
-    /**
-     * A fake clock + immediately-advancing sleeper, so every wait in the test is instant. Backed by
-     * an {@link java.util.concurrent.atomic.AtomicLong} because {@link BrowserCrawler} can call it
-     * concurrently from multiple worker threads when {@code maxConcurrency > 1}.
-     */
+    /** A fake clock + immediately-advancing sleeper, so every wait in the test is instant. */
     private static final class FakeTime implements IMonotonicClock, IWaitSleeper {
-        private final java.util.concurrent.atomic.AtomicLong nanos =
-                new java.util.concurrent.atomic.AtomicLong();
+        private long nanos;
 
         @Override
         public long nanoTime() {
-            return nanos.get();
+            return nanos;
         }
 
         @Override
         public void sleep(Duration duration) {
-            nanos.addAndGet(duration.toNanos());
+            nanos += duration.toNanos();
         }
     }
 
@@ -86,9 +73,6 @@ class BrowserCrawlerTest {
                             }
                             if (script.failure() != null) {
                                 throw script.failure();
-                            }
-                            if (!script.delay().isZero()) {
-                                Thread.sleep(script.delay().toMillis());
                             }
                             when(page.url()).thenReturn(script.finalUrl());
                             when(page.title()).thenReturn(script.title());
@@ -427,7 +411,7 @@ class BrowserCrawlerTest {
     }
 
     @Test
-    void boundedConcurrencyNeverExceedsConfiguredMaximum() {
+    void navigatesOnlyOnePageAtATimeAndDiscoversAllOfThem() {
         IBrowser browser = scriptedBrowser();
         List<SemanticElement> seedLinks = new ArrayList<>();
         for (int i = 0; i < 6; i++) {
@@ -439,50 +423,55 @@ class BrowserCrawlerTest {
                 "https://example.com/", PageScript.ok("https://example.com/", "Home", seedLinks));
 
         BrowserCrawlResult result =
-                crawler.crawl(
-                        requestFor(browser, "https://example.com/").maxConcurrency(3).build());
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
 
         assertThat(result.pages()).hasSize(7);
-        // one page per worker thread (ThreadLocal), never more than maxConcurrency threads used
-        verify(browser, org.mockito.Mockito.atMost(3)).newPage();
+        // exactly one page for the whole crawl - reused for every navigation, never one per task
+        verify(browser, times(1)).newPage();
     }
 
+    /**
+     * Regression test for the concurrency bug this design replaced: the original Phase 0.7 engine
+     * created one {@code IPage} per worker thread via {@code ThreadLocal} and navigated them from a
+     * bounded {@code ExecutorService}, which called {@link IBrowser#newPage()} and every {@link
+     * IPage} operation concurrently from multiple Java threads. Neither {@link IBrowser} nor {@link
+     * IPage} is documented as thread-safe; under real Playwright this silently corrupted a crawl (a
+     * discovered page vanished - see {@code BrowserCrawlerIT}'s former {@code
+     * boundedConcurrencyCompletesTheSameCrawlAsSequential} failure). This test proves the fix
+     * structurally: every backend call the engine makes, across a whole multi-page crawl, happens
+     * on the exact same thread that called {@link BrowserCrawler#crawl}.
+     */
     @Test
-    void logicalResultOrderIsUnaffectedByCompletionTimingUnderConcurrency() {
-        IBrowser browser = scriptedBrowser();
-        // frontier/discovery order is a, b, c - but c finishes first and a finishes last
-        scripts.put(
-                "https://example.com/",
-                PageScript.ok(
-                        "https://example.com/",
-                        "Home",
-                        List.of(
-                                LinkObservationFixtures.linkElement(
-                                        1, "/a", "https://example.com/a", "A"),
-                                LinkObservationFixtures.linkElement(
-                                        2, "/b", "https://example.com/b", "B"),
-                                LinkObservationFixtures.linkElement(
-                                        3, "/c", "https://example.com/c", "C"))));
-        scripts.put(
-                "https://example.com/a",
-                PageScript.delayed("https://example.com/a", "A", Duration.ofMillis(150)));
-        scripts.put(
-                "https://example.com/b",
-                PageScript.delayed("https://example.com/b", "B", Duration.ofMillis(30)));
-        scripts.put(
-                "https://example.com/c",
-                PageScript.delayed("https://example.com/c", "C", Duration.ofMillis(80)));
+    void everyBackendCallHappensOnTheSingleCallingThread() {
+        long callingThreadId = Thread.currentThread().threadId();
+        List<Long> observedThreadIds = new ArrayList<>();
+        IBrowser browser = mock(IBrowser.class);
+        when(browser.newPage())
+                .thenAnswer(
+                        invocation -> {
+                            observedThreadIds.add(Thread.currentThread().threadId());
+                            IPage page = mock(IPage.class);
+                            when(page.url()).thenReturn("https://example.com/");
+                            when(page.title()).thenReturn("Home");
+                            when(page.evaluate(anyString())).thenReturn("stable");
+                            when(page.observe(any()))
+                                    .thenReturn(
+                                            LinkObservationFixtures.withLinks(
+                                                    "https://example.com/", List.of()));
+                            doAnswer(
+                                            nav -> {
+                                                observedThreadIds.add(
+                                                        Thread.currentThread().threadId());
+                                                return null;
+                                            })
+                                    .when(page)
+                                    .navigate(anyString());
+                            return page;
+                        });
 
-        BrowserCrawlResult result =
-                crawler.crawl(
-                        requestFor(browser, "https://example.com/").maxConcurrency(3).build());
+        crawler.crawl(requestFor(browser, "https://example.com/").build());
 
-        assertThat(result.pages())
-                .extracting(p -> p.finalUrl().toString())
-                .containsExactly(
-                        "https://example.com/",
-                        "https://example.com/a",
-                        "https://example.com/b",
-                        "https://example.com/c");
+        assertThat(observedThreadIds).isNotEmpty();
+        assertThat(observedThreadIds).allMatch(id -> id == callingThreadId);
     }
 }

@@ -28,8 +28,9 @@ import java.util.regex.Pattern;
  *     #closeBrowserOnCompletion()} is {@code true}.
  * @param seeds absolute {@code http}/{@code https} URLs to start from, depth {@code 0}
  * @param maxDepth the greatest depth a claimed navigation may have
- * @param maxPages the greatest number of navigations this crawl may claim - enforced by one
- *     synchronized gate shared by every worker, so it is exact under concurrency
+ * @param maxPages the greatest number of navigations this crawl may claim - enforced exactly by
+ *     {@code ClaimGate}, which stays defensively synchronized even though, with {@link
+ *     #maxConcurrency()} pinned to {@code 1}, only one thread ever calls it
  * @param sameHostOnly whether only the seeds' own hosts (not subdomains, unless {@link
  *     #includeSubdomains()}) are in scope
  * @param includeSubdomains whether subdomains of an in-scope host are also in scope
@@ -38,8 +39,13 @@ import java.util.regex.Pattern;
  *     may take before {@link BrowserCrawlFailureType#NAVIGATION_TIMEOUT}
  * @param stabilityWindow how long the page's DOM must report the same stability fingerprint before
  *     a page is considered stable - see {@code docs/browser-crawler.md#stability}
- * @param maxConcurrency the greatest number of pages navigated at once; bounds the number of
- *     browser pages/tabs the crawler creates
+ * @param maxConcurrency must currently be exactly {@code 1}. Neither {@link IBrowser} nor its pages
+ *     are documented as thread-safe, and one caller-supplied {@code IBrowser} instance is the crawl
+ *     session (cookies/storage/auth), so this engine navigates on a single execution lane - see
+ *     {@code docs/browser-crawler.md#concurrency-model}. The field is kept, rather than removed, so
+ *     a future phase that can honestly offer more than one lane (for example, one independent
+ *     {@code IBrowser} per worker with an explicit session-sharing story) does not need a breaking
+ *     API change to do it.
  * @param frameCrawlPolicy which frames to discover links from, in addition to the top-level
  *     document - see {@link FrameCrawlPolicy}
  * @param queryParameterPolicy how query parameters are normalized for the deduplication identity -
@@ -102,9 +108,14 @@ public record BrowserCrawlRequest(
         if (stabilityWindow.isNegative() || stabilityWindow.isZero()) {
             throw new IllegalArgumentException("stabilityWindow must be positive");
         }
-        if (maxConcurrency < 1) {
+        if (maxConcurrency != 1) {
             throw new IllegalArgumentException(
-                    "maxConcurrency must be >= 1, was " + maxConcurrency);
+                    "maxConcurrency must be exactly 1, was "
+                            + maxConcurrency
+                            + " - IBrowser/IPage are not documented as thread-safe, and one"
+                            + " IBrowser instance is the crawl session, so this engine navigates"
+                            + " on a single execution lane (see"
+                            + " docs/browser-crawler.md#concurrency-model)");
         }
         Objects.requireNonNull(frameCrawlPolicy, "frameCrawlPolicy");
         if (frameCrawlPolicy != FrameCrawlPolicy.TOP_LEVEL_ONLY) {

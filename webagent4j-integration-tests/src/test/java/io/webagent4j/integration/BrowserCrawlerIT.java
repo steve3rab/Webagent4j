@@ -1,12 +1,14 @@
 package io.webagent4j.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sun.net.httpserver.HttpServer;
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browsercrawler.BrowserCrawlRequest;
 import io.webagent4j.browsercrawler.BrowserCrawlResult;
 import io.webagent4j.browsercrawler.BrowserCrawlTerminationReason;
+import io.webagent4j.browsercrawler.BrowserCrawledPage;
 import io.webagent4j.browsercrawler.BrowserCrawler;
 import io.webagent4j.browsercrawler.CancellationToken;
 import io.webagent4j.core.WebAgent;
@@ -73,6 +75,46 @@ class BrowserCrawlerIT {
                                 </script>
                                 </body></html>
                                 """));
+        server.createContext(
+                "/wide",
+                exchange ->
+                        respond(
+                                exchange,
+                                html(
+                                        "Wide",
+                                        "<a href=\"/wide/1\">1</a><a href=\"/wide/2\">2</a>"
+                                                + "<a href=\"/wide/3\">3</a><a href=\"/wide/4\">4</a>"
+                                                + "<a href=\"/wide/5\">5</a><a href=\"/wide/6\">6</a>")));
+        server.createContext(
+                "/wide/1", exchange -> respond(exchange, html("Wide1", "<a href=\"child\">C</a>")));
+        server.createContext(
+                "/wide/2", exchange -> respond(exchange, html("Wide2", "<a href=\"child\">C</a>")));
+        server.createContext("/wide/3", exchange -> respond(exchange, html("Wide3", "")));
+        server.createContext("/wide/4", exchange -> respond(exchange, html("Wide4", "")));
+        server.createContext("/wide/5", exchange -> respond(exchange, html("Wide5", "")));
+        server.createContext("/wide/6", exchange -> respond(exchange, html("Wide6", "")));
+        server.createContext(
+                "/wide/1/child", exchange -> respond(exchange, html("Wide1Child", "")));
+        server.createContext(
+                "/wide/2/child", exchange -> respond(exchange, html("Wide2Child", "")));
+        server.createContext(
+                "/session-start",
+                exchange -> {
+                    exchange.getResponseHeaders().add("Set-Cookie", "session=abc123; Path=/");
+                    respond(
+                            exchange,
+                            html("SessionStart", "<a href=\"/session-only\">Session only</a>"));
+                });
+        server.createContext(
+                "/session-only",
+                exchange -> {
+                    String cookieHeader = exchange.getRequestHeaders().getFirst("Cookie");
+                    boolean authenticated =
+                            cookieHeader != null && cookieHeader.contains("session=abc123");
+                    respond(
+                            exchange,
+                            html(authenticated ? "Authenticated" : "Unauthenticated", ""));
+                });
         serverExecutor = Executors.newVirtualThreadPerTaskExecutor();
         server.setExecutor(serverExecutor);
         server.start();
@@ -186,15 +228,86 @@ class BrowserCrawlerIT {
         assertThat(result.pages()).isEmpty();
     }
 
+    /**
+     * Regression test for the concurrency correctness bug this branch fixes: the original Phase 0.7
+     * engine navigated up to {@code maxConcurrency} pages at once via a worker-thread pool sharing
+     * one {@code IPage} per thread, created from the same caller-supplied {@code IBrowser}. Neither
+     * {@code IBrowser} nor {@code IPage} is documented as thread-safe, and the concrete Playwright
+     * adapter backs both with unsynchronized state over one native Playwright browser/context -
+     * under real concurrent navigation this silently corrupted the crawl (page {@code /b} vanished
+     * from the committed result even though it was correctly discovered). The engine no longer
+     * offers navigation concurrency at all: {@code maxConcurrency} must be exactly {@code 1}, and
+     * every backend call happens on the single thread that calls {@code crawl(...)}. This test
+     * asserts both halves of the fix: the invalid configuration is rejected before any navigation
+     * starts, and a normal (single-lane) crawl of the exact graph that used to lose {@code /b}
+     * still reaches every page.
+     */
     @Test
-    void boundedConcurrencyCompletesTheSameCrawlAsSequential() {
-        BrowserCrawlResult result =
-                new BrowserCrawler().crawl(requestFor("/").maxConcurrency(3).build());
+    void maxConcurrencyAboveOneIsRejectedAndTheSequentialCrawlStillReachesEveryPage() {
+        assertThatThrownBy(() -> requestFor("/").maxConcurrency(3).build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exactly 1");
+
+        BrowserCrawlResult result = new BrowserCrawler().crawl(requestFor("/").build());
 
         assertThat(result.pages())
                 .extracting(p -> p.finalUrl().toString())
                 .containsExactlyInAnyOrder(
                         baseUrl + "/", baseUrl + "/a", baseUrl + "/b", baseUrl + "/c");
         assertThat(result.terminationReason()).isEqualTo(BrowserCrawlTerminationReason.COMPLETED);
+    }
+
+    /**
+     * BC-ROB-013 / stress regression for lost-or-duplicated URLs (section 13 of the concurrency
+     * correction spec): a wider graph with several second-level branches, crawled three times
+     * against the same deterministic local fixture, must reach every expected page exactly once
+     * every time - no page ever disappears (the original bug) or gets navigated twice.
+     */
+    @Test
+    void widerGraphIsCrawledCompletelyAndExactlyOnceAcrossRepeatedRuns() {
+        for (int run = 0; run < 3; run++) {
+            BrowserCrawlResult result =
+                    new BrowserCrawler()
+                            .crawl(requestFor("/wide").maxDepth(2).maxPages(20).build());
+
+            assertThat(result.pages())
+                    .extracting(p -> p.finalUrl().toString())
+                    .containsExactlyInAnyOrder(
+                            baseUrl + "/wide",
+                            baseUrl + "/wide/1",
+                            baseUrl + "/wide/2",
+                            baseUrl + "/wide/3",
+                            baseUrl + "/wide/4",
+                            baseUrl + "/wide/5",
+                            baseUrl + "/wide/6",
+                            baseUrl + "/wide/1/child",
+                            baseUrl + "/wide/2/child");
+            assertThat(result.failures()).isEmpty();
+            assertThat(result.terminationReason())
+                    .isEqualTo(BrowserCrawlTerminationReason.COMPLETED);
+        }
+    }
+
+    /**
+     * Session semantics guard (section 17): one {@code IBrowser} is the crawl session, so cookies
+     * set by the first crawled page must still be visible when the crawler navigates a linked page
+     * that requires them. This protects against a future concurrency change accidentally splitting
+     * navigation across independent browser instances/contexts, which would silently break session
+     * continuity.
+     */
+    @Test
+    void sessionCookieSetOnTheFirstPageIsStillPresentOnALinkedPage() {
+        BrowserCrawlResult result =
+                new BrowserCrawler().crawl(requestFor("/session-start").build());
+
+        assertThat(result.failures()).isEmpty();
+        BrowserCrawledPage sessionOnlyPage =
+                result.pages().stream()
+                        .filter(p -> p.finalUrl().toString().equals(baseUrl + "/session-only"))
+                        .findFirst()
+                        .orElseThrow(() -> new AssertionError("/session-only was never crawled"));
+        // the page only renders this title when it receives the cookie /session-start set - proving
+        // the crawl's two navigations shared one browser session/context, not independent ones
+        assertThat(sessionOnlyPage.title()).contains("Authenticated");
     }
 }

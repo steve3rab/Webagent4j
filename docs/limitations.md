@@ -96,8 +96,11 @@ enumerate every frame on a page); generic click-driven SPA exploration; tracking
 `history.pushState()`-only URL changes as separate crawl entries; an intermediate HTTP redirect hop
 list; download detection (a browser-initiated download is not distinguished from a rendered
 document); a `robots.txt` engine; a workflow engine; AI-based ranking or extraction; or MCP/agent
-tooling. `robots.txt` and SSRF limitations are the same as the HTTP crawler's, above. This phase did
-not add a dedicated `webagent4j-robustness-tests` adversarial suite (unlike Phase 0.6); the
-integration and unit suites cover the critical invariants (bounded concurrency, deterministic result
-ordering, atomic claiming, resource cleanup, cancellation) but not the full adversarial scenario
-matrix.
+tooling. `robots.txt` and SSRF limitations are the same as the HTTP crawler's, above. Only a single
+navigation lane is supported - `maxConcurrency` must be `1`, since neither `IBrowser` nor `IPage`
+carries a thread-safety contract to build physical navigation concurrency on (see
+[browser-crawler.md#concurrency-model](browser-crawler.md#concurrency-model)). The integration suite
+includes a dedicated real-Playwright adversarial suite, `BrowserCrawlerRobustnessIT`
+(BC-ROB-001..014), covering cyclic graphs, duplicate fan-out, normalization dedup, exact `maxPages`/
+`maxDepth` bounds, cancellation/failFast resource cleanup, backend failures, stability timeouts,
+dynamic-DOM discovery boundaries, out-of-scope links/redirects, and deterministic repeated runs.

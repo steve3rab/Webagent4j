@@ -22,28 +22,24 @@ import io.webagent4j.wait.WaitResult;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The deterministic, bounded-concurrency browser crawler engine - the only implementation of {@link
+ * The deterministic, single-lane browser crawler engine - the only implementation of {@link
  * IBrowserCrawler}, mirroring how {@code HttpCrawler} is the only implementation of {@code
  * ICrawler}.
  *
  * <p>Each {@link #crawl(BrowserCrawlRequest)} call constructs a private, per-call {@code Session}
  * holding all mutable state, so one {@code BrowserCrawler} instance is stateless and safe to reuse
  * across calls - the same pattern {@code HttpCrawler} uses. See {@code docs/browser-crawler.md} for
- * the full navigation/stability/concurrency/failure pipeline.
+ * the full navigation/stability/failure pipeline and why this engine deliberately does not attempt
+ * physical navigation concurrency: {@link io.webagent4j.browser.IBrowser} and {@link
+ * io.webagent4j.browser.IPage} are both documented as not thread-safe, and one caller-supplied
+ * {@code IBrowser} is the crawl session (cookies/storage/auth all live on it) - so every backend
+ * call this engine makes happens on the single thread that calls {@link #crawl}, never offloaded to
+ * a worker pool.
  */
 public final class BrowserCrawler implements IBrowserCrawler {
 
@@ -65,11 +61,18 @@ public final class BrowserCrawler implements IBrowserCrawler {
     }
 
     /**
-     * One crawl's mutable state and orchestration loop. Frontier expansion, claiming, and result
-     * assembly all happen on the single coordinator thread that calls {@link #run()} - only page
-     * navigation is offloaded to worker threads. See {@code
-     * docs/browser-crawler.md#bounded-concurrency} for why this makes concurrent completion order
-     * irrelevant to the deterministic result order.
+     * One crawl's mutable state and orchestration loop.
+     *
+     * <p>Every method on this class - frontier expansion, claiming, navigation, and result assembly
+     * alike - runs on the single thread that calls {@link #run()}. There is no worker pool and no
+     * {@code ThreadLocal}: {@link io.webagent4j.browser.IBrowser#newPage()} and every {@link
+     * io.webagent4j.browser.IPage} operation this engine performs are called from that one thread
+     * only, for the whole lifetime of the crawl. This is a deliberate architecture decision, not an
+     * oversight - see {@code docs/browser-crawler.md#concurrency-model} for the full rationale: a
+     * shared {@code IBrowser} session is not documented as thread-safe (neither is the {@code
+     * IPage} it creates), so offloading navigation to worker threads - the original Phase 0.7
+     * design - silently corrupted crawl results under real Playwright (a discovered page went
+     * missing under concurrent navigation; see the regression test named after that failure).
      */
     private static final class Session {
 
@@ -79,10 +82,8 @@ public final class BrowserCrawler implements IBrowserCrawler {
         private final IUrlNormalizer normalizer;
         private final ClaimGate claimGate;
         private final BrowserCrawlFrontier frontier = new BrowserCrawlFrontier();
-        private final AtomicLong sequenceCounter = new AtomicLong();
-        private final ExecutorService executor;
-        private final ThreadLocal<IPage> workerPage;
-        private final Set<IPage> ownedPages = ConcurrentHashMap.newKeySet();
+        private long sequenceCounter = 0;
+        private IPage page;
 
         private final List<BrowserCrawledPage> pages = new ArrayList<>();
         private final List<BrowserCrawlFailure> failures = new ArrayList<>();
@@ -92,7 +93,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
         private int outOfScopeUrls = 0;
         private int cancelledTasks = 0;
         private int maxDepthReached = 0;
-        private volatile boolean maxPagesHit = false;
+        private boolean maxPagesHit = false;
         private boolean fatalFailureHit = false;
         private boolean stopRequested = false;
 
@@ -102,14 +103,6 @@ public final class BrowserCrawler implements IBrowserCrawler {
             this.stabilityWaiter = new PageStabilityWaiter(waitEngine);
             this.normalizer = new BrowserUrlNormalizer(request.queryParameterPolicy());
             this.claimGate = new ClaimGate(request.maxPages());
-            this.executor = Executors.newFixedThreadPool(request.maxConcurrency());
-            this.workerPage =
-                    ThreadLocal.withInitial(
-                            () -> {
-                                IPage page = request.browser().newPage();
-                                ownedPages.add(page);
-                                return page;
-                            });
         }
 
         BrowserCrawlResult run() {
@@ -117,27 +110,12 @@ public final class BrowserCrawler implements IBrowserCrawler {
                 for (URI seed : request.seeds()) {
                     claimAndEnqueue(seed, 0, Optional.empty());
                 }
-                Map<Long, BrowserCrawlTask> submitted = new LinkedHashMap<>();
-                Map<Long, Future<ITaskOutcome>> inFlight = new LinkedHashMap<>();
-                while (!frontier.isEmpty() || !inFlight.isEmpty()) {
-                    if (!stopRequested) {
-                        while (inFlight.size() < request.maxConcurrency() && !frontier.isEmpty()) {
-                            BrowserCrawlTask task = frontier.poll().orElseThrow();
-                            submitted.put(task.sequence(), task);
-                            inFlight.put(task.sequence(), executor.submit(() -> execute(task)));
-                        }
-                    }
-                    if (inFlight.isEmpty()) {
-                        break;
-                    }
-                    long nextSequence = inFlight.keySet().iterator().next();
-                    Future<ITaskOutcome> future = inFlight.remove(nextSequence);
-                    BrowserCrawlTask task = submitted.remove(nextSequence);
-                    commit(task, awaitOutcome(future));
+                while (!stopRequested && !frontier.isEmpty()) {
+                    BrowserCrawlTask task = frontier.poll().orElseThrow();
+                    commit(task, execute(task));
                 }
             } finally {
-                executor.shutdown();
-                for (IPage page : ownedPages) {
+                if (page != null) {
                     closeQuietly(page);
                 }
                 if (request.closeBrowserOnCompletion()) {
@@ -158,23 +136,6 @@ public final class BrowserCrawler implements IBrowserCrawler {
                             maxDepthReached),
                     rejectedUrls,
                     terminationReason());
-        }
-
-        private ITaskOutcome awaitOutcome(Future<ITaskOutcome> future) {
-            try {
-                return future.get();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return new NavigationFailure(
-                        BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE,
-                        "crawl coordinator interrupted",
-                        Optional.of(e));
-            } catch (ExecutionException e) {
-                return new NavigationFailure(
-                        BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE,
-                        "unexpected worker failure: " + e.getCause(),
-                        Optional.ofNullable(e.getCause()));
-            }
         }
 
         private BrowserCrawlTerminationReason terminationReason() {
@@ -245,7 +206,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
                     maxDepthReached = Math.max(maxDepthReached, depth);
                     frontier.enqueue(
                             new BrowserCrawlTask(
-                                    sequenceCounter.getAndIncrement(),
+                                    sequenceCounter++,
                                     normalized,
                                     depth,
                                     normalized,
@@ -266,7 +227,14 @@ public final class BrowserCrawler implements IBrowserCrawler {
                     0);
         }
 
-        // ---- worker-thread navigation (may run concurrently across tasks) ----
+        // ---- navigation (always on the single thread that called run()) ----
+
+        private IPage page() {
+            if (page == null) {
+                page = request.browser().newPage();
+            }
+            return page;
+        }
 
         private ITaskOutcome execute(BrowserCrawlTask task) {
             if (request.cancellationToken().isCancelled()) {
@@ -275,7 +243,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
                         "cancelled before navigation began",
                         Optional.empty());
             }
-            IPage page = workerPage.get();
+            IPage page = page();
             WaitBudget budget = WaitBudget.start(request.navigationTimeout(), waitEngine.clock());
             try {
                 page.navigate(task.url().toString());
@@ -410,7 +378,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
             maxDepthReached = Math.max(maxDepthReached, childDepth);
             frontier.enqueue(
                     new BrowserCrawlTask(
-                            sequenceCounter.getAndIncrement(),
+                            sequenceCounter++,
                             normalized,
                             childDepth,
                             parent.seedOrigin(),

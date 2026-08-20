@@ -32,7 +32,6 @@ public final class BrowserCrawlSessionExample {
                             .seed(seedUrl)
                             .maxDepth(3)
                             .maxPages(100)
-                            .maxConcurrency(2)
                             .navigationTimeout(Duration.ofSeconds(20))
                             .cancellationToken(cancellationToken)
                             .build();
