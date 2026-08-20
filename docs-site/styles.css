@@ -1,0 +1,91 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #5a5a5a;
+  --border: #d9d9d9;
+  --accent: #b04a00;
+  --card-bg: #f7f6f4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14100d;
+    --fg: #f2ede6;
+    --muted: #b8afa4;
+    --border: #3a332c;
+    --accent: #ff9d5c;
+    --card-bg: #1d1712;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 3rem;
+}
+
+h1 {
+  font-size: 2rem;
+  margin: 0 0 0.25rem;
+}
+
+p.tagline {
+  color: var(--muted);
+  font-size: 1.1rem;
+  margin: 0 0 2rem;
+}
+
+nav.links {
+  display: grid;
+  gap: 0.75rem;
+}
+
+nav.links a {
+  display: block;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--fg);
+  text-decoration: none;
+}
+
+nav.links a:hover,
+nav.links a:focus-visible {
+  border-color: var(--accent);
+}
+
+nav.links a strong {
+  display: block;
+  color: var(--accent);
+  margin-bottom: 0.15rem;
+}
+
+nav.links a span {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+footer {
+  margin-top: 2.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+footer a {
+  color: inherit;
+}

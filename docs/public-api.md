@@ -5,6 +5,9 @@ types are meant to be used directly, and the contracts those types actually guar
 substitute for the generated Javadoc (the exhaustive method-level reference) or the domain guides
 linked throughout (the narrative "how it works" documents) - it exists to connect the two.
 
+**Generated Javadoc** (full method-level reference, built from the current head of `main`):
+<https://steve3rab.github.io/Webagent4j/api/latest/>
+
 ## Status
 
 - **Java 21 or newer** is required everywhere in this project.
