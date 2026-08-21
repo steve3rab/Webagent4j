@@ -26,8 +26,8 @@ import java.util.Optional;
  * <p>{@link RecordingId}, {@code capturedAt}, {@code ActionId}, a condition's description text, a
  * failure's {@code safeMessage}, and a failure's underlying exception type name are deliberately
  * never compared: they are trace or diagnostic metadata that can legitimately differ between two
- * semantically identical executions (a fresh random correlation ID, an embedded timestamp, and so
- * on), not part of a workflow's documented behavior.
+ * semantically identical executions (a correlation ID, an embedded timestamp, and so on), not part
+ * of a workflow's documented behavior.
  */
 public final class WorkflowReplayVerifier {
 
@@ -184,7 +184,7 @@ public final class WorkflowReplayVerifier {
         if (expected.isEmpty()) {
             return;
         }
-        // actionId is a fresh correlation identifier per execution and is never compared.
+        // actionId is execution metadata and is never compared.
         RecordedAction expectedAction = expected.get();
         WorkflowActionSummary actualAction = actual.get();
         compareText(

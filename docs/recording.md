@@ -1,10 +1,11 @@
 # Recording (Phase 0.9-A)
 
-`webagent4j-recording` captures a `WorkflowResult` into an immutable, versioned, secret-safe
-`WorkflowRecording`; encodes and decodes it to a canonical JSON transport form; and offers a pure,
-offline structured comparison between a recording and a new execution's `WorkflowResult`. This
-document covers the purpose, architecture, what is and is not recorded, the secret-safety boundary,
-the JSON schema, replay semantics, and the non-goals of this phase.
+`webagent4j-recording` captures a `WorkflowResult` into an immutable, versioned recording that
+excludes raw workflow values and preserves engine-redacted diagnostics; encodes and decodes it to a
+canonical JSON transport form; and offers a pure, offline structured comparison between a recording
+and a new execution's `WorkflowResult`. This document covers the purpose, architecture, what is and
+is not recorded, the secret-safety and metadata trust boundaries, the JSON schema, replay semantics,
+and the non-goals of this phase.
 
 ## Purpose and flow
 
@@ -37,13 +38,12 @@ against a caller-supplied `WorkflowResult` from a new, independently performed e
 means deserializing a recording and having this module automatically click, type, submit, or
 navigate again.** See [Future live-replay boundary](#future-live-replay-boundary) below.
 
-This is a safe-source-model-first design: `WorkflowRecorder` builds its output directly from the
-already-safe fields workflow results themselves expose (`WorkflowStepResult`,
-`WorkflowConditionResult`, `WorkflowActionSummary`, `WorkflowFailure`), never from a raw execution
-model that would need sanitizing afterward. Secret-safety is therefore structural, not a redaction
-pass: the recorder's code simply never calls the one method (`WorkflowResult#output`) that could
-return a raw secret-capable value, so a secret cannot appear in a recording because the code path
-that could observe one is never exercised.
+This is a restricted-source-model-first design: `WorkflowRecorder` builds its output from
+`WorkflowStepResult`, `WorkflowConditionResult`, `WorkflowActionSummary`, and `WorkflowFailure`,
+never from raw workflow inputs, outputs, action values, or exceptions. Secret safety is structural
+for those raw workflow value channels, not a redaction pass inside Recording. Diagnostic text arrives
+already redacted by `WorkflowEngine`. Identifiers supplied by callers, workflow definitions, or
+action implementations are a separate metadata trust boundary and are persisted verbatim.
 
 ## What is recorded
 
@@ -54,9 +54,9 @@ For each `WorkflowStepResult`, `WorkflowRecorder` copies exactly:
   `WorkflowConditionResult`) - never `IWorkflowCondition#describe()` re-invoked directly, which
   would bypass `WorkflowEngine`'s termination-time secret redaction
 - The published output variable's *name*, never its value
-- A safe categorical action projection (`actionId`, `actionType`, `status`, `executionMode`) via
-  `WorkflowActionSummary` - never the underlying `ActionResult`'s raw `value`, observations, or
-  cause
+- The action pipeline's `actionId` correlation metadata plus categorical `actionType`, `status`, and
+  `executionMode` via `WorkflowActionSummary` - never the underlying `ActionResult`'s raw `value`,
+  observations, diagnostics, or cause. `actionId` is persisted verbatim and must be non-sensitive.
 - A safe structured failure (`type`, already-redacted `safeMessage`, `stepId`,
   `underlyingTypeName`, `actionFailureType`) via `WorkflowFailure` - never a raw `Throwable`
 
@@ -173,15 +173,43 @@ that fact are semantically significant when comparing two independent facts.
 
 ## Secret-safety boundary
 
-Every field above is either (a) categorical/structural data with no secret-capable content
-(`stepId`, `stepType`, `status`, enums, `actionId`) or (b) text `WorkflowEngine` had already
-redacted and bounded *before* `WorkflowRecorder` ever sees it (`WorkflowConditionResult.description`,
-`WorkflowFailure.safeMessage`). `WorkflowRecorder` performs no redaction of its own and needs none:
-it is structurally incapable of observing a raw secret value in the first place. See
-`SEC-REC-001`..`SEC-REC-004` and `REC-SAFE-001` in
+### Workflow data controlled by Recording
+
+`WorkflowRecorder` never captures:
+
+- `WorkflowInputs`;
+- raw `WorkflowOutputs` values or `WorkflowResult#output(...)` results;
+- `ActionResult#value()`, observations, or diagnostics;
+- raw `Throwable` data; or
+- the workflow secret registry.
+
+`WorkflowConditionResult.description` and `WorkflowFailure.safeMessage` arrive already redacted and
+bounded by `WorkflowEngine`. Recording preserves that engine-produced text without reaching back
+into the raw workflow data channels. See `SEC-REC-001`..`SEC-REC-004` and `REC-SAFE-001` in
 [the recording test suite](../webagent4j-recording/src/test/java/io/webagent4j/recording/) for the
 executable proof, including a real-Playwright end-to-end version in
 [`WorkflowRecordingIT`](../webagent4j-integration-tests/src/test/java/io/webagent4j/integration/WorkflowRecordingIT.java).
+
+### Caller/action-supplied metadata
+
+Recording does not inspect, classify, or redact arbitrary identifier text. `RecordingId` and
+`ActionId` are persisted verbatim. Other names retained from framework objects - `WorkflowId`,
+`WorkflowStepId`, `outputVariableName`, and `underlyingTypeName` - are also not automatically
+secret-redacted by this module. These fields must contain only non-sensitive identifiers or type
+metadata.
+
+`ActionId.create()` is the recommended normal source of opaque action correlation identifiers. The
+public `ActionId(String)` constructor remains supported for restored or custom identifiers, and a
+custom action implementation is responsible for keeping such values non-sensitive. Similarly,
+`RecordingId` is caller-owned metadata: Recording cannot protect a caller that deliberately puts a
+secret in `new RecordingId(secret)`.
+
+Safe normal metadata includes `ActionId.create()` and `new RecordingId("run-42")`. Passing a
+password to `new ActionId(password)` or an API token to `new RecordingId(apiToken)` is misuse of a
+metadata field. Recording intentionally performs no heuristic secret detection. Because record
+`toString()` output includes metadata fields, sensitive metadata could also appear in JSON,
+`toString()`, or application logs. `META-TRUST-001`..`META-TRUST-004` document this boundary with
+genuine workflow executions.
 
 This is a distinct guarantee from **decoder diagnostic safety** (below): the recorder guarantee is
 about what a *trusted* `WorkflowResult` can put into a recording; decoder diagnostic safety is about
@@ -293,9 +321,9 @@ settable field that could disagree with the mismatch list.
 
 | Field | Why it is ignored |
 |---|---|
-| `RecordingId` | Caller-supplied trace metadata, not part of a workflow's semantic outcome. |
+| `RecordingId` | Caller-supplied trace metadata persisted verbatim, not part of a workflow's semantic outcome. |
 | `capturedAt` | A timestamp of when the recording was made, not of what happened. |
-| `ActionId` | A fresh random correlation ID assigned per execution (`ActionId.create()`); two semantically identical executions of the same workflow would always mismatch on this field alone if it were compared, making it useless as a signal and actively harmful as a false positive. |
+| `ActionId` | Correlation metadata persisted verbatim. Normal pipelines use `ActionId.create()`, while custom actions may supply another non-sensitive identifier. In either case identity is not a semantic workflow outcome and is ignored to avoid false mismatches. |
 | A condition's `description` text | Diagnostic prose, not the semantic outcome - the *outcome* boolean is what is compared. |
 | `WorkflowFailure.safeMessage` | Diagnostic text that can legitimately differ in incidental detail between two semantically identical failures. |
 | The underlying exception's class name (`underlyingTypeName`) | An implementation detail, not part of a workflow's documented failure contract. |

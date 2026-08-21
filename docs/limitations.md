@@ -141,3 +141,9 @@ never a re-execution the module performs itself. Recreating browser actions from
 is ever added, is explicitly deferred to a later phase (see
 [recording.md#future-live-replay-boundary](recording.md#future-live-replay-boundary)) as an
 opt-in capability, not a default.
+
+Recording does not classify or redact arbitrary metadata identifiers. `RecordingId` and `ActionId`
+are persisted verbatim and may appear in JSON, record `toString()` output, or logs; callers and
+custom action implementations must keep them non-sensitive. This is an explicit metadata trust
+boundary, separate from the exclusion of raw workflow inputs, output values, action values, and raw
+exceptions.

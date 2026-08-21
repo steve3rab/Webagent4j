@@ -612,7 +612,8 @@ contract, condition semantics, and determinism guarantee).
 
 ### Recording
 
-**What it is:** a deterministic, versioned, secret-safe recording of one `WorkflowResult`
+**What it is:** a deterministic, versioned recording that excludes raw workflow values and
+preserves engine-redacted diagnostics from one `WorkflowResult`
 (`WorkflowRecorder`), canonical JSON encoding/decoding (`IWorkflowRecordingCodec`), and a pure,
 offline structured comparison between a recording and a new execution's `WorkflowResult`
 (`WorkflowReplayVerifier`). A recording is data, not a program - it has no `execute()` method and
@@ -642,7 +643,7 @@ if (!replay.matches()) {
 
 | Type | Purpose |
 | --- | --- |
-| `RecordingId` | caller-supplied recording identity (never randomly generated); ignored by replay comparison |
+| `RecordingId` | caller-supplied non-sensitive recording identity, persisted verbatim and ignored by replay comparison |
 | `RecordingSchemaVersion` | closed, numbered JSON schema version enum (`V1` only in this phase) |
 | `WorkflowRecording` | immutable top-level recording: `schemaVersion`, `recordingId`, `capturedAt`, `workflowId`, `status`, `steps`, `failure`; construction enforces the fail-fast execution shapes described in [recording.md#recording-validity](recording.md#recording-validity-a-recording-represents-one-fail-fast-execution) |
 | `RecordedWorkflowStep` | safe per-step projection, mirroring `WorkflowStepResult`'s invariants |
@@ -653,15 +654,16 @@ if (!replay.matches()) {
 | `WorkflowReplayVerifier` | stateless, pure, synchronous structured comparison: `(WorkflowRecording, WorkflowResult) -> WorkflowReplayResult` |
 | `WorkflowReplayResult`, `WorkflowReplayMismatch`, `WorkflowReplayMismatchType` | every difference found, in deterministic order; `matches()` is derived from `mismatches().isEmpty()` |
 
-**Secret safety:** structural, not a redaction pass - `WorkflowRecorder` only ever reads already-safe
-fields (`WorkflowConditionResult.description`, `WorkflowFailure.safeMessage`, categorical enums, an
-output variable's *name*) and never calls `WorkflowResult#output(WorkflowVariable)`, so a secret
-cannot appear in a recording because the code path that could observe one is never exercised.
+**Secret-safety boundary:** `WorkflowRecorder` never reads raw workflow inputs or output values,
+`WorkflowResult#output(WorkflowVariable)`, `ActionResult#value()`, observations, diagnostics, raw
+`Throwable` data, or the secret registry. It preserves condition and failure diagnostics already
+redacted by `WorkflowEngine`. Metadata identifiers such as `RecordingId` and `ActionId` are
+persisted verbatim, are not sanitized by Recording, and must be non-sensitive.
 
 **Replay semantics:** `WorkflowReplayVerifier#verify` never re-executes anything - the caller
 supplies a `WorkflowResult` from its own new `WorkflowEngine#execute` call. Comparison never fails
 fast (every mismatch is collected, in deterministic order) and deliberately ignores `RecordingId`,
-`capturedAt`, `ActionId` (a fresh random correlation ID per execution), a condition's description
+`capturedAt`, `ActionId` (non-semantic correlation metadata), a condition's description
 text, and a failure's `safeMessage`/underlying exception type name - see
 [recording.md#ignored-fields-and-why](recording.md#ignored-fields-and-why) for the full rationale.
 
