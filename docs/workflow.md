@@ -232,6 +232,13 @@ as defense-in-depth, even though a well-behaved condition should never have put 
 `referencedVariables()` that is null, contains a null, or throws is rejected at
 `Workflow.Builder#build()` time as `IllegalArgumentException`, before any execution can begin.
 
+`not`, `allOf`, and `anyOf` do not hide failures from a wrapped custom condition: a wrapped
+`describe()` that returns `null` or throws is still observed by `WorkflowEngine` as a malformed
+condition and becomes `CONDITION_EVALUATION_FAILED` - the combinator never normalizes a `null` child
+description into the literal text `"null"` through string concatenation, and it stops composing
+further child descriptions as soon as one is malformed, calling each child's `describe()` at most
+once.
+
 | Condition | Missing-variable semantics |
 |---|---|
 | `exists(variable)` | tolerates missing - returns `false` |

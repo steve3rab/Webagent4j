@@ -78,6 +78,16 @@ All notable changes to this project will be documented in this file. The format 
   the workflow terminates (`COMPLETED` or `FAILED`), then redacts it against every secret known by
   then and bounds it - mirroring the fix already applied to `WorkflowOutputs`. `condition.describe()`
   is still called at most once per evaluated condition either way. Added 5 new regression tests.
+- Fourth strict-review pass fixed a fail-closed contract bug in the built-in condition combinators:
+  `WorkflowConditions.not`/`allOf`/`anyOf` converted a wrapped custom condition's malformed `null`
+  `describe()` result into the literal text `"null"` through ordinary Java string concatenation and
+  `StringBuilder` appending, bypassing `WorkflowEngine`'s documented null-description fail-closed
+  path. Composite descriptions now propagate a `null` child description unchanged (never as literal
+  text), stop composing further children as soon as one is malformed, invoke each child's
+  `describe()` at most once, and let a wrapped child's thrown `RuntimeException` propagate to
+  `WorkflowEngine`'s existing defensive boundary unchanged. Added 9 new regression tests covering
+  `not`/`allOf`/`anyOf` with a null or throwing child description, both directly and through a full
+  workflow execution.
 
 ### Added (Browser Crawler — Phase 0.7)
 

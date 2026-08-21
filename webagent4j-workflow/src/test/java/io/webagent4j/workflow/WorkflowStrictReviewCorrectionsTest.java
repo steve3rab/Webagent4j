@@ -1249,6 +1249,247 @@ class WorkflowStrictReviewCorrectionsTest {
         assertThat(description).doesNotContain(value).contains("***");
     }
 
+    // ---- COND-COMPOSE: not/allOf/anyOf preserve a malformed child condition's describe() ------
+    // metadata rather than normalizing a null description into the literal text "null" ----------
+
+    private static IWorkflowCondition trueConditionWithDescribe(
+            String description, AtomicInteger describeCount) {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return true;
+            }
+
+            @Override
+            public String describe() {
+                describeCount.incrementAndGet();
+                return description;
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of();
+            }
+        };
+    }
+
+    private static IWorkflowCondition trueConditionWithNullDescribe(AtomicInteger describeCount) {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return true;
+            }
+
+            @Override
+            public String describe() {
+                describeCount.incrementAndGet();
+                return null;
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of();
+            }
+        };
+    }
+
+    private static IWorkflowCondition trueConditionWithThrowingDescribe() {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return true;
+            }
+
+            @Override
+            public String describe() {
+                throw new IllegalStateException("describe boom");
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of();
+            }
+        };
+    }
+
+    @Test
+    void condComposeNull001NotPreservesNullChildDescription() {
+        AtomicInteger describeCount = new AtomicInteger();
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(describeCount);
+        AtomicInteger stepRuns = new AtomicInteger();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                                "s1",
+                                                vars -> {
+                                                    stepRuns.incrementAndGet();
+                                                    return new FakePreparedAction<>(
+                                                            ActionResults.success("ok"),
+                                                            new AtomicInteger());
+                                                })
+                                        .when(WorkflowConditions.not(malformed)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(result.steps().get(0).status()).isEqualTo(WorkflowStepStatus.FAILED);
+        assertThat(stepRuns).hasValue(0);
+    }
+
+    @Test
+    void condComposeNull001bNotDescribeReturnsNullDirectly() {
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(new AtomicInteger());
+
+        assertThat(WorkflowConditions.not(malformed).describe()).isNull();
+    }
+
+    @Test
+    void condComposeNull002AllOfStopsAtFirstNullChildDescription() {
+        AtomicInteger firstDescribeCount = new AtomicInteger();
+        AtomicInteger malformedDescribeCount = new AtomicInteger();
+        AtomicInteger thirdDescribeCount = new AtomicInteger();
+        IWorkflowCondition first = trueConditionWithDescribe("first", firstDescribeCount);
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(malformedDescribeCount);
+        IWorkflowCondition third = trueConditionWithDescribe("third", thirdDescribeCount);
+        AtomicInteger stepRuns = new AtomicInteger();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                                "s1",
+                                                vars -> {
+                                                    stepRuns.incrementAndGet();
+                                                    return new FakePreparedAction<>(
+                                                            ActionResults.success("ok"),
+                                                            new AtomicInteger());
+                                                })
+                                        .when(WorkflowConditions.allOf(first, malformed, third)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(firstDescribeCount).hasValue(1);
+        assertThat(malformedDescribeCount).hasValue(1);
+        assertThat(thirdDescribeCount).hasValue(0);
+        assertThat(stepRuns).hasValue(0);
+    }
+
+    @Test
+    void condComposeNull002bAllOfDescribeReturnsNullDirectly() {
+        IWorkflowCondition valid = trueConditionWithDescribe("valid", new AtomicInteger());
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(new AtomicInteger());
+
+        assertThat(WorkflowConditions.allOf(valid, malformed).describe()).isNull();
+    }
+
+    @Test
+    void condComposeNull003AnyOfPreservesNullChildDescription() {
+        AtomicInteger describeCount = new AtomicInteger();
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(describeCount);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.anyOf(malformed)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+    }
+
+    @Test
+    void condComposeNull003bAnyOfDescribeReturnsNullDirectly() {
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(new AtomicInteger());
+
+        assertThat(WorkflowConditions.anyOf(malformed).describe()).isNull();
+    }
+
+    @Test
+    void condComposeEx001NotPropagatesChildDescribeException() {
+        IWorkflowCondition throwing = trueConditionWithThrowingDescribe();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.not(throwing)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(result.failure().orElseThrow().underlyingTypeName())
+                .contains(IllegalStateException.class.getName());
+    }
+
+    @Test
+    void condComposeEx002AllOfPropagatesChildDescribeException() {
+        IWorkflowCondition valid = trueConditionWithDescribe("ok", new AtomicInteger());
+        IWorkflowCondition throwing = trueConditionWithThrowingDescribe();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.allOf(valid, throwing)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(result.failure().orElseThrow().underlyingTypeName())
+                .contains(IllegalStateException.class.getName());
+    }
+
+    @Test
+    void condComposeCall001NotCallsChildDescribeExactlyOnce() {
+        AtomicInteger evaluateCount = new AtomicInteger();
+        AtomicInteger describeCount = new AtomicInteger();
+        IWorkflowCondition child =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        evaluateCount.incrementAndGet();
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        describeCount.incrementAndGet();
+                        return "child";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.not(child)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(evaluateCount).hasValue(1);
+        assertThat(describeCount).hasValue(1);
+    }
+
     // ---- STEP-RESULT: WorkflowStepResult invariants --------------------------------------------
 
     @Test

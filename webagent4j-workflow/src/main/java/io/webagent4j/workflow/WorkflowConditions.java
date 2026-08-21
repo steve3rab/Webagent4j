@@ -132,7 +132,9 @@ public final class WorkflowConditions {
      * method is itself invoked - so a custom {@code condition} that throws from either is handled
      * by the same defensive paths as any other condition ({@link WorkflowEngine} at evaluation
      * time, {@code Workflow.Builder#build()} for {@code referencedVariables()}), not eagerly at
-     * composition time.
+     * composition time. A {@code null} {@code condition.describe()} is preserved as {@code null} -
+     * never normalized to the literal text {@code "null"} - so {@link WorkflowEngine} still
+     * classifies a malformed wrapped condition as {@code CONDITION_EVALUATION_FAILED}.
      */
     public static IWorkflowCondition not(IWorkflowCondition condition) {
         Objects.requireNonNull(condition, "condition");
@@ -144,7 +146,11 @@ public final class WorkflowConditions {
 
             @Override
             public String describe() {
-                return "not(" + condition.describe() + ")";
+                String childDescription = condition.describe();
+                if (childDescription == null) {
+                    return null;
+                }
+                return "not(" + childDescription + ")";
             }
 
             @Override
@@ -174,7 +180,10 @@ public final class WorkflowConditions {
         };
     }
 
-    /** True only when every one of {@code conditions} is true. */
+    /**
+     * True only when every one of {@code conditions} is true. {@code describe()} preserves a {@code
+     * null} child description as {@code null} - see {@link #describeAll}.
+     */
     public static IWorkflowCondition allOf(IWorkflowCondition... conditions) {
         List<IWorkflowCondition> copy = List.of(conditions);
         if (copy.isEmpty()) {
@@ -193,7 +202,11 @@ public final class WorkflowConditions {
 
             @Override
             public String describe() {
-                return "allOf(" + describeAll(copy) + ")";
+                String allDescriptions = describeAll(copy);
+                if (allDescriptions == null) {
+                    return null;
+                }
+                return "allOf(" + allDescriptions + ")";
             }
 
             @Override
@@ -203,7 +216,10 @@ public final class WorkflowConditions {
         };
     }
 
-    /** True when at least one of {@code conditions} is true. */
+    /**
+     * True when at least one of {@code conditions} is true. {@code describe()} preserves a {@code
+     * null} child description as {@code null} - see {@link #describeAll}.
+     */
     public static IWorkflowCondition anyOf(IWorkflowCondition... conditions) {
         List<IWorkflowCondition> copy = List.of(conditions);
         if (copy.isEmpty()) {
@@ -222,7 +238,11 @@ public final class WorkflowConditions {
 
             @Override
             public String describe() {
-                return "anyOf(" + describeAll(copy) + ")";
+                String allDescriptions = describeAll(copy);
+                if (allDescriptions == null) {
+                    return null;
+                }
+                return "anyOf(" + allDescriptions + ")";
             }
 
             @Override
@@ -232,13 +252,24 @@ public final class WorkflowConditions {
         };
     }
 
+    /**
+     * Joins every condition's {@code describe()}, in declaration order, calling each at most once.
+     * Returns {@code null} - never the literal text {@code "null"} - as soon as any child's
+     * description is {@code null}, without calling {@code describe()} on the remaining children:
+     * {@link WorkflowEngine} must still see a malformed wrapped condition as malformed, not as a
+     * composite whose text happens to contain the word "null".
+     */
     private static String describeAll(List<IWorkflowCondition> conditions) {
         StringBuilder text = new StringBuilder();
         for (int i = 0; i < conditions.size(); i++) {
+            String description = conditions.get(i).describe();
+            if (description == null) {
+                return null;
+            }
             if (i > 0) {
                 text.append(", ");
             }
-            text.append(conditions.get(i).describe());
+            text.append(description);
         }
         return text.toString();
     }
