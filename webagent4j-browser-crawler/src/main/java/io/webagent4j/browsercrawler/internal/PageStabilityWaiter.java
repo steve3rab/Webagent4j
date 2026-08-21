@@ -118,13 +118,19 @@ public final class PageStabilityWaiter {
      *     it, precisely so {@code BrowserCrawler} can preserve its typed provenance
      */
     public void awaitStable(IPage page, WaitBudget budget, Duration stabilityWindow) {
-        Duration timeout = budget.remaining();
-        if (timeout.toMillis() < 1) {
+        // budget.remaining() is computed from a live monotonic clock, so it is essentially never
+        // an exact whole millisecond (nanosecond-level jitter is the norm) - floored to whole
+        // milliseconds here, once, so it satisfies IPage#waitForCondition(String, Duration)'s
+        // whole-millisecond-precision contract without ever exceeding the real remaining budget:
+        // flooring can only shorten the bound handed to the backend, never lengthen it.
+        long remainingMillis = budget.remaining().toMillis();
+        if (remainingMillis < 1) {
             throw new ConditionTimeoutException(
                     "stability wait not attempted: the navigationTimeout budget was already"
                             + " exhausted by navigation itself, leaving no time for the stability"
                             + " wait");
         }
+        Duration timeout = Duration.ofMillis(remainingMillis);
         String script =
                 String.format(
                         STABILITY_CONDITION_SCRIPT_TEMPLATE,

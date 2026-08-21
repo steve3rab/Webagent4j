@@ -275,24 +275,27 @@ public final class BrowserCrawler implements IBrowserCrawler {
             }
             IPage page = page();
             WaitBudget budget = WaitBudget.start(request.navigationTimeout(), waitEngine.clock());
-            // budget.remaining().toMillis() < 1, not budget.expired(): IPage#navigate(String,
-            // Duration) now rejects a positive-but-sub-millisecond timeout with
-            // IllegalArgumentException (see IPage's class-level "Timeout precision" note) rather
-            // than silently flooring it, so a remaining budget under 1ms must be treated as
-            // already-expired here, before ever reaching that validation, exactly like
-            // PageStabilityWaiter does for the stability leg.
-            if (budget.remaining().toMillis() < 1) {
+            // budget.remaining() is computed from a live monotonic clock, so it is essentially
+            // never an exact whole millisecond (nanosecond-level jitter is the norm, not the
+            // exception) - floored to whole milliseconds here, once, via toMillis()/ofMillis()
+            // rather than passed through raw, so it satisfies IPage#navigate(String, Duration)'s
+            // whole-millisecond-precision contract (see IPage's class-level "Timeout precision"
+            // note) without ever exceeding the real remaining budget: flooring can only shorten
+            // the bound handed to the backend, never lengthen it past what was actually left.
+            long remainingMillis = budget.remaining().toMillis();
+            if (remainingMillis < 1) {
                 return new NavigationFailure(
                         BrowserCrawlFailureType.NAVIGATION_TIMEOUT,
                         "navigationTimeout budget already elapsed before navigation began",
                         Optional.empty());
             }
+            Duration navigationTimeout = Duration.ofMillis(remainingMillis);
             try {
                 // The remaining budget, not any backend default, is the authoritative bound - see
                 // docs/browser-crawler.md#navigation-timeout. A backend that cannot honor a
                 // caller-supplied timeout fails explicitly (IPage#navigate(String, Duration)'s
                 // default throws UnsupportedOperationException) rather than silently ignoring it.
-                page.navigate(task.url().toString(), budget.remaining());
+                page.navigate(task.url().toString(), navigationTimeout);
             } catch (NavigationTimeoutException e) {
                 // Typed, backend-neutral timeout signal - see NavigationTimeoutException. No
                 // budget-expiry inference and no backend-specific message parsing are needed or
