@@ -86,3 +86,21 @@ Public Suffix List is used, so "domain" scoping compares literal hosts rather th
 true registrable domain - the caller is responsible for choosing correct `allowedHosts`/seeds.
 There is no SSRF protection beyond the scheme/host/domain restrictions the caller configures - the
 caller remains responsible for the destinations it authorizes.
+
+## Browser crawler (Phase 0.7)
+
+The browser crawler (see [docs/browser-crawler.md](browser-crawler.md)) is implemented, but
+explicitly does not implement: frame discovery beyond the top-level document (`FrameCrawlPolicy`
+values other than `TOP_LEVEL_ONLY` are rejected at construction - no public API exists yet to
+enumerate every frame on a page); generic click-driven SPA exploration; tracking
+`history.pushState()`-only URL changes as separate crawl entries; an intermediate HTTP redirect hop
+list; download detection (a browser-initiated download is not distinguished from a rendered
+document); a `robots.txt` engine; a workflow engine; AI-based ranking or extraction; or MCP/agent
+tooling. `robots.txt` and SSRF limitations are the same as the HTTP crawler's, above. Only a single
+navigation lane is supported - `maxConcurrency` must be `1`, since neither `IBrowser` nor `IPage`
+carries a thread-safety contract to build physical navigation concurrency on (see
+[browser-crawler.md#concurrency-model](browser-crawler.md#concurrency-model)). The integration suite
+includes a dedicated real-Playwright adversarial suite, `BrowserCrawlerRobustnessIT`
+(BC-ROB-001..014), covering cyclic graphs, duplicate fan-out, normalization dedup, exact `maxPages`/
+`maxDepth` bounds, cancellation/failFast resource cleanup, backend failures, stability timeouts,
+dynamic-DOM discovery boundaries, out-of-scope links/redirects, and deterministic repeated runs.

@@ -11,6 +11,11 @@
   <dependencies>
     <dependency>
       <groupId>io.webagent4j</groupId>
+      <artifactId>webagent4j-browser-crawler</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.webagent4j</groupId>
       <artifactId>webagent4j-browser-playwright</artifactId>
       <version>${project.version}</version>
     </dependency>

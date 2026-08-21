@@ -27,10 +27,13 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves {@link IPage}'s two default methods delegate exactly as documented - the same contract
- * {@link IFrame} mirrors, see {@link IFrameDefaultMethodsTest}: {@link
- * IPage#resolve(LocatorDefinition)} must call through to {@code locate(definition).element()}, and
- * {@link IPage#find(InteractionContext)} must call through to {@code find().inContext(context)}.
+ * Proves {@link IPage}'s default methods behave exactly as documented - the same contract {@link
+ * IFrame} mirrors, see {@link IFrameDefaultMethodsTest}: {@link IPage#resolve(LocatorDefinition)}
+ * must call through to {@code locate(definition).element()}, {@link IPage#find(InteractionContext)}
+ * must call through to {@code find().inContext(context)}, and {@link IPage#navigate(String,
+ * Duration)} must fail explicitly with {@link UnsupportedOperationException} for a backend that
+ * does not override it - never silently fall back to {@code navigate(url)} and pretend the caller's
+ * timeout was honored.
  */
 class IPageDefaultMethodsTest {
 
@@ -55,6 +58,161 @@ class IPageDefaultMethodsTest {
 
         assertThat(result).isSameAs(page.recordingFind);
         assertThat(page.recordingFind.lastScope).isSameAs(context);
+    }
+
+    @Test
+    void navigateWithTimeoutThrowsExplicitlyWhenTheBackendDoesNotOverrideIt() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.navigate("https://example.com/", Duration.ofSeconds(5))))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void navigateWithTimeoutRejectsNullZeroOrNegativeTimeout() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.navigate("https://example.com/", null)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.navigate("https://example.com/", Duration.ZERO)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () ->
+                                        page.navigate(
+                                                "https://example.com/", Duration.ofSeconds(-1))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * DUR-005/DUR-006 (navigate leg): exactly 1ms and exactly 1500ms are whole-millisecond and
+     * therefore pass validation, reaching the default's {@link UnsupportedOperationException} -
+     * proving validation succeeded and it is the missing backend override that fails, not the
+     * timeout itself.
+     */
+    @Test
+    void navigateWithTimeoutAcceptsExactWholeMillisecondValues() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.navigate("https://example.com/", Duration.ofMillis(1))))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () ->
+                                        page.navigate(
+                                                "https://example.com/", Duration.ofMillis(1500))))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    /**
+     * DUR-001/DUR-002 (navigate leg): a sub-millisecond timeout is rejected outright (500us), and a
+     * positive, at-least-1ms timeout carrying a sub-millisecond remainder (1.5ms) is rejected too -
+     * the precision-truncation bug: {@code Duration.ofNanos(1_500_000).toMillis()} truncates to
+     * {@code 1}, so a validator checking only {@code toMillis() < 1} would silently accept and
+     * truncate this value instead of rejecting it.
+     */
+    @Test
+    void navigateWithTimeoutRejectsSubMillisecondAndFractionalMillisecondValues() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () ->
+                                        page.navigate(
+                                                "https://example.com/", Duration.ofNanos(500_000))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () ->
+                                        page.navigate(
+                                                "https://example.com/",
+                                                Duration.ofNanos(1_500_000))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void waitForConditionThrowsExplicitlyWhenTheBackendDoesNotOverrideIt() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", Duration.ofSeconds(5))))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void waitForConditionRejectsBlankExpressionOrInvalidTimeout() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition(null, Duration.ofSeconds(5))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("   ", Duration.ofSeconds(5))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", null)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", Duration.ZERO)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", Duration.ofSeconds(-1))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * DUR-003/DUR-004 (waitForCondition leg): the same sub-millisecond (500us) and fractional-
+     * millisecond (1.5ms) values rejected for {@code navigate} must be rejected here too - both
+     * default methods share the identical whole-millisecond-precision validator.
+     */
+    @Test
+    void waitForConditionRejectsSubMillisecondAndFractionalMillisecondValues() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () ->
+                                        page.waitForCondition(
+                                                "() => true", Duration.ofNanos(500_000))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () ->
+                                        page.waitForCondition(
+                                                "() => true", Duration.ofNanos(1_500_000))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * DUR-005/DUR-006 (waitForCondition leg): exactly 1ms and exactly 1500ms pass validation and
+     * reach the default's {@link UnsupportedOperationException}.
+     */
+    @Test
+    void waitForConditionAcceptsExactWholeMillisecondValues() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", Duration.ofMillis(1))))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", Duration.ofMillis(1500))))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 
     /** Minimal {@link IPage} test double recording the calls its default methods make. */

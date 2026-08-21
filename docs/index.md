@@ -14,6 +14,7 @@ map of every module and entry point, and use the focused guides below for full d
 - [Actions](actions.md) and [verification](verification.md)
 - [Extraction](extraction.md)
 - [HTTP crawler](http-crawler.md)
+- [Browser crawler](browser-crawler.md)
 - [Wait and stability](wait-and-stability.md)
 - [Testing](testing.md), [robustness](robustness.md), [known limitations](limitations.md), and
   [contributing](contribution.md)

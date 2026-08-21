@@ -185,6 +185,29 @@ class ArchitectureTest {
     }
 
     @Test
+    void browserCrawlerRemainsIndependentFromPlaywright() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.browsercrawler..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void browserCrawlerRemainsIndependentFromAiLibraries() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.browsercrawler..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("com.openai..", "dev.langchain4j..", "org.springframework.ai..")
+                .check(projectClasses);
+    }
+
+    @Test
     void crawlerApiRemainsIndependentFromTheCrawlerEngineModule() {
         noClasses()
                 .that()

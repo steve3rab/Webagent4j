@@ -6,6 +6,266 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Browser Crawler — Phase 0.7)
+
+- New `webagent4j-browser-crawler` module: a deterministic, single-lane browser crawler.
+  `IBrowserCrawler`/`BrowserCrawler` (the sole implementation), `BrowserCrawlRequest` (immutable,
+  builder, fully validated), `BrowserCrawlResult`/`BrowserCrawledPage`/`BrowserCrawlFailure`/
+  `BrowserCrawlStatistics`, `BrowserCrawlFailureType`, `BrowserCrawlTerminationReason`,
+  `FrameCrawlPolicy` (only `TOP_LEVEL_ONLY` implemented in this phase), and `CancellationToken` (a
+  new, minimal cooperative-cancellation primitive - none existed anywhere in the codebase before).
+  Depends only on backend-neutral contracts (`webagent4j-browser-api`, `webagent4j-crawler-api`,
+  `webagent4j-wait`) - never Playwright directly, enforced by new ArchUnit rules
+  (`browserCrawlerRemainsIndependentFromPlaywright`, `browserCrawlerRemainsIndependentFromAiLibraries`).
+- One `IBrowser` instance is the crawl session (cookies/storage/auth state shared across every page
+  it opens); the crawler creates and always closes its own crawler-owned page but never closes a
+  caller-supplied browser unless `closeBrowserOnCompletion(true)` is set.
+- Single navigation lane: every backend call (`IBrowser#newPage()`, every `IPage` operation) runs on
+  the one thread that calls `crawl(...)` - `maxConcurrency` must be exactly `1` and is rejected
+  otherwise. This replaces an earlier worker-pool design that navigated concurrently through
+  per-thread `IPage`s sharing one `IBrowser`; that violated `IBrowser`/`IPage`'s own documented
+  "not thread-safe" contract and, under real Playwright, silently lost a discovered page from the
+  committed result (caught by `BrowserCrawlerIT` on real CI, not by mocks). Determinism of result
+  ordering is now structural, not merely a scheduling guarantee. Claiming (dedup + `maxPages`)
+  happens through one gate that stays exact regardless.
+- New real-Playwright adversarial suite `BrowserCrawlerRobustnessIT` (BC-ROB-001..014): cyclic
+  graphs, duplicate fan-out, normalization dedup, exact `maxPages`/`maxDepth` bounds, cancellation/
+  failFast resource cleanup, unreachable-backend failures, stability timeouts, dynamic-DOM discovery
+  boundaries, out-of-scope links/redirects, and deterministic repeated runs.
+- Page stability reuses `webagent4j-wait`'s `WaitEngine`/`WaitPolicy.stableFor` (a DOM-fingerprint
+  probe) - no `Thread.sleep`, no second timing implementation. Link discovery reuses
+  `IPage.observe()`'s already browser-resolved `href` values - no raw HTML parsing.
+- New unit tests (`webagent4j-browser-crawler`), real-Playwright `BrowserCrawlerIT` and
+  `BrowserCrawlerRobustnessIT` suites (`webagent4j-integration-tests`), and two ArchUnit rules. See
+  [docs/browser-crawler.md](docs/browser-crawler.md) for the full contract, determinism guarantee,
+  and this phase's documented limitations (single navigation lane, top-level frames only, no SPA
+  `pushState` tracking, no redirect hop list).
+- Updated `docs/crawler.md`, `docs/modules.md`, `docs/architecture.md`, `docs/roadmap.md`,
+  `docs/index.md`, `docs/public-api.md`, `docs/limitations.md`, and `README.md` to reflect Phase 0.7.
+
+### Fixed (Browser Crawler — Phase 0.7 correction round)
+
+- `navigationTimeout` is now the real, authoritative bound on a navigation attempt, not merely a
+  client-side check performed after a call a backend's own (longer) default could already have
+  bounded. New backend-neutral `IPage#navigate(String, Duration)` (default method fails explicitly
+  with `UnsupportedOperationException` for a backend that cannot honor a caller-supplied timeout,
+  rather than silently falling back to `navigate(String)` and pretending the timeout was enforced;
+  the Playwright adapter overrides it and maps the timeout to the native driver's per-call navigation
+  timeout, translating its native `TimeoutError` to the new backend-neutral
+  `NavigationTimeoutException`). `BrowserCrawler` now passes the remaining `WaitBudget` into every
+  navigation call and classifies that typed exception directly to `NAVIGATION_TIMEOUT` - never
+  inferred from `WaitBudget.expired()`'s timing or a backend-specific exception message.
+- An observation that hits its configured capture limit (`ObservationStatistics#truncated()`) is no
+  longer recorded as a complete, successful page - it becomes a new `BrowserCrawlFailureType
+  .OBSERVATION_TRUNCATED` failure instead, so a link past the retained boundary is never silently
+  missed.
+- Cancellation now centrally blocks every new claim (seed or discovered child), not only new
+  navigation - closing a gap where an already-cancelled crawl could still claim its seeds, and a
+  cancellation observed mid-crawl could still let already-in-flight discovery keep expanding the
+  frontier. New `CrawlDecisionType.REJECT_CANCELLED` (`webagent4j-crawler-api`) records a
+  cancelled-out discovered link with the same honesty as any other rejection reason.
+- Corrected `BrowserCrawlRequest`/`docs/browser-crawler.md` wording that implied the crawler creates
+  or guarantees session isolation - the caller-supplied `IBrowser` is the session boundary, and
+  isolating one crawl's session from another (or from other automation on the same instance) is the
+  caller's responsibility.
+- The stability fingerprint now also digests every anchor's `href` in document order, so a
+  link-target-only mutation with a constant element count no longer goes unnoticed - a real gap a
+  count-only fingerprint could not see (common in SPA hydration rewriting `href` attributes in
+  place). Corrected in a follow-up (see below) to a `JSON.stringify`-encoded array (not a
+  delimiter-joined string) capped at 2000 anchors, plus a separate total-anchor-count term.
+
+### Fixed (Browser Crawler — Phase 0.7 second correction round)
+
+- The `IPage#navigate(String, Duration)` default no longer silently falls back to `navigate(String)`
+  (which would have let a backend quietly ignore the caller's timeout) - it now throws
+  `UnsupportedOperationException` explicitly, after validating the timeout argument itself. New
+  backend-neutral `io.webagent4j.browser.NavigationTimeoutException`; the Playwright adapter
+  translates its native `TimeoutError` to this type, and `BrowserCrawler` classifies it directly to
+  `NAVIGATION_TIMEOUT` with no `WaitBudget.expired()` inference or exception-message parsing
+  involved.
+- The stability fingerprint's href digest is now `JSON.stringify`-encoded rather than
+  `"|"`-delimiter-joined, so an href that itself contains the delimiter cannot collide with a
+  genuinely different href sequence; it also now includes a separate total-href-bearing-anchor-count
+  term, and its cap is aligned to exactly the 2000-element `maxElements` bound the engine's own
+  discovery observation already uses, rather than an independent, smaller 500-anchor limit.
+- `BrowserCrawlerRobustnessIT`'s BC-ROB-016 (cancellation during an in-flight navigation) no longer
+  coordinates via `Thread.sleep` on either side - the fixture now signals a `CountDownLatch` the
+  instant the request arrives and blocks on a second latch the test releases only after `cancel()`
+  has already been called, making the race deterministic by construction instead of by timing
+  margin. This also fixed a real defect: the previous version ran the crawl itself on a second
+  thread from the one that launched the browser, violating this engine's own single-execution-lane
+  requirement and hanging real CI for over 20 minutes instead of failing fast.
+- New STABILITY-002 test proving an href containing a literal `"|"` character cannot collide with a
+  differently-partitioned `"|"` sequence from a sibling anchor.
+- Corrected the PR description's and `docs/browser-crawler.md`'s claim of "no existing Phase 0.1-0.6
+  public API changed" - two additive, backward-compatible changes were introduced: `IPage` gained
+  `navigate(String, Duration)` and `NavigationTimeoutException`; `CrawlDecisionType`
+  (`webagent4j-crawler-api`) gained `REJECT_CANCELLED`. No existing method signature changed or type
+  was removed.
+- New `BrowserCrawlerRobustnessIT` scenarios BC-ROB-015/016 (href-only mutation stability, real
+  in-flight-navigation cancellation) plus new `BrowserCrawlerIT`/`BrowserCrawlerTest` coverage for
+  the timeout and observation-truncation fixes.
+
+### Fixed (Browser Crawler — Phase 0.7 third correction round: bounded stability)
+
+- **The actual production gap, not just its symptom.** The second correction round's fix for a
+  30-minute CI hang replaced a client-side meta-refresh fixture with an HTTP 302 redirect, which
+  made CI green but did not touch the underlying defect: `PageStabilityWaiter` polled
+  `IPage#evaluate(String)` from a `webagent4j-wait` `WaitEngine` loop, and that loop can only check
+  its budget *between* probe calls - a single `evaluate()` call in flight during a client-side
+  navigation transition could hang indefinitely, with no exception and no timeout, regardless of
+  `navigationTimeout`. This round fixes the actual gap: `PageStabilityWaiter` now expresses the
+  entire stability condition as one JavaScript predicate and hands it to a new backend-neutral
+  `IPage#waitForCondition(String, Duration)`, which the Playwright adapter maps directly onto
+  `Page#waitForFunction` - a native, driver-enforced, timeout-bounded polling primitive that
+  transparently continues polling in a newly-navigated execution context instead of hanging. There
+  is exactly one call from Java into the backend per stability wait, and that call - never a loop
+  wrapped around it - is what the backend itself bounds.
+- New backend-neutral `io.webagent4j.browser.ConditionTimeoutException`
+  (`webagent4j-browser-api`), mirroring `NavigationTimeoutException`: the Playwright adapter
+  translates its native `TimeoutError` to this type when `waitForFunction` never becomes truthy in
+  time, and `BrowserCrawler` classifies it directly to `PAGE_STABILITY_TIMEOUT`.
+- The real client-side-navigation-during-stability regression this design fixes is proven directly:
+  `BrowserCrawlerRobustnessIT` restores a genuine meta-refresh reproducer (rather than the HTTP
+  302 substitute the previous round left in its place) and asserts bounded, structured behavior -
+  success or an explicit failure, never a hang - under real Playwright.
+- `BrowserCrawledPage#stabilityElapsed` renamed to `timeToStability`: the field was always populated
+  from the shared `WaitBudget#elapsed()`, which starts before `navigate()` is called - i.e. combined
+  navigation-plus-stability elapsed time, not stability-only, despite its old name.
+- `<area href>` (image-map links) are now discovered the same as `<a href>`: the Playwright
+  observation backend's element selector, role inference, and `href-resolved` computation all cover
+  `area[href]`, with a targeted visibility-check exemption (`<area>` carries `display: none` in the
+  HTML default UA stylesheet despite being a genuinely clickable hotspot, which would otherwise make
+  every `<area>` read as permanently invisible). The stability fingerprint's link digest also now
+  covers `area[href]`, consistent with discovery.
+- Corrected `docs/browser-crawler.md`'s stability-fingerprint claim that its 2000-link digest cap is
+  identical to `ObservationOptions.maxElements(2000)`'s retained set - they are independently chosen
+  bounds over different underlying sets (all links vs. all semantic elements of any kind) and are not
+  guaranteed to agree element-for-element.
+- Documented, honestly, the precise scope of what `navigationTimeout` bounds: navigation and
+  stability are now both backend-natively bounded, but `page.url()`, `page.observe(...)`, and
+  `page.title()` - called after stability succeeds, to assemble the result - are not covered by any
+  further deadline. This was true before this round too; it was simply undocumented.
+- Removed stale Javadoc/comments describing the earlier abandoned Java-side polling-loop stability
+  design as current.
+
+### Fixed (Browser Crawler — Phase 0.7 fourth correction round: strict code review)
+
+- **`IPage#waitForCondition` no longer requires an unbounded call after its own bounded wait.** The
+  third round's Playwright adapter called `Page#waitForFunction` (bounded) but then called the
+  returned `JSHandle`'s `jsonValue()` and `dispose()` (neither bounded by anything) to satisfy a
+  return value nothing actually used. `waitForCondition`'s signature is now `void` - callers only
+  ever needed "did it stabilize in time," never the JavaScript predicate's own value - so the
+  Playwright adapter drops the handle without an extra round-trip: it is reclaimed automatically
+  once its execution context is destroyed, which for a per-navigation condition like this one
+  happens by the very next `navigate()` at the latest.
+- **`ConditionTimeoutException`'s typed provenance now survives into `BrowserCrawlFailure.cause()`.**
+  `PageStabilityWaiter#awaitStable` no longer catches and reclassifies its own timeout into a
+  cause-less `WaitResult`; it now either returns normally (success) or lets `ConditionTimeoutException`
+  propagate - synthesizing its own instance, with no cause, only for the case where the shared
+  budget was already exhausted before a backend call could even be attempted. `BrowserCrawler`
+  catches the typed exception directly (before its generic `RuntimeException` handler) and preserves
+  it as the failure's cause.
+- The stability predicate now tracks elapsed time with the page's own monotonic `performance.now()`,
+  never wall-clock `Date.now()`.
+- `IPage#navigate`/`waitForCondition` (and `BrowserCrawlRequest.navigationTimeout`/`stabilityWindow`)
+  now reject a positive-but-sub-millisecond `Duration` explicitly (`IPage#requirePositiveMillisTimeout`)
+  instead of silently flooring it to 1ms via `Math.max(1, ...)` - both ultimately resolve to a
+  millisecond-valued backend option, so a caller asking for less than that can never be honestly
+  honored. `BrowserCrawlRequest` additionally rejects a `stabilityWindow` longer than
+  `navigationTimeout` at `build()`, since the two share one budget.
+- **`<area href>` links now carry `LinkKind.AREA` through the whole discovery pipeline**, not
+  `LinkKind.ANCHOR`: new `RawLink#kind()` field, populated by `LinkDiscoverer` from the source
+  element's tag (`<a>` → `ANCHOR`, `<area>` → `AREA`; an unexpected link-role element sourced from
+  neither is skipped rather than assigned an invented kind), and threaded unchanged through
+  `BrowserCrawler#toDiscoveredLink` on every decision path (accepted, out-of-scope, duplicate,
+  max-depth, max-pages, cancelled). A rejected seed - which never originates from an HTML element -
+  still uses `LinkKind.ANCHOR` as a documented convention, not a provenance claim.
+- New real-Playwright `BrowserCrawlerRobustnessIT` scenarios BC-ROB-018/019/020 (AREA-IT-001..003):
+  a root-relative `<area href>` discovered with `LinkKind.AREA` and actually navigated, a
+  dot-relative `<area href>` resolved by the browser's own `href-resolved`, and an out-of-scope
+  `<area href>` discovered but never navigated, correctly rejected.
+- Removed further stale Javadoc implying navigation-order/statistics determinism holds only "despite"
+  concurrent completion timing - this engine has no physical navigation concurrency to be despite of;
+  the determinism is structural.
+- Reworded the "all backward-compatible" compatibility claim: `CrawlDecisionType.REJECT_CANCELLED` is
+  additive and breaks no existing method signature or type, but a downstream consumer's own
+  exhaustive `switch` over that enum would need updating to handle the new constant - a normal,
+  expected consequence of an additive enum change, called out explicitly rather than folded into a
+  blanket compatibility claim.
+
+### Fixed (Browser Crawler — Phase 0.7 fifth correction round: timeout precision and thread-safety proof)
+
+- **Whole-millisecond timeout precision, not merely "at least 1ms".** The fourth round's timeout
+  validator rejected a sub-millisecond `Duration` (checking `toMillis() < 1`) but missed a distinct
+  bug: `Duration.toMillis()` truncates rather than rounds, so a positive, at-least-1ms `Duration`
+  carrying a sub-millisecond remainder (`Duration.ofNanos(1_500_000)`, 1.5ms) passed that check and
+  was silently truncated to 1ms - a bound the caller never asked for. `IPage`'s validator, `Playwright
+  Page`'s duplicated copy, and `BrowserCrawlRequest`'s `navigationTimeout`/`stabilityWindow`
+  validation now all additionally reject any positive `Duration` whose `getNano() % 1_000_000 != 0`,
+  with a distinct message from the "at least 1ms" rejection. `Duration#getNano()` is used rather than
+  `Duration#toNanos()` for this check specifically to stay overflow-safe for an arbitrarily large
+  `Duration`.
+- **The timeout validator is no longer public API.** `IPage#requirePositiveMillisTimeout` was a
+  `public static` method on a public interface - an implementation detail that should never have
+  become public surface merely because two default methods shared it. It is now `private static`
+  (Java 21 interface private static methods) and renamed `requireWholeMillisecondTimeout` to reflect
+  the stricter rule. Since the Playwright adapter could no longer call it externally, it gained its
+  own private, byte-for-byte-identical copy rather than a new shared public utility - duplication of
+  a small private helper is preferred here over expanding public surface for it.
+- **`everyBackendCallHappensOnTheSingleCallingThread` now instruments every backend call
+  `BrowserCrawler` actually makes** on its success path - `IBrowser#newPage()`, `IPage#navigate`,
+  `IPage#waitForCondition`, `IPage#url()`, `IPage#observe()`, `IPage#title()`, `IPage#close()` - not
+  only `navigate()`, and now asserts both that every recorded call landed on the calling thread and
+  that every required operation was actually observed, rather than passing vacuously on partial
+  instrumentation.
+- **Softened two previously overclaiming Playwright-behavior claims** (`PlaywrightPage#waitForCondition`
+  Javadoc, `PageStabilityWaiter`'s class Javadoc, and `docs/browser-crawler.md`'s Stability section):
+  what was written as "Playwright transparently continues polling in a newly-navigated execution
+  context" is now split into the actual architectural guarantee this design depends on
+  (`Page#waitForFunction` carries its own native timeout, so the call cannot hang past `timeout`
+  regardless of what happens to the execution context) and a separately-labeled empirical observation
+  specific to the pinned Playwright version (1.60.0), proven only by `BrowserCrawlerRobustnessIT`'s
+  real meta-refresh regression test, never asserted as a documented, versioned Playwright API
+  contract. Also softened an unverified claim about exactly when Playwright reclaims a dropped
+  `JSHandle` reference to simply noting WebAgent4j does not retain it.
+- **CI-caught regression from the fix above, fixed in a follow-up commit on the same branch:**
+  `BrowserCrawler`/`PageStabilityWaiter` pass `WaitBudget#remaining()` - a `Duration` computed from a
+  live monotonic clock, essentially never an exact whole millisecond - directly into
+  `IPage#navigate`/`waitForCondition`. The new whole-millisecond-precision validator rejected it on
+  every real navigation, not just the fractional-literal cases it was written for (caught by real CI's
+  `Java 21 / Linux` job across 28 integration/robustness tests, never reproduced by the mock-based unit
+  suite). Both call sites now floor the computed remaining budget to whole milliseconds immediately
+  before handing it to the backend-bounded call - flooring can only shorten the bound actually honored,
+  never exceed the real remaining time.
+
+### Fixed (Browser Crawler — Phase 0.7 sixth correction round: `timeToStability` measurement point)
+
+- **`BrowserCrawledPage#timeToStability` was captured after, not before, the post-stability
+  calls its own Javadoc says it excludes.** `budget.elapsed()` was read only once, right before
+  constructing the successful `NavigationSuccess` outcome - by that point `page.url()`,
+  `page.observe(...)`, and `page.title()` had already run, silently inflating `timeToStability` by
+  however long those three calls took, contradicting the documented contract ("excludes any time
+  spent afterward in `page.url()`/`page.observe()`/`page.title()`") and the
+  `timeToStability <= navigationTimeout` invariant for a page whose post-stability calls happened to
+  be slow. Fixed: `budget.elapsed()` is now captured exactly once, immediately after
+  `stabilityWaiter.awaitStable(...)` returns successfully and before `page.url()` is ever called;
+  `WaitBudget` itself is unchanged - only the read point moved.
+- **`BrowserCrawledPage`'s Javadoc no longer implies `page.url()`/`page.observe()`/`page.title()`
+  are one atomic snapshot.** They are three separate, sequential backend calls made immediately
+  after stability is accepted; a new class-level note states there is a small window - between
+  stability acceptance and these calls, and between the calls themselves - during which the page
+  could theoretically mutate or navigate again, and that Phase 0.7 does not provide an atomic
+  cross-call snapshot. `title`'s and `links()`'s per-field Javadoc were reworded from implying an
+  atomic "at the moment of stability" read to "read/discovered immediately after accepted
+  stability."
+- New deterministic regression test,
+  `BrowserCrawlerTest.timeToStabilityExcludesPostStabilityObservationAndMetadataCalls`, using the
+  suite's existing fake monotonic clock: navigation and stability together advance it by 600ms,
+  then `page.url()`/`page.observe()`/`page.title()` advance it by a further 2.4s: `timeToStability`
+  is asserted to be exactly 600ms, proving the 2.4s spent afterward never reaches it, and that it
+  remains `<= navigationTimeout`.
+
 ### Added (Public API documentation consolidation)
 
 - New `docs/public-api.md`: a comprehensive public API reference spanning every implemented module

@@ -19,8 +19,9 @@ linked throughout (the narrative "how it works" documents) - it exists to connec
 - Artifacts are **not currently published to Maven Central** (or any other public repository). Build
   and `./mvnw install` locally, then depend on the resulting local artifacts (see
   [API modules vs. implementation modules](#api-modules-vs-implementation-modules)).
-- Phase 0.7 (a browser-based crawler) has **not started**. Nothing in this document, or anywhere else
-  in the current codebase, implements it. See [Roadmap](roadmap.md).
+- Phase 0.7 (a browser-based crawler) is implemented - see [Choosing modules](#choosing-modules)
+  below and [docs/browser-crawler.md](browser-crawler.md). See [Roadmap](roadmap.md) for what
+  remains: Phase 0.8 (workflows) and later.
 
 ## Choosing modules
 
@@ -38,6 +39,7 @@ can actually use today - reserved/placeholder modules are listed separately in
 | Read-only postcondition checks | `webagent4j-verification` | `IVerification`, `Verifications`, `VerificationResult` |
 | Deterministic data extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | `IPage#extract(...)`/`extractList(...)`/`extractTable(...)`, `ExtractionRequest<T>` |
 | HTTP crawling (no browser) | `webagent4j-crawler-api`, `webagent4j-crawler` | `ICrawler`, `HttpCrawler`, `CrawlRequest`, `CrawlResult` |
+| Browser crawling (JS-rendered, sessions) | `webagent4j-browser-crawler` (+ `webagent4j-browser-playwright` at runtime) | `IBrowserCrawler`, `BrowserCrawler`, `BrowserCrawlRequest`, `BrowserCrawlResult` |
 | Playwright browser adapter | `webagent4j-browser-playwright` (runtime only) | `PlaywrightBrowserProvider` (discovered via `ServiceLoader`, never referenced directly) |
 | CLI usage without writing Java | `webagent4j-cli` | `java -jar webagent4j-cli-*.jar ...` (see [Getting started](getting-started.md)) |
 
@@ -88,9 +90,11 @@ HTTP Crawler (webagent4j-crawler-api, webagent4j-crawler)
 CrawlResult / CrawledPage / CrawlFailure
 ```
 
-There is currently no `BrowserCrawler` and no automatic fallback between the two stacks. A future
-Phase 0.7 browser crawler may reuse `CrawlRequest`'s concepts and `CrawlResult`'s shape, but it does
-not exist yet - see [HTTP Crawler](#http-crawler).
+`BrowserCrawler` (Phase 0.7, `webagent4j-browser-crawler`) exists as a deliberately separate,
+parallel contract - not a subtype of `ICrawler` and not sharing `CrawlRequest`/`CrawlResult` - see
+`docs/browser-crawler.md` for the full contract and rationale, and [HTTP Crawler](#http-crawler)
+below for the HTTP-only stack. There is no automatic fallback between the two stacks; the caller
+picks the right one for the content (see `docs/browser-crawler.md#when-to-use-browser-crawler`).
 
 ## Core principles
 
@@ -466,8 +470,10 @@ inference, "visual tables").
 **What it is:** a deterministic, sequential, backend-neutral HTTP crawler - no browser, no
 JavaScript execution, no AI. Fetches and parses HTML at scale over plain `java.net.http.HttpClient`.
 It does not sit on top of, reuse, or replace the browser stack above - the two are independent
-verticals. There is no `BrowserCrawler` (Phase 0.7) yet. **Module:** `webagent4j-crawler-api`
-(contracts) + `webagent4j-crawler` (the engine).
+verticals. For JavaScript-rendered content this HTTP-only crawler cannot see, see `BrowserCrawler`
+(Phase 0.7, `webagent4j-browser-crawler`, `docs/browser-crawler.md`) - a deliberately separate,
+parallel contract, not a subtype of `ICrawler`. **Module:** `webagent4j-crawler-api` (contracts) +
+`webagent4j-crawler` (the engine).
 
 **Entry points:** `ICrawler#crawl(CrawlRequest)` - `HttpCrawler implements ICrawler`, with a no-arg
 production constructor. This is the entire public surface: one blocking call, no
