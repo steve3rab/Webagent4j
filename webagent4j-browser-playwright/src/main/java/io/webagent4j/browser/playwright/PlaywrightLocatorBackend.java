@@ -106,7 +106,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             int candidateLimit) {
         Locator root = scope.root().map(PlaywrightLocatorBackend::unwrap).orElse(documentRoot);
         Locator resolved = resolve(root, query, config);
-        int discoveredCount = resolved.count();
+        int discoveredCount = countOrZero(resolved);
         int count = Math.min(discoveredCount, candidateLimit);
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
@@ -130,6 +130,21 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             ((Number) identity.get("domOrder")).intValue()));
         }
         return new LocatorBackendSearchResult(candidates, discoveredCount, discoveredCount > count);
+    }
+
+    /**
+     * Counts the current matches without leaking Playwright's typed timeout when a lazily resolved
+     * frame root disappears between scope resolution and discovery. That race is the count-time
+     * equivalent of a candidate disappearing before {@link #identifyOrNull(Locator)}: this poll
+     * observes no candidates and lets the caller's wait policy decide whether to retry or report a
+     * typed not-found result. Other backend failures still propagate unchanged.
+     */
+    private static int countOrZero(Locator resolved) {
+        try {
+            return resolved.count();
+        } catch (TimeoutError vanishedFrameRoot) {
+            return 0;
+        }
     }
 
     /**
