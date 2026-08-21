@@ -59,9 +59,47 @@ All notable changes to this project will be documented in this file. The format 
 - New example `WorkflowRecordingExample` (`webagent4j-examples`): records a real login, round-trips
   it through JSON, and verifies a second real login against the decoded recording.
 - New `docs/recording.md`; `docs/roadmap.md` splits Phase 0.9 into 0.9-A (this phase) and 0.9-B
-  (deferred: persistence, plugin `ServiceLoader` extension points, and any future live replay);
-  `docs/modules.md`, `docs/public-api.md`, `docs/limitations.md`, and `README.md` updated -
-  `webagent4j-recording` graduates from the reserved-module list.
+  (plugin `ServiceLoader` extension points; persistence and any future live replay remain
+  unscoped future candidates, not a promise of 0.9-B); `docs/modules.md`, `docs/public-api.md`,
+  `docs/limitations.md`, and `README.md` updated - `webagent4j-recording` graduates from the
+  reserved-module list.
+
+### Fixed (Recording — Phase 0.9-A strict review, round 1)
+
+- **`schemaVersion` integer overflow:** the decoder converted `schemaVersion` via
+  `JsonNode#intValue()` alone, which silently truncates a value outside the signed 32-bit range
+  (`2^32 + 1`'s low 32 bits equal `1`) rather than rejecting it - an out-of-range value could have
+  been accidentally accepted as `RecordingSchemaVersion.V1`. Fixed by requiring
+  `JsonNode#canConvertToInt()` before ever calling `intValue()`.
+- **Decoder diagnostics could echo external JSON:** an unknown field's own name was included in its
+  `RecordingFormatException` message (`"unknown field: " + path + "." + name`, where `name` came
+  directly from the untrusted document); the raw Jackson parser exception was attached as a public
+  cause on malformed-JSON errors; and an internal domain-validation message was blindly
+  concatenated and attached as a cause on invariant-violation errors. All three could leak a
+  secret embedded in a malformed recording through `exception.getMessage()`/`getCause()`. Fixed:
+  unknown-field messages now name only the parent schema path (`"unknown field under: $.workflow"`);
+  no cause is ever attached to a decoder-thrown `RecordingFormatException`; invariant-violation
+  messages are now a fixed literal (`"recording invariant violation"`), never a concatenation of
+  internal exception text. `RecordingFormatException`'s constructors are now package-private - it is
+  a type callers catch, not construct.
+- **`WorkflowRecording`/`RecordedWorkflowStep` did not enforce a real fail-fast execution shape:**
+  a `COMPLETED` recording could contain a `FAILED` or `NOT_RUN` step; a `FAILED` recording could
+  contain multiple `FAILED` steps, or a step succeeding after the `FAILED` one; step IDs could
+  repeat; a `SKIPPED` step could carry a `true` condition outcome; a `FAILED` step could carry a
+  published output variable name; a `SUCCEEDED` `ACTION` step could omit its action summary. None
+  of these traces can come from a real `WorkflowEngine` execution. Fixed by adding cross-step
+  invariants (new package-private `RecordingInvariants`, invoked from `WorkflowRecording`'s
+  constructor) and two new per-step invariants (in `RecordedWorkflowStep`) - enforced identically
+  for direct construction, `WorkflowRecorder` output, and JSON decoding, since all three funnel
+  through the same constructors. See [docs/recording.md#recording-validity](docs/recording.md).
+- Rewrote `WorkflowReplayVerifierTest`'s `REPLAY-003`/`REPLAY-009`/`REPLAY-010` cases, which had
+  mutated a valid recording into one of the now-rejected impossible shapes to isolate a mismatch
+  type; they now compare two independently valid executions instead, per the strengthened
+  invariants above.
+- Added `SchemaVersionRangeTest` (`VERSION-RANGE-001..006`), `RecordingDecoderErrorSafetyTest`
+  (`ERR-SAFE-001..006` plus a cause-is-null case), `RecordingModelInvariantsTest`
+  (`INV-GLOBAL-001..009`, `INV-STEP-001..007`), and `JsonRecordingInvariantTest`
+  (`JSON-INV-001..009`).
 
 ### Added (Workflows — Phase 0.8)
 

@@ -1,5 +1,6 @@
 package io.webagent4j.recording;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.webagent4j.workflow.WorkflowFailureType;
@@ -156,6 +157,277 @@ class RecordingModelInvariantsTest {
                                         Optional.of(
                                                 RecordingFixtures.failure(
                                                         WorkflowFailureType.ACTION_FAILED, null))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ---- INV-STEP ----
+
+    /** INV-STEP-001: a SKIPPED step whose condition outcome is true is rejected. */
+    @Test
+    void invStep001SkippedWithTrueConditionIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                new RecordedWorkflowStep(
+                                        new WorkflowStepId("s1"),
+                                        WorkflowStepType.ACTION,
+                                        WorkflowStepStatus.SKIPPED,
+                                        Optional.of(new RecordedCondition(true, "d")),
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** INV-STEP-002: a SKIPPED step whose condition outcome is false is accepted. */
+    @Test
+    void invStep002SkippedWithFalseConditionIsAccepted() {
+        RecordedWorkflowStep step =
+                new RecordedWorkflowStep(
+                        new WorkflowStepId("s1"),
+                        WorkflowStepType.ACTION,
+                        WorkflowStepStatus.SKIPPED,
+                        Optional.of(new RecordedCondition(false, "d")),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty());
+        assertThat(step.status()).isEqualTo(WorkflowStepStatus.SKIPPED);
+    }
+
+    /** INV-STEP-003: a FAILED step cannot carry a published output variable name. */
+    @Test
+    void invStep003FailedWithOutputVariableIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                new RecordedWorkflowStep(
+                                        new WorkflowStepId("s1"),
+                                        WorkflowStepType.ACTION,
+                                        WorkflowStepStatus.FAILED,
+                                        Optional.empty(),
+                                        Optional.of("out"),
+                                        Optional.of(
+                                                RecordingFixtures.failure(
+                                                        WorkflowFailureType.ACTION_FAILED, "s1")),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** INV-STEP-004: a SUCCEEDED ACTION step without an action summary is rejected. */
+    @Test
+    void invStep004SucceededActionWithoutSummaryIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                new RecordedWorkflowStep(
+                                        new WorkflowStepId("s1"),
+                                        WorkflowStepType.ACTION,
+                                        WorkflowStepStatus.SUCCEEDED,
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * INV-STEP-005: a FAILED ACTION step without an action summary remains allowed - for example
+     * ACTION_FACTORY_FAILED, whose factory never reached the backend at all.
+     */
+    @Test
+    void invStep005FailedActionWithoutSummaryIsAccepted() {
+        RecordedWorkflowStep step =
+                new RecordedWorkflowStep(
+                        new WorkflowStepId("s1"),
+                        WorkflowStepType.ACTION,
+                        WorkflowStepStatus.FAILED,
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(
+                                RecordingFixtures.failure(
+                                        WorkflowFailureType.ACTION_FACTORY_FAILED, "s1")),
+                        Optional.empty());
+        assertThat(step.action()).isEmpty();
+    }
+
+    /**
+     * INV-STEP-006: a FAILED ACTION step with an action summary remains allowed - for example
+     * ACTION_FAILED, where the backend genuinely ran and reported a non-success status.
+     */
+    @Test
+    void invStep006FailedActionWithSummaryIsAccepted() {
+        RecordedWorkflowStep step =
+                new RecordedWorkflowStep(
+                        new WorkflowStepId("s1"),
+                        WorkflowStepType.ACTION,
+                        WorkflowStepStatus.FAILED,
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(
+                                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1")),
+                        Optional.of(
+                                RecordingFixtures.action(
+                                        io.webagent4j.action.ActionType.CLICK,
+                                        io.webagent4j.action.ActionStatus.EXECUTION_FAILED,
+                                        io.webagent4j.action.ActionExecutionMode.REAL)));
+        assertThat(step.action()).isPresent();
+    }
+
+    // ---- INV-GLOBAL ----
+
+    private static WorkflowRecording recordingWith(
+            WorkflowStatus status,
+            List<RecordedWorkflowStep> steps,
+            Optional<RecordedFailure> failure) {
+        return new WorkflowRecording(
+                RecordingSchemaVersion.V1,
+                new RecordingId("r1"),
+                Instant.EPOCH,
+                new WorkflowId("wf"),
+                status,
+                steps,
+                failure);
+    }
+
+    /** INV-GLOBAL-001: a COMPLETED recording cannot contain a FAILED step. */
+    @Test
+    void invGlobal001CompletedWithFailedStepIsRejected() {
+        RecordedWorkflowStep failed =
+                RecordingFixtures.failedStep(
+                        "s1", RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1"));
+
+        assertThatThrownBy(
+                        () ->
+                                recordingWith(
+                                        WorkflowStatus.COMPLETED,
+                                        List.of(failed),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** INV-GLOBAL-002: a COMPLETED recording cannot contain a NOT_RUN step. */
+    @Test
+    void invGlobal002CompletedWithNotRunStepIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                recordingWith(
+                                        WorkflowStatus.COMPLETED,
+                                        List.of(RecordingFixtures.notRunStep("s1")),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** INV-GLOBAL-003: a step succeeding after the FAILED step is rejected. */
+    @Test
+    void invGlobal003SuccessAfterFailedStepIsRejected() {
+        RecordedFailure failure =
+                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s2");
+        List<RecordedWorkflowStep> steps =
+                List.of(
+                        RecordingFixtures.succeededAssignStep("s1", "o1"),
+                        RecordingFixtures.failedStep("s2", failure),
+                        RecordingFixtures.succeededAssignStep("s3", "o3"));
+
+        assertThatThrownBy(() -> recordingWith(WorkflowStatus.FAILED, steps, Optional.of(failure)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** INV-GLOBAL-004: two FAILED steps in the same recording are rejected. */
+    @Test
+    void invGlobal004MultipleFailedStepsAreRejected() {
+        RecordedFailure failure1 =
+                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1");
+        RecordedFailure failure2 =
+                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s2");
+        List<RecordedWorkflowStep> steps =
+                List.of(
+                        RecordingFixtures.failedStep("s1", failure1),
+                        RecordingFixtures.failedStep("s2", failure2));
+
+        assertThatThrownBy(() -> recordingWith(WorkflowStatus.FAILED, steps, Optional.of(failure1)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** INV-GLOBAL-005: duplicate step IDs are rejected. */
+    @Test
+    void invGlobal005DuplicateStepIdsAreRejected() {
+        List<RecordedWorkflowStep> steps =
+                List.of(
+                        RecordingFixtures.succeededAssignStep("s1", "o1"),
+                        RecordingFixtures.succeededAssignStep("s1", "o2"));
+
+        assertThatThrownBy(() -> recordingWith(WorkflowStatus.COMPLETED, steps, Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * INV-GLOBAL-006: a valid preflight failure (all steps NOT_RUN, no failure stepId) is accepted.
+     */
+    @Test
+    void invGlobal006ValidPreflightFailureIsAccepted() {
+        RecordedFailure failure =
+                RecordingFixtures.failure(WorkflowFailureType.MISSING_REQUIRED_INPUT, null);
+        List<RecordedWorkflowStep> steps =
+                List.of(RecordingFixtures.notRunStep("s1"), RecordingFixtures.notRunStep("s2"));
+
+        WorkflowRecording recording =
+                recordingWith(WorkflowStatus.FAILED, steps, Optional.of(failure));
+
+        assertThat(recording.steps()).hasSize(2);
+    }
+
+    /**
+     * INV-GLOBAL-007: a valid runtime fail-fast sequence (SUCCEEDED, SKIPPED, FAILED, NOT_RUN) is
+     * accepted.
+     */
+    @Test
+    void invGlobal007ValidRuntimeFailFastSequenceIsAccepted() {
+        RecordedFailure failure =
+                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s3");
+        List<RecordedWorkflowStep> steps =
+                List.of(
+                        RecordingFixtures.succeededAssignStep("s1", "o1"),
+                        RecordingFixtures.skippedStep("s2", false, "d"),
+                        RecordingFixtures.failedStep("s3", failure),
+                        RecordingFixtures.notRunStep("s4"));
+
+        WorkflowRecording recording =
+                recordingWith(WorkflowStatus.FAILED, steps, Optional.of(failure));
+
+        assertThat(recording.steps()).hasSize(4);
+    }
+
+    /**
+     * INV-GLOBAL-008: an overall failure whose stepId does not match the FAILED step is rejected.
+     */
+    @Test
+    void invGlobal008OverallFailureStepIdMismatchIsRejected() {
+        RecordedFailure stepFailure =
+                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1");
+        RecordedFailure overallFailure =
+                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "wrong-step");
+        List<RecordedWorkflowStep> steps = List.of(RecordingFixtures.failedStep("s1", stepFailure));
+
+        assertThatThrownBy(
+                        () ->
+                                recordingWith(
+                                        WorkflowStatus.FAILED, steps, Optional.of(overallFailure)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * INV-GLOBAL-009: an overall failure whose type disagrees with the FAILED step's own failure is
+     * rejected.
+     */
+    @Test
+    void invGlobal009OverallFailureTypeMismatchIsRejected() {
+        RecordedFailure stepFailure =
+                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1");
+        RecordedFailure overallFailure =
+                RecordingFixtures.failure(WorkflowFailureType.STEP_EXCEPTION, "s1");
+        List<RecordedWorkflowStep> steps = List.of(RecordingFixtures.failedStep("s1", stepFailure));
+
+        assertThatThrownBy(
+                        () ->
+                                recordingWith(
+                                        WorkflowStatus.FAILED, steps, Optional.of(overallFailure)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

@@ -7,7 +7,6 @@ import io.webagent4j.action.ActionType;
 import io.webagent4j.workflow.Workflow;
 import io.webagent4j.workflow.WorkflowConditions;
 import io.webagent4j.workflow.WorkflowEngine;
-import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowInputs;
 import io.webagent4j.workflow.WorkflowResult;
 import io.webagent4j.workflow.WorkflowStepStatus;
@@ -58,24 +57,77 @@ class WorkflowReplayVerifierTest {
         return engine.execute(workflow, WorkflowInputs.empty());
     }
 
+    /** Same workflow shape/id as {@link #failingExecution()}, but fails with STEP_EXCEPTION. */
+    private WorkflowResult differentFailureTypeExecution() {
+        Workflow workflow =
+                Workflow.builder("wf-replay-fail")
+                        .step(WorkflowSteps.action("s1", vars -> new ThrowingPreparedAction<>()))
+                        .build();
+        return engine.execute(workflow, WorkflowInputs.empty());
+    }
+
+    /** Same shape as {@link #successfulExecution()}'s guarded step, with the flag toggled. */
+    private WorkflowResult conditionalExecution(boolean flag) {
+        WorkflowVariable<Boolean> flagVar = WorkflowVariable.publicValue("flag", Boolean.class);
+        WorkflowVariable<String> out1 = WorkflowVariable.publicValue("out1", String.class);
+        Workflow workflow =
+                Workflow.builder("wf-replay-status")
+                        .requiredInput(flagVar)
+                        .step(
+                                WorkflowSteps.action(
+                                                "s1",
+                                                vars ->
+                                                        new FakePreparedAction<>(
+                                                                ActionResults.success("v1")),
+                                                out1)
+                                        .when(WorkflowConditions.isTrue(flagVar)))
+                        .build();
+        return engine.execute(workflow, WorkflowInputs.builder().put(flagVar, flag).build());
+    }
+
+    private WorkflowResult threeStepExecution() {
+        Workflow workflow =
+                Workflow.builder("wf-replay-count")
+                        .step(
+                                WorkflowSteps.assign(
+                                        "s1",
+                                        WorkflowVariable.publicValue("o1", String.class),
+                                        "a"))
+                        .step(
+                                WorkflowSteps.assign(
+                                        "s2",
+                                        WorkflowVariable.publicValue("o2", String.class),
+                                        "b"))
+                        .step(
+                                WorkflowSteps.assign(
+                                        "s3",
+                                        WorkflowVariable.publicValue("o3", String.class),
+                                        "c"))
+                        .build();
+        return engine.execute(workflow, WorkflowInputs.empty());
+    }
+
+    private WorkflowResult twoStepExecution() {
+        Workflow workflow =
+                Workflow.builder("wf-replay-count")
+                        .step(
+                                WorkflowSteps.assign(
+                                        "s1",
+                                        WorkflowVariable.publicValue("o1", String.class),
+                                        "a"))
+                        .step(
+                                WorkflowSteps.assign(
+                                        "s2",
+                                        WorkflowVariable.publicValue("o2", String.class),
+                                        "b"))
+                        .build();
+        return engine.execute(workflow, WorkflowInputs.empty());
+    }
+
     private static WorkflowRecording withStep(
             WorkflowRecording base, int index, RecordedWorkflowStep step) {
         List<RecordedWorkflowStep> steps = new ArrayList<>(base.steps());
         steps.set(index, step);
-        return new WorkflowRecording(
-                base.schemaVersion(),
-                base.recordingId(),
-                base.capturedAt(),
-                base.workflowId(),
-                base.status(),
-                steps,
-                base.failure());
-    }
-
-    private static WorkflowRecording withExtraStep(
-            WorkflowRecording base, RecordedWorkflowStep extra) {
-        List<RecordedWorkflowStep> steps = new ArrayList<>(base.steps());
-        steps.add(extra);
         return new WorkflowRecording(
                 base.schemaVersion(),
                 base.recordingId(),
@@ -125,25 +177,19 @@ class WorkflowReplayVerifierTest {
         assertThat(verifier.verify(recordingB, run).matches()).isTrue();
     }
 
-    /** REPLAY-003: a changed step status is detected. */
+    /**
+     * REPLAY-003: a changed step status is detected. Uses two independently valid executions of the
+     * same workflow shape (flag false vs. true) rather than mutating a recording into a
+     * structurally impossible trace (a COMPLETED recording can never contain a FAILED step - see
+     * {@link RecordingInvariants}).
+     */
     @Test
     void replay003StepStatusChangeDetected() {
-        WorkflowResult run = successfulExecution();
-        WorkflowRecording recording = recorder.record(new RecordingId("r"), Instant.now(), run);
-        RecordedWorkflowStep original = recording.steps().get(0);
-        RecordedWorkflowStep mutated =
-                new RecordedWorkflowStep(
-                        original.stepId(),
-                        original.stepType(),
-                        WorkflowStepStatus.FAILED,
-                        original.condition(),
-                        original.outputVariableName(),
-                        Optional.of(
-                                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1")),
-                        original.action());
-        WorkflowRecording mutatedRecording = withStep(recording, 0, mutated);
+        WorkflowResult skipped = conditionalExecution(false);
+        WorkflowResult succeeded = conditionalExecution(true);
+        WorkflowRecording recording = recorder.record(new RecordingId("r"), Instant.now(), skipped);
 
-        WorkflowReplayResult replay = verifier.verify(mutatedRecording, run);
+        WorkflowReplayResult replay = verifier.verify(recording, succeeded);
 
         assertThat(replay.matches()).isFalse();
         assertThat(replay.mismatches())
@@ -284,26 +330,23 @@ class WorkflowReplayVerifierTest {
         assertThat(replay.matches()).isTrue();
     }
 
-    /** REPLAY-009: a changed failure type is detected. */
+    /**
+     * REPLAY-009: a changed failure type is detected. Uses two independently valid executions of
+     * the same workflow shape that fail for different reasons (ACTION_FACTORY_FAILED vs.
+     * STEP_EXCEPTION at the same step ID) rather than mutating only the top-level failure's {@code
+     * type} - {@link RecordingInvariants} requires the overall failure's {@code type} to agree with
+     * the FAILED step's own failure {@code type}, so that field cannot be mutated in isolation.
+     */
     @Test
     void replay009FailureTypeCompared() {
-        WorkflowResult failed = failingExecution();
-        WorkflowRecording recording = recorder.record(new RecordingId("r"), Instant.now(), failed);
-        RecordedFailure original = recording.failure().orElseThrow();
-        WorkflowFailureType differentType =
-                original.type() == WorkflowFailureType.ACTION_FACTORY_FAILED
-                        ? WorkflowFailureType.STEP_EXCEPTION
-                        : WorkflowFailureType.ACTION_FACTORY_FAILED;
-        RecordedFailure mutated =
-                new RecordedFailure(
-                        differentType,
-                        original.safeMessage(),
-                        original.stepId(),
-                        original.underlyingTypeName(),
-                        original.actionFailureType());
-        WorkflowRecording mutatedRecording = withFailure(recording, mutated);
+        WorkflowResult baseline = failingExecution();
+        WorkflowResult actual = differentFailureTypeExecution();
+        assertThat(baseline.failure().orElseThrow().type())
+                .isNotEqualTo(actual.failure().orElseThrow().type());
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("r"), Instant.now(), baseline);
 
-        WorkflowReplayResult replay = verifier.verify(mutatedRecording, failed);
+        WorkflowReplayResult replay = verifier.verify(recording, actual);
 
         assertThat(replay.mismatches())
                 .extracting(WorkflowReplayMismatch::type)
@@ -312,15 +355,16 @@ class WorkflowReplayVerifierTest {
 
     /**
      * REPLAY-010: an extra recorded step is reported as both a count mismatch and a missing step.
+     * Uses two independently valid, differently-sized COMPLETED executions rather than appending a
+     * NOT_RUN step to an otherwise-COMPLETED recording, which {@link RecordingInvariants} forbids.
      */
     @Test
     void replay010StepCountMismatchAndMissingStepReported() {
-        WorkflowResult run = successfulExecution();
-        WorkflowRecording recording = recorder.record(new RecordingId("r"), Instant.now(), run);
-        WorkflowRecording mutatedRecording =
-                withExtraStep(recording, RecordingFixtures.notRunStep("extra"));
+        WorkflowResult three = threeStepExecution();
+        WorkflowResult two = twoStepExecution();
+        WorkflowRecording recording = recorder.record(new RecordingId("r"), Instant.now(), three);
 
-        WorkflowReplayResult replay = verifier.verify(mutatedRecording, run);
+        WorkflowReplayResult replay = verifier.verify(recording, two);
 
         assertThat(replay.mismatches())
                 .extracting(WorkflowReplayMismatch::type)

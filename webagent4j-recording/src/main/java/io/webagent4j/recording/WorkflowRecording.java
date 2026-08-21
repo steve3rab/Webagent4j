@@ -30,6 +30,7 @@ import java.util.Optional;
  * @param steps every step's recorded outcome, in workflow definition order
  * @param failure the overall recorded failure, present exactly when {@code status} is {@link
  *     WorkflowStatus#FAILED}
+ * @see RecordingInvariants
  */
 public record WorkflowRecording(
         RecordingSchemaVersion schemaVersion,
@@ -55,5 +56,6 @@ public record WorkflowRecording(
         if (status != WorkflowStatus.FAILED && failure.isPresent()) {
             throw new IllegalArgumentException("only a FAILED recording may carry a failure");
         }
+        RecordingInvariants.validate(status, steps, failure);
     }
 }

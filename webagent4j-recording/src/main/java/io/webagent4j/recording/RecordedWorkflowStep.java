@@ -1,5 +1,6 @@
 package io.webagent4j.recording;
 
+import io.webagent4j.action.ActionStatus;
 import io.webagent4j.workflow.WorkflowStepId;
 import io.webagent4j.workflow.WorkflowStepStatus;
 import io.webagent4j.workflow.WorkflowStepType;
@@ -10,9 +11,13 @@ import java.util.Optional;
  * Safe, recorded outcome of one workflow step.
  *
  * <p>Mirrors {@code WorkflowStepResult} field-for-field, with the same FAILED/SKIPPED/NOT_RUN
- * invariants, plus two invariants specific to a recording: an {@code ASSIGN} step never carries an
- * {@link #action()}, and a step whose condition outcome is {@code false} must be {@link
- * WorkflowStepStatus#SKIPPED}.
+ * invariants, plus invariants specific to a recording, each guaranteed by every path through {@code
+ * WorkflowEngine.executeStep}: an {@code ASSIGN} step never carries an {@link #action()}; a step's
+ * condition, when present, is {@code SKIPPED} if and only if its outcome is {@code false}; a {@code
+ * FAILED} step never carries a published {@link #outputVariableName()} (a variable is only
+ * published after a step's run outcome succeeds); and a {@code SUCCEEDED} {@code ACTION} step
+ * always carries an {@link #action()} whose {@link RecordedAction#status()} is {@code SUCCESS} (the
+ * action pipeline's only path to a successful step outcome).
  *
  * @param stepId the step's identifier
  * @param stepType the step's broad category
@@ -47,9 +52,17 @@ public record RecordedWorkflowStep(
         if (status != WorkflowStepStatus.FAILED && failure.isPresent()) {
             throw new IllegalArgumentException("only a FAILED step may carry a failure");
         }
+        if (status == WorkflowStepStatus.FAILED && outputVariableName.isPresent()) {
+            throw new IllegalArgumentException(
+                    "a FAILED step cannot carry a published output variable name");
+        }
         if (status == WorkflowStepStatus.SKIPPED) {
             if (condition.isEmpty()) {
                 throw new IllegalArgumentException("a SKIPPED step must carry a condition outcome");
+            }
+            if (condition.get().outcome()) {
+                throw new IllegalArgumentException(
+                        "a SKIPPED step's condition outcome must be false");
             }
             if (outputVariableName.isPresent()) {
                 throw new IllegalArgumentException(
@@ -80,6 +93,16 @@ public record RecordedWorkflowStep(
         }
         if (stepType == WorkflowStepType.ASSIGN && action.isPresent()) {
             throw new IllegalArgumentException("an ASSIGN step cannot carry an action");
+        }
+        if (stepType == WorkflowStepType.ACTION && status == WorkflowStepStatus.SUCCEEDED) {
+            if (action.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a SUCCEEDED ACTION step must carry an action summary");
+            }
+            if (action.get().status() != ActionStatus.SUCCESS) {
+                throw new IllegalArgumentException(
+                        "a SUCCEEDED ACTION step's action summary must report ActionStatus.SUCCESS");
+            }
         }
     }
 }

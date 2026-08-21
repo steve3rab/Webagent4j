@@ -644,12 +644,12 @@ if (!replay.matches()) {
 | --- | --- |
 | `RecordingId` | caller-supplied recording identity (never randomly generated); ignored by replay comparison |
 | `RecordingSchemaVersion` | closed, numbered JSON schema version enum (`V1` only in this phase) |
-| `WorkflowRecording` | immutable top-level recording: `schemaVersion`, `recordingId`, `capturedAt`, `workflowId`, `status`, `steps`, `failure` |
+| `WorkflowRecording` | immutable top-level recording: `schemaVersion`, `recordingId`, `capturedAt`, `workflowId`, `status`, `steps`, `failure`; construction enforces the fail-fast execution shapes described in [recording.md#recording-validity](recording.md#recording-validity-a-recording-represents-one-fail-fast-execution) |
 | `RecordedWorkflowStep` | safe per-step projection, mirroring `WorkflowStepResult`'s invariants |
 | `RecordedCondition`, `RecordedAction`, `RecordedFailure` | safe per-field projections of `WorkflowConditionResult`/`WorkflowActionSummary`/`WorkflowFailure` |
 | `WorkflowRecorder` | stateless capture: `WorkflowResult -> WorkflowRecording`; never calls `WorkflowResult#output` |
-| `IWorkflowRecordingCodec`, `JsonWorkflowRecordingCodec` | encode/decode to canonical JSON; strict decoding, no fallback |
-| `RecordingFormatException` | thrown by decoding; messages are fixed, bounded, and never echo the offending input |
+| `IWorkflowRecordingCodec`, `JsonWorkflowRecordingCodec` | encode/decode to canonical JSON; strict decoding, no fallback; `schemaVersion` uses an exact-range numeric check, never a truncating conversion |
+| `RecordingFormatException` | thrown by decoding; messages are fixed and framework-owned and never echo the offending input; `getCause()` is always `null`; constructors are package-private (catch it, don't construct it) |
 | `WorkflowReplayVerifier` | stateless, pure, synchronous structured comparison: `(WorkflowRecording, WorkflowResult) -> WorkflowReplayResult` |
 | `WorkflowReplayResult`, `WorkflowReplayMismatch`, `WorkflowReplayMismatchType` | every difference found, in deterministic order; `matches()` is derived from `mismatches().isEmpty()` |
 

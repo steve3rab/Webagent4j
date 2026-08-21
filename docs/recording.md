@@ -83,6 +83,37 @@ overall `WorkflowFailure`, if any.
 `ActionType` alone is never used to infer whether an action is "safe" to record or replay - every
 action-backed step is recorded identically, categorically, regardless of its `ActionType`.
 
+## Recording validity: a recording represents one fail-fast execution
+
+`WorkflowEngine` (Phase 0.8) is sequential and fail-fast: every step runs in definition order, and
+the first `FAILED` step stops execution immediately, with every later step recorded as `NOT_RUN`.
+`WorkflowRecording`'s constructor - via the package-private `RecordingInvariants` helper - enforces
+the shapes that fact actually guarantees, so a recording that could never come from a real execution
+is rejected at construction time, whether built directly, produced by `WorkflowRecorder`, or decoded
+by `JsonWorkflowRecordingCodec`:
+
+- Every `stepId` in `steps()` is unique.
+- **`COMPLETED`**: every step is `SUCCEEDED` or `SKIPPED` - never `FAILED`, never `NOT_RUN`.
+- **`FAILED` before execution** (a declared-input validation failure - `MISSING_REQUIRED_INPUT`,
+  `INPUT_TYPE_MISMATCH`, or `UNDECLARED_INPUT` in the current engine): the overall failure carries
+  no `stepId`, and every step is `NOT_RUN`. There may be zero steps.
+- **`FAILED` during execution**: zero or more `SUCCEEDED`/`SKIPPED` steps, then exactly one
+  `FAILED` step, then zero or more `NOT_RUN` steps. The overall failure's `stepId` matches that
+  step's `stepId`, and the overall failure's `type` and `actionFailureType` match that step's own
+  `failure` - `safeMessage` and `underlyingTypeName` are deliberately *not* required to match, since
+  `WorkflowReplayVerifier` (below) already treats those two fields as diagnostic, not semantic.
+
+Two additional per-step shapes are enforced for the same reason: a `SKIPPED` step's condition
+outcome is always `false` (never `true` - a `true` outcome always proceeds to execution), and a
+`SUCCEEDED` `ACTION` step always carries an `action` summary reporting `ActionStatus.SUCCESS` (the
+action pipeline's only path to a successful step outcome). A `FAILED` `ACTION` step's `action` may
+legitimately be present or absent depending on where execution failed (an `ACTION_FACTORY_FAILED`
+step never reached the backend and has no summary; an `ACTION_FAILED` step's summary reports a
+non-success status; a step that failed on output publication *after* a successful action - `NULL_OUTPUT`
+or `OUTPUT_TYPE_MISMATCH` - carries a summary reporting `ActionStatus.SUCCESS` even though the step
+itself is `FAILED`) - so this module never assumes a `FAILED` `ACTION` step's action summary status
+correlates with the step's own outcome.
+
 ## Secret-safety boundary
 
 Every field above is either (a) categorical/structural data with no secret-capable content
@@ -94,6 +125,13 @@ it is structurally incapable of observing a raw secret value in the first place.
 [the recording test suite](../webagent4j-recording/src/test/java/io/webagent4j/recording/) for the
 executable proof, including a real-Playwright end-to-end version in
 [`WorkflowRecordingIT`](../webagent4j-integration-tests/src/test/java/io/webagent4j/integration/WorkflowRecordingIT.java).
+
+This is a distinct guarantee from **decoder diagnostic safety** (below): the recorder guarantee is
+about what a *trusted* `WorkflowResult` can put into a recording; decoder diagnostic safety is about
+what `JsonWorkflowRecordingCodec#decode` echoes back out of *untrusted* external JSON when it
+rejects that JSON. `decode` cannot verify that a field like `safeMessage` in someone else's JSON is
+actually safe - it simply stores whatever schema-valid text is there as ordinary data, and never
+repeats any part of a rejected document into its own error.
 
 ## JSON schema V1
 
@@ -146,21 +184,32 @@ fallback or best-effort interpretation:
 - A duplicate JSON object key, at any nesting level (`JsonParser.Feature.STRICT_DUPLICATE_DETECTION`
   on the shared `JsonFactory`)
 - A missing required field, or an unknown field (explicit per-level allow-lists)
-- An unsupported `schemaVersion` (no fallback decoding of a future or foreign version)
+- An unsupported `schemaVersion` (no fallback decoding of a future or foreign version) - converted
+  with an *exact* representability check (`JsonNode.canConvertToInt()`) before ever calling
+  `intValue()`, so a numeric token outside the signed 32-bit range can never silently wrap into an
+  accidentally-supported version number (`2^32 + 1`'s low 32 bits equal `1`, but it is rejected, not
+  decoded as `V1`)
 - An invalid enum value
 - A malformed `Instant`
 - A value of the wrong JSON type
-- An impossible step-result combination (a recording invariant violation - see
-  [`RecordedWorkflowStep`](../webagent4j-recording/src/main/java/io/webagent4j/recording/RecordedWorkflowStep.java))
+- An impossible step-result combination or cross-step invariant violation (see [Recording validity](#recording-validity-a-recording-represents-one-fail-fast-execution)
+  above and
+  [`RecordingInvariants`](../webagent4j-recording/src/main/java/io/webagent4j/recording/RecordingInvariants.java))
 - Trailing content after the JSON document
 
-Every `RecordingFormatException` message is a fixed, bounded, deterministic string referencing only
-a schema field path (`"wrong JSON type for field: $.workflow.steps[2].status"`) - it never echoes
-the actual malformed value or any slice of the source input, since the source of a malformed
-recording may itself carry a secret the caller intended to keep out of logs. There is no
-`activateDefaultTyping`, no polymorphic typing, and no arbitrary class deserialization anywhere in
-this codec: JSON is walked as a plain node tree and mapped field-by-field onto this module's own
-record types, reusing their compact-constructor invariant checks rather than duplicating them.
+Every `RecordingFormatException` message is a fixed, framework-owned string referencing only a
+schema field path (`"wrong JSON type for field: $.workflow.steps[2].status"`) or a fixed literal -
+it never echoes an unknown field's own name, an invalid enum's own text, a malformed timestamp's
+own text, any other part of the offending value, or any slice of the source input, since the JSON
+being decoded is untrusted and may itself carry a value the caller needs kept out of logs.
+`RecordingFormatException#getCause()` is always `null`: the raw Jackson parser exception - whose own
+message can embed a source snippet - is never attached, and an internal domain-validation message is
+never blindly republished either. Both `RecordingFormatException` constructors are package-private:
+the type exists for a caller to catch, not construct, since a caller-supplied message could not
+honor this guarantee. There is no `activateDefaultTyping`, no polymorphic typing, and no arbitrary
+class deserialization anywhere in this codec: JSON is walked as a plain node tree and mapped
+field-by-field onto this module's own record types, reusing their compact-constructor invariant
+checks (including the cross-step checks in `RecordingInvariants`) rather than duplicating them.
 
 ## Replay verification semantics
 

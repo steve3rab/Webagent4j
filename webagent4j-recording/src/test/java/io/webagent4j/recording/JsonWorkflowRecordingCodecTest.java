@@ -3,6 +3,7 @@ package io.webagent4j.recording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.webagent4j.workflow.WorkflowFailureType;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -51,11 +52,22 @@ class JsonWorkflowRecordingCodecTest {
         assertThat(encoded).doesNotEndWith("\n");
     }
 
+    /**
+     * A valid preflight-style FAILED recording (overall failure has no stepId): every step is
+     * NOT_RUN, satisfying {@link RecordingInvariants}, while still exercising a step whose optional
+     * fields are all absent.
+     */
+    private static WorkflowRecording notRunOnlyRecording() {
+        return RecordingFixtures.minimalFailed(
+                "wf",
+                List.of(RecordingFixtures.notRunStep("s1")),
+                RecordingFixtures.failure(WorkflowFailureType.MISSING_REQUIRED_INPUT, null));
+    }
+
     /** Every optional field is always emitted, as null when absent - never omitted. */
     @Test
     void absentOptionalsAreAlwaysEmittedAsNull() {
-        RecordedWorkflowStep step = RecordingFixtures.notRunStep("s1");
-        String encoded = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of(step)));
+        String encoded = codec.encode(notRunOnlyRecording());
 
         assertThat(encoded)
                 .contains("\"condition\":null")
@@ -67,12 +79,12 @@ class JsonWorkflowRecordingCodecTest {
     /** Enums are encoded by name, never by ordinal. */
     @Test
     void enumsAreEncodedByNameNeverOrdinal() {
-        String encoded =
-                codec.encode(
-                        RecordingFixtures.minimalCompleted(
-                                "wf", List.of(RecordingFixtures.notRunStep("s1"))));
+        String encoded = codec.encode(notRunOnlyRecording());
 
-        assertThat(encoded).contains("\"stepType\":\"ACTION\"").contains("\"status\":\"NOT_RUN\"");
+        assertThat(encoded)
+                .contains("\"stepType\":\"ACTION\"")
+                .contains("\"status\":\"NOT_RUN\"")
+                .contains("\"type\":\"MISSING_REQUIRED_INPUT\"");
     }
 
     /** JSON-004: an unsupported schemaVersion is rejected, with no fallback decoding. */

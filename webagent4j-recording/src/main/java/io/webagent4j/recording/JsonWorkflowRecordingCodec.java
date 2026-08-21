@@ -48,7 +48,20 @@ import java.util.Set;
  * trailing content after the JSON document are all rejected as {@link RecordingFormatException}.
  * There is no polymorphic or annotation-driven class deserialization anywhere in this codec: JSON
  * is walked as a plain node tree and mapped field-by-field onto this module's own record types,
- * reusing their compact-constructor validation rather than duplicating it.
+ * reusing their compact-constructor validation (including the cross-step invariants in {@link
+ * RecordingInvariants}) rather than duplicating it. {@code schemaVersion} is converted with an
+ * exact-range check - never a truncating {@code intValue()} - so an out-of-{@code int}-range
+ * numeric token can never wrap around into an accidentally-supported version number.
+ *
+ * <p><b>Decoder diagnostics never echo external data:</b> every {@link RecordingFormatException}
+ * this codec throws carries only a fixed, framework-owned message - see that type's Javadoc. An
+ * unknown JSON field's own name, an invalid enum's own text, a malformed timestamp's own text, and
+ * the raw Jackson parser exception are all deliberately never included in a thrown message or
+ * cause, since the external JSON being decoded is untrusted and may itself carry a value the caller
+ * needs kept out of logs. This is a decoder-diagnostic safety guarantee, distinct from (and in
+ * addition to) {@link WorkflowRecorder}'s structural avoidance of raw workflow secrets: decoded
+ * field values (for example {@code safeMessage}) are stored as ordinary data even though this codec
+ * cannot verify they are actually safe - it simply never repeats them into its own errors.
  */
 public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec {
 
@@ -103,7 +116,12 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
         } catch (RecordingFormatException e) {
             throw e;
         } catch (IllegalArgumentException e) {
-            throw new RecordingFormatException("invalid recording: " + e.getMessage(), e);
+            // Deliberately does not propagate e or e.getMessage(): a domain constructor's message
+            // is
+            // fixed, safe English text today, but this boundary must not become a policy of
+            // republishing whatever an internal validator happens to say - see
+            // RecordingFormatException.
+            throw new RecordingFormatException("recording invariant violation");
         }
     }
 
@@ -229,7 +247,11 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
         } catch (RecordingFormatException e) {
             throw e;
         } catch (IOException e) {
-            throw new RecordingFormatException("malformed recording JSON", e);
+            // Deliberately does not attach e as a cause: a Jackson parse exception's own message
+            // can
+            // embed a source snippet, offending token, or field name - see
+            // RecordingFormatException.
+            throw new RecordingFormatException("malformed recording JSON");
         }
     }
 
@@ -237,7 +259,7 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
         requireNoUnknownFields(root, TOP_FIELDS, "$");
         RecordingSchemaVersion schemaVersion =
                 RecordingSchemaVersion.fromNumber(
-                        requireInt(root, "schemaVersion", "$.schemaVersion"));
+                        requireExactInt(root, "schemaVersion", "$.schemaVersion"));
         RecordingId recordingId =
                 new RecordingId(requireText(root, "recordingId", "$.recordingId"));
         Instant capturedAt = requireInstant(root, "capturedAt", "$.capturedAt");
@@ -354,7 +376,9 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
         while (names.hasNext()) {
             String name = names.next();
             if (!allowed.contains(name)) {
-                throw new RecordingFormatException("unknown field: " + path + "." + name);
+                // Deliberately never appends `name` itself: it is external, attacker-controlled
+                // text - only `path`, a framework-generated schema location, is safe to disclose.
+                throw new RecordingFormatException("unknown field under: " + path);
             }
         }
     }
@@ -394,9 +418,15 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
         return value.booleanValue();
     }
 
-    private static int requireInt(ObjectNode node, String field, String path) {
+    /**
+     * Reads an integer field, requiring it to be an integral JSON number that is exactly
+     * representable as a Java {@code int} - never truncating a value outside the signed 32-bit
+     * range via {@code intValue()} alone, which silently wraps (for example {@code 2^32 + 1} would
+     * otherwise become {@code 1}).
+     */
+    private static int requireExactInt(ObjectNode node, String field, String path) {
         JsonNode value = requireField(node, field, path);
-        if (!value.isIntegralNumber()) {
+        if (!value.isIntegralNumber() || !value.canConvertToInt()) {
             throw new RecordingFormatException("wrong JSON type for field: " + path);
         }
         return value.intValue();
