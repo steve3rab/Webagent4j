@@ -103,7 +103,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
         Session(BrowserCrawlRequest request, WaitEngine waitEngine) {
             this.request = request;
             this.waitEngine = waitEngine;
-            this.stabilityWaiter = new PageStabilityWaiter(waitEngine);
+            this.stabilityWaiter = new PageStabilityWaiter();
             this.normalizer = new BrowserUrlNormalizer(request.queryParameterPolicy());
             this.claimGate = new ClaimGate(request.maxPages());
         }
@@ -291,9 +291,10 @@ public final class BrowserCrawler implements IBrowserCrawler {
             try {
                 stability = stabilityWaiter.awaitStable(page, budget, request.stabilityWindow());
             } catch (RuntimeException e) {
-                // e.g. the page navigates itself away (meta-refresh, JS redirect) while a stability
-                // poll is mid-flight, destroying the execution context evaluate() just ran in - a
-                // real, observed backend condition, never allowed to escape crawl() uncaught.
+                // stabilityWaiter itself never lets a raw backend failure escape uncaught, but an
+                // unsupported backend (IPage#waitForCondition's default) or another genuinely
+                // unexpected backend failure still surfaces as a RuntimeException here rather than
+                // crashing the whole crawl.
                 return new NavigationFailure(
                         BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE,
                         e.getMessage(),
@@ -328,6 +329,9 @@ public final class BrowserCrawler implements IBrowserCrawler {
                 }
                 List<RawLink> rawLinks = LinkDiscoverer.discover(observation, finalUrl);
                 String title = page.title();
+                // budget.elapsed() here is deliberately total navigation+stability elapsed time -
+                // budget.start() precedes navigate() - not stability-only. See
+                // BrowserCrawledPage#timeToStability.
                 return new NavigationSuccess(
                         finalUrl,
                         (title == null || title.isBlank()) ? Optional.empty() : Optional.of(title),
@@ -394,7 +398,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
                                 success.title(),
                                 links,
                                 (int) task.sequence(),
-                                success.stabilityElapsed()));
+                                success.timeToStability()));
             } else if (outcome instanceof NavigationFailure failure) {
                 if (failure.type() == BrowserCrawlFailureType.CANCELLED) {
                     cancelledTasks++;
@@ -498,7 +502,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
     private sealed interface ITaskOutcome permits NavigationSuccess, NavigationFailure {}
 
     private record NavigationSuccess(
-            URI finalUrl, Optional<String> title, List<RawLink> rawLinks, Duration stabilityElapsed)
+            URI finalUrl, Optional<String> title, List<RawLink> rawLinks, Duration timeToStability)
             implements ITaskOutcome {}
 
     private record NavigationFailure(

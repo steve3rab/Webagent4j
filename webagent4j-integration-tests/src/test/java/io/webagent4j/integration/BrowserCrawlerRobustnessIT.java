@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..016, STABILITY-002) for
+ * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..017, STABILITY-002) for
  * {@link BrowserCrawler} - pathological and boundary-case graphs the engine must survive without
  * hanging, losing pages, exceeding a configured limit, or leaking a crawler-owned page, against a
  * local HTTP fixture only. Mirrors {@code HttpCrawlerRobustnessIT}'s naming and structure for the
@@ -196,6 +196,23 @@ class BrowserCrawlerRobustnessIT {
                                         + "/rob/redirectsaway/landed"));
         server.createContext(
                 "/rob/redirectsaway/landed", exchange -> respond(exchange, html("Landed", "")));
+
+        // BC-ROB-017: a real client-side (meta-refresh) navigation firing while the stability wait
+        // is polling - the exact reproducer for the bug PageStabilityWaiter's redesign onto
+        // IPage#waitForCondition fixes. In-scope, unlike BC-ROB-012's redirect, so the assertion is
+        // "this completes, in scope, within budget" rather than "this fails closed."
+        server.createContext(
+                "/rob/clientsideredirect",
+                exchange ->
+                        respond(
+                                exchange,
+                                metaRefresh(
+                                        "http://127.0.0.1:"
+                                                + server.getAddress().getPort()
+                                                + "/rob/clientsideredirect/landed")));
+        server.createContext(
+                "/rob/clientsideredirect/landed",
+                exchange -> respond(exchange, html("ClientSideRedirectLanded", "")));
 
         // BC-ROB-006/013: resource cleanup - a small multi-page graph, and a failFast graph
         // (absolute href, same reasoning as BC-ROB-002 above)
@@ -378,21 +395,38 @@ class BrowserCrawlerRobustnessIT {
     }
 
     /**
-     * An HTTP-level 302, not a client-side meta-refresh/JS redirect: Playwright's {@code
-     * navigate()} follows this entirely on its own before returning, so there is no window in which
-     * a stability poll's {@code evaluate()} call can race against an in-flight client-side
-     * navigation. A meta-refresh redirect was tried first for BC-ROB-012 and, under real CI timing,
-     * occasionally hung indefinitely (not merely threw) inside {@code evaluate()} when a poll
-     * landed exactly during the frame's transition - a genuine Playwright-driver-level condition
-     * this project's architecture rules out working around with a secondary thread/Future timeout
-     * around Playwright calls. The redirect target being out-of-scope is the actual thing under
-     * test either way.
+     * A plain HTTP-level 302 - used where the scenario under test is specifically an HTTP-level
+     * redirect (BC-ROB-012's out-of-scope-final-URL case), as distinct from a client-side
+     * navigation. See {@link #metaRefresh} for the client-side equivalent, and BC-ROB-017 for the
+     * regression test proving a client-side redirect racing the stability wait no longer hangs.
+     *
+     * <p>An earlier version of BC-ROB-012 used a meta-refresh here instead of this HTTP 302, and
+     * under real CI timing that occasionally hung indefinitely (not merely threw) inside {@code
+     * IPage#evaluate}, when a stability poll landed exactly during the frame's transition. At the
+     * time that was worked around by switching BC-ROB-012 itself to this HTTP 302 - which made CI
+     * green but left the actual production gap (an unbounded {@code evaluate()} call inside a
+     * Java-side polling loop) unfixed. The real fix - {@code PageStabilityWaiter} delegating to
+     * {@code IPage#waitForCondition}, a backend-natively-bounded primitive - is what BC-ROB-017 now
+     * proves against a real client-side redirect; this method stays HTTP-level because BC-ROB-012's
+     * own scenario (an out-of-scope final URL) does not need to be client-side to be meaningful.
      */
     private static void redirect(com.sun.net.httpserver.HttpExchange exchange, String location)
             throws IOException {
         exchange.getResponseHeaders().add("Location", location);
         exchange.sendResponseHeaders(302, -1);
         exchange.close();
+    }
+
+    /**
+     * A same-document HTML response containing a {@code <meta http-equiv="refresh">} client-side
+     * redirect to {@code target} - the kind of navigation transition that can occur while a
+     * stability poll is in flight (unlike an HTTP-level redirect, which Playwright's {@code
+     * navigate()} resolves before the first stability poll ever runs). See BC-ROB-017.
+     */
+    private static String metaRefresh(String target) {
+        return "<!doctype html><html><head><meta http-equiv=\"refresh\" content=\"0; url="
+                + target
+                + "\"></head><body>Redirecting</body></html>";
     }
 
     private BrowserCrawlRequest.Builder requestFor(String path) {
@@ -722,6 +756,36 @@ class BrowserCrawlerRobustnessIT {
             cancelExecutor.shutdownNow();
             cancelMidFlightRequestStarted = null;
             cancelMidFlightAllowResponse = null;
+        }
+    }
+
+    /**
+     * BC-ROB-017: the actual reproducer for the bug this phase's third correction round fixed. A
+     * client-side (meta-refresh) navigation fires immediately after the first document commits -
+     * exactly the kind of transition that can race a stability poll mid-flight. Before {@code
+     * PageStabilityWaiter} was redesigned onto {@link
+     * io.webagent4j.browser.IPage#waitForCondition}, this occasionally hung real Playwright's
+     * {@code evaluate()} indefinitely under real CI timing (see the {@link #redirect} Javadoc for
+     * the incident and the second correction round's insufficient fix). This test proves the
+     * current, real fix: the crawl completes, in scope, within the class's {@code @Timeout} and
+     * well within {@code navigationTimeout} - never a hang - and lands on the redirected-to page as
+     * its final URL. It is deliberately run several times in one method, not because a single pass
+     * proves nothing, but because the original bug was a race that did not reproduce on every run -
+     * a single green pass here would be exactly the kind of false confidence this regression test
+     * exists to rule out.
+     */
+    @Test
+    void bcRob017ClientSideNavigationDuringStabilityCompletesWithinBudgetNeverHangs() {
+        for (int attempt = 0; attempt < 5; attempt++) {
+            BrowserCrawlResult result =
+                    new BrowserCrawler().crawl(requestFor("/rob/clientsideredirect").build());
+
+            assertThat(result.failures()).isEmpty();
+            assertThat(result.pages())
+                    .extracting(p -> p.finalUrl().toString())
+                    .containsExactly(baseUrl + "/rob/clientsideredirect/landed");
+            assertThat(result.terminationReason())
+                    .isEqualTo(BrowserCrawlTerminationReason.COMPLETED);
         }
     }
 }

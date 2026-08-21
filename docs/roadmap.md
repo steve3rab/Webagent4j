@@ -16,10 +16,12 @@ Javadoc, user documentation, and a green `clean verify` build.
   structured failures. No browser, no `robots.txt` enforcement yet, no rate limiting, no
   persistent storage. See [docs/http-crawler.md](http-crawler.md).
 - **0.7 Browser crawler:** dynamic pages, sessions, and cancellation - a deterministic, single-lane
-  browser crawler reusing `webagent4j-browser-api`/`webagent4j-wait`, one `IBrowser` session per
-  crawl, top-level frame discovery. Navigation runs on one thread only (`IBrowser`/`IPage` carry no
-  thread-safety contract to build physical concurrency on), so determinism is structural rather than
-  a scheduling guarantee. See [docs/browser-crawler.md](browser-crawler.md).
+  browser crawler reusing `webagent4j-browser-api`/`webagent4j-wait`, running entirely within the
+  one caller-supplied `IBrowser` session a crawl is given (the crawler neither creates nor isolates
+  that session - see [Session model](browser-crawler.md#session-model)), top-level frame discovery.
+  Navigation runs on one thread only (`IBrowser`/`IPage` carry no thread-safety contract to build
+  physical concurrency on), so determinism is structural rather than a scheduling guarantee. See
+  [docs/browser-crawler.md](browser-crawler.md).
 - **0.8 Workflows:** variables, masked secrets, simple conditions, and structured results.
 - **0.9 Recording and plugins:** record/replay foundation and small `ServiceLoader` extension points.
 - **1.0 Stable non-AI API:** compatibility policy and production hardening.

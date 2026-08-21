@@ -90,6 +90,42 @@ class IPageDefaultMethodsTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void waitForConditionThrowsExplicitlyWhenTheBackendDoesNotOverrideIt() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", Duration.ofSeconds(5))))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void waitForConditionRejectsBlankExpressionOrInvalidTimeout() {
+        RecordingPage page = new RecordingPage(new StubElement());
+
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition(null, Duration.ofSeconds(5))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("   ", Duration.ofSeconds(5))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", null)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", Duration.ZERO)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(
+                        org.assertj.core.api.Assertions.catchThrowable(
+                                () -> page.waitForCondition("() => true", Duration.ofSeconds(-1))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     /** Minimal {@link IPage} test double recording the calls its default methods make. */
     private static final class RecordingPage implements IPage {
 

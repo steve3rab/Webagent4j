@@ -30,8 +30,18 @@ import org.mockito.ArgumentCaptor;
 
 /**
  * Engine-level tests using scripted {@link IPage} mocks (never real Playwright/network) and a fake
- * clock so stability/timeout behavior is deterministic and instant - no {@code Thread.sleep}
+ * clock so navigation-timeout budget math is deterministic and instant - no {@code Thread.sleep}
  * anywhere in this suite.
+ *
+ * <p>Since {@link io.webagent4j.browsercrawler.internal.PageStabilityWaiter} delegates the actual
+ * "stable for how long" timing to {@link IPage#waitForCondition}, which a plain mock cannot
+ * meaningfully simulate (there is no real backend polling loop or JS clock behind it), this suite
+ * proves the stability-budget contract two different ways: that {@code waitForCondition} receives
+ * the correctly-reduced remaining budget (shared-budget math, verified via argument capture) and
+ * that a thrown {@link io.webagent4j.browser.ConditionTimeoutException} is classified as {@link
+ * BrowserCrawlFailureType#PAGE_STABILITY_TIMEOUT}. Real timing behavior - including the
+ * client-side-navigation-during-stability race this design exists to bound - is proven against real
+ * Playwright in {@code BrowserCrawlerRobustnessIT}.
  */
 class BrowserCrawlerTest {
 
@@ -100,7 +110,8 @@ class BrowserCrawlerTest {
                             }
                             when(page.url()).thenReturn(script.finalUrl());
                             when(page.title()).thenReturn(script.title());
-                            when(page.evaluate(anyString())).thenReturn("stable");
+                            when(page.waitForCondition(anyString(), any(Duration.class)))
+                                    .thenReturn("stable");
                             when(page.observe(any()))
                                     .thenReturn(
                                             LinkObservationFixtures.withLinks(
@@ -536,12 +547,39 @@ class BrowserCrawlerTest {
                         List.of(),
                         () -> fakeTime.sleep(Duration.ofMillis(900))));
 
+        crawler.crawl(
+                requestFor(browser, "https://example.com/")
+                        .navigationTimeout(Duration.ofSeconds(1))
+                        .stabilityWindow(Duration.ofMillis(200))
+                        .build());
+
+        // stabilityWaiter.awaitStable delegates the actual timing to the backend
+        // (IPage#waitForCondition), which a mock cannot simulate - so the shared-budget contract is
+        // proven here at the call-argument level: only the 100ms actually left in the 1s
+        // navigationTimeout budget after navigate()'s 900ms side effect, never a fresh independent
+        // timeout for the stability stage.
+        ArgumentCaptor<Duration> timeoutCaptor = ArgumentCaptor.forClass(Duration.class);
+        verify(createdPages.get(0)).waitForCondition(anyString(), timeoutCaptor.capture());
+        assertThat(timeoutCaptor.getValue()).isEqualTo(Duration.ofMillis(100));
+    }
+
+    /**
+     * STABILITY: a {@link io.webagent4j.browser.ConditionTimeoutException} thrown from {@link
+     * IPage#waitForCondition} - the typed signal a backend's own native, natively-bounded polling
+     * primitive gives when the condition never becomes true in time - is what classifies a
+     * navigation as {@link BrowserCrawlFailureType#PAGE_STABILITY_TIMEOUT}.
+     */
+    @Test
+    void stabilityConditionTimeoutBecomesPageStabilityTimeoutFailure() {
+        IBrowser browser = mock(IBrowser.class);
+        IPage page = mock(IPage.class);
+        when(browser.newPage()).thenReturn(page);
+        when(page.url()).thenReturn("https://example.com/");
+        when(page.waitForCondition(anyString(), any(Duration.class)))
+                .thenThrow(new io.webagent4j.browser.ConditionTimeoutException("not stable"));
+
         BrowserCrawlResult result =
-                crawler.crawl(
-                        requestFor(browser, "https://example.com/")
-                                .navigationTimeout(Duration.ofSeconds(1))
-                                .stabilityWindow(Duration.ofMillis(200))
-                                .build());
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
 
         assertThat(result.pages()).isEmpty();
         assertThat(result.failures()).hasSize(1);
@@ -613,7 +651,8 @@ class BrowserCrawlerTest {
                             IPage page = mock(IPage.class);
                             when(page.url()).thenReturn("https://example.com/");
                             when(page.title()).thenReturn("Home");
-                            when(page.evaluate(anyString())).thenReturn("stable");
+                            when(page.waitForCondition(anyString(), any(Duration.class)))
+                                    .thenReturn("stable");
                             when(page.observe(any()))
                                     .thenReturn(
                                             LinkObservationFixtures.withLinks(

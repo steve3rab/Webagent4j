@@ -71,7 +71,8 @@ final class PlaywrightObservationBackend {
               const selector = [
                 'header', 'nav', 'main', 'search', 'aside', 'footer',
                 'section[aria-label]', 'section[aria-labelledby]', 'form', 'dialog',
-                'a[href]', 'button', 'input:not([type="hidden"])', 'textarea', 'select', 'option',
+                'a[href]', 'area[href]', 'button', 'input:not([type="hidden"])', 'textarea',
+                'select', 'option',
                 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'ul', 'ol', 'img',
                 'p', 'blockquote', 'pre', '[role]'
               ].join(',');
@@ -106,7 +107,7 @@ final class PlaywrightObservationBackend {
                     result[attribute.name] = attribute.value;
                   }
                 }
-                if (element.matches('a[href]')) result['href-resolved'] = element.href;
+                if (element.matches('a[href],area[href]')) result['href-resolved'] = element.href;
                 if (element.matches('form')) {
                   result['action-resolved'] = element.action;
                   result.method = (element.method || 'get').toUpperCase();

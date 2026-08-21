@@ -106,6 +106,49 @@ All notable changes to this project will be documented in this file. The format 
   in-flight-navigation cancellation) plus new `BrowserCrawlerIT`/`BrowserCrawlerTest` coverage for
   the timeout and observation-truncation fixes.
 
+### Fixed (Browser Crawler — Phase 0.7 third correction round: bounded stability)
+
+- **The actual production gap, not just its symptom.** The second correction round's fix for a
+  30-minute CI hang replaced a client-side meta-refresh fixture with an HTTP 302 redirect, which
+  made CI green but did not touch the underlying defect: `PageStabilityWaiter` polled
+  `IPage#evaluate(String)` from a `webagent4j-wait` `WaitEngine` loop, and that loop can only check
+  its budget *between* probe calls - a single `evaluate()` call in flight during a client-side
+  navigation transition could hang indefinitely, with no exception and no timeout, regardless of
+  `navigationTimeout`. This round fixes the actual gap: `PageStabilityWaiter` now expresses the
+  entire stability condition as one JavaScript predicate and hands it to a new backend-neutral
+  `IPage#waitForCondition(String, Duration)`, which the Playwright adapter maps directly onto
+  `Page#waitForFunction` - a native, driver-enforced, timeout-bounded polling primitive that
+  transparently continues polling in a newly-navigated execution context instead of hanging. There
+  is exactly one call from Java into the backend per stability wait, and that call - never a loop
+  wrapped around it - is what the backend itself bounds.
+- New backend-neutral `io.webagent4j.browser.ConditionTimeoutException`
+  (`webagent4j-browser-api`), mirroring `NavigationTimeoutException`: the Playwright adapter
+  translates its native `TimeoutError` to this type when `waitForFunction` never becomes truthy in
+  time, and `BrowserCrawler` classifies it directly to `PAGE_STABILITY_TIMEOUT`.
+- The real client-side-navigation-during-stability regression this design fixes is proven directly:
+  `BrowserCrawlerRobustnessIT` restores a genuine meta-refresh reproducer (rather than the HTTP
+  302 substitute the previous round left in its place) and asserts bounded, structured behavior -
+  success or an explicit failure, never a hang - under real Playwright.
+- `BrowserCrawledPage#stabilityElapsed` renamed to `timeToStability`: the field was always populated
+  from the shared `WaitBudget#elapsed()`, which starts before `navigate()` is called - i.e. combined
+  navigation-plus-stability elapsed time, not stability-only, despite its old name.
+- `<area href>` (image-map links) are now discovered the same as `<a href>`: the Playwright
+  observation backend's element selector, role inference, and `href-resolved` computation all cover
+  `area[href]`, with a targeted visibility-check exemption (`<area>` carries `display: none` in the
+  HTML default UA stylesheet despite being a genuinely clickable hotspot, which would otherwise make
+  every `<area>` read as permanently invisible). The stability fingerprint's link digest also now
+  covers `area[href]`, consistent with discovery.
+- Corrected `docs/browser-crawler.md`'s stability-fingerprint claim that its 2000-link digest cap is
+  identical to `ObservationOptions.maxElements(2000)`'s retained set - they are independently chosen
+  bounds over different underlying sets (all links vs. all semantic elements of any kind) and are not
+  guaranteed to agree element-for-element.
+- Documented, honestly, the precise scope of what `navigationTimeout` bounds: navigation and
+  stability are now both backend-natively bounded, but `page.url()`, `page.observe(...)`, and
+  `page.title()` - called after stability succeeds, to assemble the result - are not covered by any
+  further deadline. This was true before this round too; it was simply undocumented.
+- Removed stale Javadoc/comments describing the earlier abandoned Java-side polling-loop stability
+  design as current.
+
 ### Added (Public API documentation consolidation)
 
 - New `docs/public-api.md`: a comprehensive public API reference spanning every implemented module

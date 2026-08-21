@@ -72,6 +72,47 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
     /** Evaluates a JavaScript expression in page context and returns its backend-neutral result. */
     Object evaluate(String expression);
 
+    /**
+     * Polls {@code expression} - a JavaScript expression evaluated repeatedly in page context -
+     * using this backend's OWN native timeout-aware polling primitive, until it returns a
+     * JavaScript truthy value or {@code timeout} elapses.
+     *
+     * <p>This exists specifically so a caller can bind an entire poll-until-satisfied-or-timeout
+     * operation to one backend call that the backend itself bounds, rather than repeatedly calling
+     * {@link #evaluate(String)} from a Java-side loop: a single {@link #evaluate(String)} call has
+     * no timeout of its own, so if it happens to block indefinitely - for example a client-side
+     * navigation destroying the execution context mid-evaluation - no amount of Java-side deadline
+     * bookkeeping around it can recover, because control never returns to Java until (if ever) the
+     * call itself completes. An implementation of this method must never have that gap: the backend
+     * is responsible for both the repeated evaluation and enforcing {@code timeout} against it, the
+     * same way {@link #navigate(String, Duration)} delegates timeout enforcement to the backend
+     * rather than checking it from the Java side after the fact.
+     *
+     * <p>A backend that cannot honor a caller-supplied, natively-bounded polling wait must say so
+     * explicitly rather than silently falling back to an unbounded {@link #evaluate(String)} loop:
+     * the default implementation here throws {@link UnsupportedOperationException} for exactly that
+     * reason. The Playwright adapter overrides this method and maps it directly onto the native
+     * driver's own timeout-aware function-polling primitive.
+     *
+     * @return the expression's final truthy value
+     * @throws IllegalArgumentException if {@code expression} is blank, or {@code timeout} is {@code
+     *     null}, zero, or negative
+     * @throws ConditionTimeoutException if {@code expression} never becomes truthy within {@code
+     *     timeout}
+     * @throws UnsupportedOperationException if this backend cannot honor a natively-bounded
+     *     condition wait
+     */
+    default Object waitForCondition(String expression, Duration timeout) {
+        if (expression == null || expression.isBlank()) {
+            throw new IllegalArgumentException("expression cannot be blank");
+        }
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        throw new UnsupportedOperationException(
+                "This browser backend does not support natively-bounded condition waits");
+    }
+
     /** Builds an immutable semantic snapshot of meaningful page content. */
     Observation observe();
 

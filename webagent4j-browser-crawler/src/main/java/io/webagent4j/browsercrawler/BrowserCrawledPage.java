@@ -28,8 +28,11 @@ import java.util.Optional;
  * @param navigationOrder this page's position in deterministic frontier order - stable regardless
  *     of actual completion timing under concurrency (see {@code
  *     docs/browser-crawler.md#bounded-concurrency})
- * @param stabilityElapsed wall-clock time from navigation start to the stability window being
- *     satisfied - excluded from the determinism contract; see {@code
+ * @param timeToStability wall-clock time from navigation start to the stability window being
+ *     satisfied - despite the name, this is the combined navigation-plus-stability elapsed time (it
+ *     is measured from the same {@code WaitBudget} that starts before {@code navigate()} is called,
+ *     not from a separate stability-only clock), which is exactly what makes it comparable to
+ *     {@code navigationTimeout}; excluded from the determinism contract; see {@code
  *     docs/browser-crawler.md#determinism-contract}
  */
 public record BrowserCrawledPage(
@@ -40,7 +43,7 @@ public record BrowserCrawledPage(
         Optional<String> title,
         List<DiscoveredLink> links,
         int navigationOrder,
-        Duration stabilityElapsed) {
+        Duration timeToStability) {
 
     /** Validates fields and defensively copies {@link #links()}. */
     public BrowserCrawledPage {
@@ -49,7 +52,7 @@ public record BrowserCrawledPage(
         Objects.requireNonNull(discoveredFrom, "discoveredFrom");
         Objects.requireNonNull(title, "title");
         links = List.copyOf(Objects.requireNonNull(links, "links"));
-        Objects.requireNonNull(stabilityElapsed, "stabilityElapsed");
+        Objects.requireNonNull(timeToStability, "timeToStability");
         if (depth < 0) {
             throw new IllegalArgumentException("depth must be >= 0, was " + depth);
         }
@@ -57,8 +60,8 @@ public record BrowserCrawledPage(
             throw new IllegalArgumentException(
                     "navigationOrder must be >= 0, was " + navigationOrder);
         }
-        if (stabilityElapsed.isNegative()) {
-            throw new IllegalArgumentException("stabilityElapsed must not be negative");
+        if (timeToStability.isNegative()) {
+            throw new IllegalArgumentException("timeToStability must not be negative");
         }
     }
 }

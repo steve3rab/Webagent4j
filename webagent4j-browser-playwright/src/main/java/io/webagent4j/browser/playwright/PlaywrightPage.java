@@ -5,6 +5,7 @@ import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionBuilder;
 import io.webagent4j.action.internal.DefaultActionBuilder;
 import io.webagent4j.browser.BrowserOptions;
+import io.webagent4j.browser.ConditionTimeoutException;
 import io.webagent4j.browser.IFrameLocator;
 import io.webagent4j.browser.IPage;
 import io.webagent4j.browser.NavigationTimeoutException;
@@ -142,6 +143,52 @@ final class PlaywrightPage implements IPage {
             throw new IllegalArgumentException("expression cannot be blank");
         }
         return page.evaluate(expression);
+    }
+
+    /**
+     * Overrides the default {@link IPage#waitForCondition(String, Duration)}, mapping directly onto
+     * {@link Page#waitForFunction(String, Object, Page.WaitForFunctionOptions)} - Playwright's own
+     * native, driver-enforced polling primitive - rather than a Java-side loop calling {@link
+     * #evaluate(String)} repeatedly. Playwright polls {@code expression} itself (re-evaluating it
+     * in whatever execution context is current, including transparently after a same-frame
+     * navigation), and enforces {@code timeout} on the driver side: the call either returns once
+     * {@code expression} is truthy or throws Playwright's typed {@link
+     * com.microsoft.playwright.TimeoutError} - translated here to the backend-neutral {@link
+     * ConditionTimeoutException} - never hangs past {@code timeout}, even if a bare {@link
+     * #evaluate(String)} call evaluating the same expression once could.
+     */
+    @Override
+    public Object waitForCondition(String expression, Duration timeout) {
+        if (expression == null || expression.isBlank()) {
+            throw new IllegalArgumentException("expression cannot be blank");
+        }
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        // Math.max(1, ...): a sub-millisecond-but-positive remaining budget must never floor to 0,
+        // since Playwright treats a timeout of exactly 0 as "disabled" rather than "immediate".
+        com.microsoft.playwright.JSHandle handle;
+        try {
+            handle =
+                    page.waitForFunction(
+                            expression,
+                            null,
+                            new Page.WaitForFunctionOptions()
+                                    .setTimeout((double) Math.max(1L, timeout.toMillis())));
+        } catch (com.microsoft.playwright.TimeoutError e) {
+            throw new ConditionTimeoutException(
+                    "Condition did not become true within " + timeout, e);
+        }
+        Object value = handle.jsonValue();
+        try {
+            handle.dispose();
+        } catch (RuntimeException disposeFailure) {
+            // Best-effort cleanup only: value was already read successfully above, so a page that
+            // has since navigated away and invalidated this handle must not turn an
+            // already-obtained
+            // result into a spurious failure.
+        }
+        return value;
     }
 
     @Override

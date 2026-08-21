@@ -26,7 +26,7 @@ final class PlaywrightDomInspectionScripts {
               if (explicit) return explicit.toLowerCase();
               const tag = element.tagName.toLowerCase();
               const type = (element.getAttribute('type') || 'text').toLowerCase();
-              if (tag === 'a' && element.hasAttribute('href')) return 'link';
+              if ((tag === 'a' || tag === 'area') && element.hasAttribute('href')) return 'link';
               if (tag === 'button') return 'button';
               if (tag === 'textarea') return 'textbox';
               if (tag === 'input' && type === 'hidden') return 'unknown';
@@ -71,9 +71,18 @@ final class PlaywrightDomInspectionScripts {
               const style = getComputedStyle(element);
               const rect = element.getBoundingClientRect();
               const ariaHiddenAncestor = element.closest('[aria-hidden="true"], [hidden]');
-              const visible = style.display !== 'none' && style.visibility !== 'hidden'
-                && style.visibility !== 'collapse' && Number(style.opacity) > 0
-                && rect.width > 0 && rect.height > 0 && !ariaHiddenAncestor;
+              // <area> is exempt from the display/rect checks below: the HTML default UA
+              // stylesheet gives every <area> "display: none" even though it is a genuinely
+              // clickable image-map hotspot (browsers hit-test it independently of that nominal
+              // display value), so requiring display !== 'none' or a non-empty
+              // getBoundingClientRect() would make every <area> permanently invisible here
+              // regardless of whether its image map is actually shown on the page.
+              const visible = element.tagName.toLowerCase() === 'area'
+                ? style.visibility !== 'hidden' && style.visibility !== 'collapse'
+                  && Number(style.opacity) > 0 && !ariaHiddenAncestor
+                : style.display !== 'none' && style.visibility !== 'hidden'
+                  && style.visibility !== 'collapse' && Number(style.opacity) > 0
+                  && rect.width > 0 && rect.height > 0 && !ariaHiddenAncestor;
               const enabled = !element.matches(':disabled')
                 && element.getAttribute('aria-disabled') !== 'true';
               const readOnly = Boolean(element.readOnly)

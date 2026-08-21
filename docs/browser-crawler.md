@@ -114,53 +114,91 @@ redirect is a `BrowserCrawlFailureType.OUT_OF_SCOPE_REDIRECT`, never silently in
 ## Link discovery
 
 Links come from `IPage.observe()`'s `Observation.links()` (elements with `ElementRole.LINK`), never
-raw HTML regex parsing. The Playwright observation backend already resolves `href` to an absolute
-URL (`element.href` semantics) and exposes it as the `href-resolved` attribute; `LinkDiscoverer` only
-reads that value (falling back to `URI.resolve()` against the document's own URL if it is ever
-absent), so relative/root-relative/protocol-relative/base-href resolution is exactly what the browser
-itself already computed - never re-implemented.
+raw HTML regex parsing - both `a[href]` and image-map `area[href]` elements are observed and role-
+inferred as `LINK`. The Playwright observation backend already resolves `href` to an absolute URL
+(`element.href` semantics, which resolves the same way for `<area>` as it does for `<a>`) and
+exposes it as the `href-resolved` attribute; `LinkDiscoverer` only reads that value (falling back to
+`URI.resolve()` against the document's own URL if it is ever absent), so relative/root-relative/
+protocol-relative/base-href resolution is exactly what the browser itself already computed - never
+re-implemented. `<area>` elements carry the HTML default UA stylesheet's `display: none`, which would
+otherwise make them read as "not visible" and be filtered out of every observation regardless of
+whether their image map is actually shown; the Playwright observation backend exempts `<area>` from
+that specific check so an image-map link is discoverable the same as any other visible link.
 
 ## Navigation timeout
 
 `navigationTimeout` is one authoritative, monotonic budget covering both the navigation attempt
 itself and the subsequent stability wait - not merely a client-side check performed after a call
 that a backend's own default timeout already bounded to something longer. `BrowserCrawler` passes
-the remaining budget into `IPage.navigate(String, Duration)` on every attempt - never the plain
-`navigate(String)` overload. That overload's contract is explicit about what "authoritative" means:
-a backend that cannot honor a caller-supplied timeout must say so by throwing
-`UnsupportedOperationException` rather than silently applying its own (possibly much longer)
-default; the Playwright adapter overrides it and maps the timeout directly to the native driver's
-own per-call navigation timeout option, so it is genuinely enforced there. A real navigation timeout
-surfaces as the backend-neutral `io.webagent4j.browser.NavigationTimeoutException` (the Playwright
-adapter translates its native `TimeoutError` to this type); `BrowserCrawler` classifies that typed
-exception directly to `NAVIGATION_TIMEOUT` - never inferred from `WaitBudget.expired()`'s timing or
-from matching an exception message. If navigation itself succeeds but the page cannot reach the
-configured stability window before the same shared deadline, that is `PAGE_STABILITY_TIMEOUT`
-instead - navigation and stability draw from the same budget, so a slow navigation leaves
-correspondingly less time for stability, never a fresh full timeout for each stage.
+the remaining budget into `IPage.navigate(String, Duration)` for navigation, and the remaining
+budget again into `IPage.waitForCondition(String, Duration)` for stability (see
+[Stability](#stability)) - never a plain, backend-default-timed overload for either. Both
+overloads' contracts are explicit about what "authoritative" means: a backend that cannot honor a
+caller-supplied timeout must say so by throwing `UnsupportedOperationException` rather than
+silently applying its own (possibly much longer) default; the Playwright adapter overrides both and
+maps the timeout directly onto the native driver's own per-call timeout options
+(`Page.NavigateOptions#setTimeout`, `Page.WaitForFunctionOptions#setTimeout`), so both are
+genuinely enforced *by the backend itself*, not by a Java-side deadline check wrapped around an
+unbounded call. A real navigation timeout surfaces as the backend-neutral
+`io.webagent4j.browser.NavigationTimeoutException`; a real stability timeout surfaces as
+`io.webagent4j.browser.ConditionTimeoutException` (the Playwright adapter translates its native
+`TimeoutError` to each type, respectively); `BrowserCrawler` classifies these typed exceptions
+directly to `NAVIGATION_TIMEOUT` and `PAGE_STABILITY_TIMEOUT` - never inferred from
+`WaitBudget.expired()`'s timing or from matching an exception message. Navigation and stability
+draw from the same budget, so a slow navigation leaves correspondingly less time for stability,
+never a fresh full timeout for each stage.
+
+**What `navigationTimeout` does *not* bound:** once stability succeeds, `BrowserCrawler` still
+calls `page.url()`, `page.observe(...)`, and `page.title()` to assemble the result - none of these
+calls receive any further deadline. This is an honest, current limitation, not an oversight: unlike
+navigation and stability, none of `IPage`'s observation-family operations currently has a
+timeout-aware, backend-natively-bounded overload, so extending the same bounded-call architecture to
+them would be a separate, larger change. In practice the window in which one of these calls could
+race a client-side navigation is much narrower than the navigation/stability window it replaced -
+they only run after stability has already certified the DOM quiescent - but it is not zero, and it
+is not enforced. See [Current limitations](#current-limitations).
 
 ## Stability
 
-`PageStabilityWaiter` polls a small, deterministic JavaScript fingerprint every 100ms until it reads
-identically for `stabilityWindow`, made of four parts: `document.readyState`; the total element
-count; the total count of `href`-bearing anchors; and `JSON.stringify` of a bounded, document-order
-array of the first 2000 anchors' `href` attribute values. The href digest exists because a link's
-target can change without changing the element count at all - an SPA hydration step rewriting `href`
-attributes in place, for example - which the element-count signal alone cannot see; it is
+`PageStabilityWaiter` hands the *entire* stability condition - fingerprint computation, change
+detection, and the `stabilityWindow` bookkeeping - to the backend as one JavaScript predicate via
+`IPage.waitForCondition(String, Duration)`, rather than polling `IPage.evaluate(String)` from a
+Java-side loop. This is a deliberate architecture, not the original one: an earlier version of this
+class built a `webagent4j-wait` `WaitPolicy.withStableFor(...)` around a probe that called
+`evaluate()` once per poll, and `WaitEngine` only ever checks its budget *between* probe calls - it
+cannot interrupt a single `evaluate()` call already in flight. `evaluate()` has no timeout of its
+own, so a poll that happened to land during a client-side navigation transition (a meta-refresh, a
+JS `location.assign`/`location.replace`, or a router push mid-flight) could block the underlying
+call indefinitely - no exception, no timeout, ever, until (if ever) the driver call itself
+returned. `navigationTimeout` was, in that design, not actually authoritative over stability the way
+this document claimed. The Playwright adapter now maps `waitForCondition` directly onto
+`Page.waitForFunction`, which polls entirely driver-side, is bounded by its own native `timeout`
+option, and transparently continues polling in a newly-navigated execution context rather than
+throwing "context destroyed" - so there is exactly one call from Java into the backend per stability
+wait, and that call, not a loop wrapped around it, is what the backend itself bounds. See
+`BrowserCrawlerRobustnessIT`'s real-Playwright client-side-navigation-during-stability regression
+test for the scenario this replaces a hang with a bounded, structured outcome for.
+
+The stability predicate's fingerprint is four parts: `document.readyState`; the total element count;
+the total count of `href`-bearing anchors and image-map areas (`a[href]`, `area[href]` - see
+[Link discovery](#link-discovery)); and `JSON.stringify` of a bounded, document-order array of the
+first 2000 such links' `href` attribute values. The href digest exists because a link's target can
+change without changing the element count at all - an SPA hydration step rewriting `href` attributes
+in place, for example - which the element-count signal alone cannot see; it is
 `JSON.stringify`-encoded, not delimiter-joined, so an href that itself contains the delimiter cannot
-collide with a genuinely different href sequence. The 2000-anchor cap is not arbitrary: it is exactly
-the `maxElements` bound the engine's own discovery observation uses (see
-[Observation truncation](#observation-truncation)), so a mutation stability can ever be asked to
-notice is, by construction, exactly the same set of links discovery will actually see - a mutation
-past that boundary is invisible to both, consistently, never visible to one and silently missed by
-the other. In practice a page with more than 2000 elements always fails via `OBSERVATION_TRUNCATED`
-regardless of its stability outcome, so the cap's boundary itself is not independently reachable as
-a successful crawl - it exists for consistency with the observation bound, not because pages that
-large are expected to succeed. This is still a bounded, purely DOM-shape-based heuristic, not a
-network-idle signal and not a general content-change detector: an anchor's visible text or any
-non-anchor content changing without an accompanying element-count or href change is not detected,
-and the engine takes exactly one observation snapshot per navigation - it never continues monitoring
-the DOM after stability is accepted (see [Dynamic DOM](#dynamic-dom)).
+collide with a genuinely different href sequence. **The 2000-link digest cap is an independently
+chosen, generous bound - it is *not* guaranteed to be the same set of links a truncated observation
+would retain.** `ObservationOptions.maxElements(2000)` caps the first 2000 *semantic elements of any
+kind* in document order (headings, buttons, forms, images, and more - not only links), so a link
+that is, say, the 1800th link on the page but the 2400th semantic element overall is covered by this
+digest yet could still be missing from a truncated observation, and the reverse is possible on a
+link-dense page with few other semantic elements. The two bounds happen to share the same number for
+consistency, not because one is derived from or provably equal to the other. This is still a
+bounded, purely DOM-shape-based heuristic, not a network-idle signal and not a general
+content-change detector: an anchor's or area's visible text, or any non-link content changing
+without an accompanying element-count or href change, is not detected, and the engine takes exactly
+one observation snapshot per navigation - it never continues monitoring the DOM after stability is
+accepted (see [Dynamic DOM](#dynamic-dom)).
 
 ## Observation truncation
 
@@ -202,10 +240,14 @@ silent gap.
 
 ## Redirect semantics
 
-Observed only as requested-URL vs. final-committed-URL (`IPage.url()` after `navigate()`). No
-intermediate hop list, no HTTP status codes - the current backend-neutral browser API exposes
-neither, and none are fabricated. Covers HTTP 30x, JavaScript redirects, and meta-refresh alike,
-since all of them simply change the committed URL by the time navigation is observed complete.
+Observed only as requested-URL vs. final-committed-URL (`IPage.url()` after `navigate()` and
+stability). No intermediate hop list, no HTTP status codes - the current backend-neutral browser API
+exposes neither, and none are fabricated. Covers HTTP 30x, JavaScript redirects, and meta-refresh
+alike, since all of them simply change the committed URL by the time navigation is observed
+complete - an HTTP 30x is resolved by the backend inside `navigate()` itself, while a client-side
+redirect (JavaScript `location.assign`/`location.replace`, or a meta-refresh) typically fires after
+the first document commits, mid-stability-wait; see [Stability](#stability) for why that transition
+is now bounded rather than able to hang the wait that observes it.
 
 ## Concurrency model
 
@@ -341,12 +383,17 @@ See `webagent4j-examples` for runnable `BrowserCrawlSimpleExample` and
   [URL identities](#url-identities-and-deduplication).
 - No download detection: if navigation triggers a browser download instead of a rendered document,
   behavior is backend-defined - `IPage` exposes no content-type/download signal to detect this.
-- The stability fingerprint detects DOM element-count and anchor-`href` changes, not every possible
+- The stability fingerprint detects DOM element-count and link-`href` changes, not every possible
   content mutation - see [Stability](#stability) for the exact, deliberately bounded contract.
 - Observation is bounded (`maxElements(2000)`); a page that exceeds it becomes an explicit
   `OBSERVATION_TRUNCATED` failure rather than a silently incomplete success - see
-  [Observation truncation](#observation-truncation).
-- `BrowserCrawlerRobustnessIT` (BC-ROB-001..016, STABILITY-002, real Playwright, in
+  [Observation truncation](#observation-truncation). Its `maxElements(2000)` bound is not guaranteed
+  identical to the stability fingerprint's 2000-link digest cap - see [Stability](#stability).
+- After stability succeeds, `page.url()`, `page.observe(...)`, and `page.title()` are not bounded by
+  any further deadline - only navigation and stability are natively bounded by the backend today. See
+  [Navigation timeout](#navigation-timeout) for the exact, honest scope of what is and is not
+  enforced.
+- `BrowserCrawlerRobustnessIT` (BC-ROB-001..017, STABILITY-002, real Playwright, in
   `webagent4j-integration-tests`) covers the adversarial scenario matrix this phase's own
   instructions asked for; it does not duplicate the dedicated `webagent4j-robustness-tests`
   100-scenario corpus's element-level model, which was never designed for a crawl-graph concept.
@@ -356,7 +403,7 @@ See `webagent4j-examples` for runnable `BrowserCrawlSimpleExample` and
 
 ## Compatibility
 
-Two additive public API changes were introduced, both backward-compatible - no existing method
+Three additive public API changes were introduced, all backward-compatible - no existing method
 signature changed and no existing type was removed:
 
 - `IPage` (`webagent4j-browser-api`) gained a default method, `navigate(String, Duration)`, and a
@@ -365,6 +412,11 @@ signature changed and no existing type was removed:
   [Navigation timeout](#navigation-timeout)). Every existing `IPage` implementation remains
   source-compatible unchanged: the new method has a default body, so nothing that does not already
   call it is affected.
+- `IPage` also gained a second default method, `waitForCondition(String, Duration)`, and a second
+  new type, `ConditionTimeoutException`, in the same package - required to make the stability wait
+  genuinely bounded by the backend rather than by an interruptible-only-between-polls Java loop (see
+  [Stability](#stability)). Same source-compatibility guarantee as above: default body, nothing
+  affected unless it is called.
 - `CrawlDecisionType` (`webagent4j-crawler-api`) gained one new enum constant, `REJECT_CANCELLED`
   (see [Cancellation](#cancellation) for why it belongs on the shared type rather than a
   browser-crawler-local one).
