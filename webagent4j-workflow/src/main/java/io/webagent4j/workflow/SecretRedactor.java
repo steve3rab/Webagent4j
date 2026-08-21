@@ -1,4 +1,4 @@
-package io.webagent4j.workflow.internal;
+package io.webagent4j.workflow;
 
 import java.util.Collection;
 import java.util.Comparator;
@@ -11,11 +11,12 @@ import java.util.List;
  * <p>This is masking, not encryption: it replaces every exact occurrence of a known secret value in
  * a text with {@code ***}. Values are matched longest-first, so one secret that is a substring of
  * another can never leave a partial, still-identifying fragment behind (see {@code
- * docs/workflow.md#secret-masking}). A per-execution instance is built fresh from whatever secret
- * values are known to {@code WorkflowEngine}'s session at the moment a message needs redacting -
- * this class holds no static or otherwise shared state between workflow executions.
+ * docs/workflow.md#secret-masking}). An instance is built fresh from whatever secret values are
+ * currently known - by {@code WorkflowEngine}'s session for failure/condition diagnostics, or by
+ * {@link WorkflowInputs}/{@link WorkflowOutputs} themselves for cross-field rendering - so this
+ * class holds no static or otherwise shared state between calls.
  */
-public final class SecretRedactor {
+final class SecretRedactor {
 
     private static final String MASK = "***";
 
@@ -26,7 +27,7 @@ public final class SecretRedactor {
     }
 
     /** Builds a redactor over the given known secret values (blank/empty values are ignored). */
-    public static SecretRedactor of(Collection<String> secretValues) {
+    static SecretRedactor of(Collection<String> secretValues) {
         List<String> distinct =
                 secretValues.stream()
                         .filter(value -> value != null && !value.isEmpty())
@@ -37,7 +38,7 @@ public final class SecretRedactor {
     }
 
     /** Returns {@code text} with every known secret value replaced by {@code ***}. */
-    public String redact(String text) {
+    String redact(String text) {
         if (text == null) {
             return null;
         }

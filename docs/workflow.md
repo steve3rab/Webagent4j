@@ -64,11 +64,15 @@ structural validation.
 
 - a blank workflow ID, or an empty step list;
 - a duplicate step ID (no auto-suffixing - the caller must choose unique IDs);
-- the same variable name declared twice with a conflicting type or secret status;
+- the same input variable name declared more than once among required and optional inputs
+  combined - even if the two declarations are identical;
 - a step's declared output colliding with an existing input or an earlier step's output (variables
   are write-once - see [Variables](#variables));
-- a condition referencing a variable that is neither a declared input nor produced by an earlier
-  step (a static, linear dataflow check - see [Conditions](#conditions)).
+- a condition whose `referencedVariables()` is null, contains a null entry, throws, or references a
+  variable that is neither a declared input nor produced by an earlier step (a static, linear
+  dataflow check - see [Conditions](#conditions)). These errors are built from the step ID and
+  variable name only, never from the condition's `describe()` - secrets may not even be known yet
+  at build time.
 
 A `Workflow`'s own `toString()` is safe: it shows the ID, every declared input's name (annotated
 `(optional)`/`(secret)` as appropriate, never a value), and every step ID - never a captured
@@ -88,9 +92,13 @@ Two variables are the same logical variable only when their name, type, and secr
 agree - `Workflow.Builder#build()` rejects a workflow that reuses one name with a different type or
 sensitivity, so a name can never silently mean two different things.
 
-**Write-once.** Inputs are established once, at execution start. A step may add a new output
-variable, but it can never overwrite an existing input or an earlier step's output - this is
-enforced structurally, at build time, not by a runtime check.
+**Write-once.** A `WorkflowInputs.Builder` rejects a second `put()` call for a variable name that
+was already supplied, regardless of whether the value or declaration matches the first - a caller
+cannot silently overwrite an input it already provided. A step may add a new output variable, but
+it can never overwrite an existing input or an earlier step's output; this half is enforced
+structurally, at `Workflow.Builder#build()` time, not by a runtime check, because a step's declared
+output name is validated against every input and every earlier step's output before the workflow
+definition can even exist.
 
 ## Required and optional inputs
 
@@ -102,8 +110,17 @@ no action factory is called, and the engine returns a structured `WorkflowResult
 
 `Workflow.Builder#optionalInput(variable)` declares a variable that may or may not be supplied.
 There is no implicit default, no environment-variable lookup, and no system-property fallback -
-inputs are explicit only. Conditions typically branch on an optional input's presence with
-`exists`/`notExists` (see [Conditions](#conditions)).
+inputs are explicit only. If an optional input is supplied under a `WorkflowVariable` with a
+different type or secret status than declared, that is validated *before* step 0 too, exactly like
+a required input's mismatch - it never silently falls through as "not supplied" (which would make
+`notExists()` observe a presence mismatch as absence and quietly change which steps run).
+Conditions typically branch on an optional input's presence with `exists`/`notExists` (see
+[Conditions](#conditions)).
+
+Any `WorkflowInputs` entry whose name is not declared as a required or optional input of the
+workflow being executed also fails before step 0, as `UNDECLARED_INPUT` - a surplus, typo'd, or
+stale input (including an unused secret) is rejected rather than silently ignored. The failure
+message names only the variable, never its value.
 
 ## Secret variables
 
@@ -132,11 +149,24 @@ every `IWorkflowCondition#describe()` built through `WorkflowConditions`.
 
 **Redaction is centralized, not scattered.** `WorkflowEngine`'s internal `SecretRedactor` is built
 fresh, per execution, from whatever secret string values are currently known to that execution's
-session, and applied exactly once, at the single point a `WorkflowFailure`/`WorkflowStepResult` is
-actually constructed - individual step implementations never redact anything themselves, and
-nothing is ever redacted twice. If two known secrets overlap as substrings (for example `"abc"` and
-`"abcdef"`), the longer one is matched first, so a shorter secret's redaction can never leave a
-partial, still-identifying fragment of a longer one behind.
+session, and applied to every failure message the engine constructs (an action-factory exception, a
+failed `ActionResult`'s own message, a condition evaluation exception, and any other structured
+failure) - individual step implementations never redact anything themselves. A secret-declared
+output produced by an early step is added to the session's known-secret set immediately on
+publication, so a *later* step's failure message is redacted against it too, not just steps that
+run after the value was typed somewhere. Redaction always happens before bounding/truncation, never
+after - truncating first could cut a secret's raw text in half and leak a partial, still-identifying
+fragment through the "public" remainder. If two known secrets overlap as substrings (for example
+`"abc"` and `"abcdef"`), the longer one is matched first, so a shorter secret's redaction can never
+leave a partial fragment of a longer one behind.
+
+**Redaction is cross-field, not per-field.** `WorkflowInputs#toString()` and
+`WorkflowOutputs#toString()` do not decide masking per value based only on that value's own
+declared secrecy: each first collects every secret value the container itself holds, builds a
+redactor over all of them, and applies that redactor to *every* rendered value - including public
+ones. A public field whose value happens to textually contain a known secret's raw text (for
+example a "notes" field that was accidentally given the password string) is redacted too, not just
+the field declared secret.
 
 **No arbitrary raw `Throwable` is ever exposed** through `WorkflowFailure`/`WorkflowResult`: a
 step's own thrown exception could carry a secret in its message (`new RuntimeException("bad
@@ -155,8 +185,18 @@ this guarantee entirely.
 
 ## Conditions
 
-`IWorkflowCondition` is a small, closed set of built-in factories on `WorkflowConditions` - never an
-arbitrary `Predicate` or a scripting/expression language:
+`WorkflowConditions` supplies the built-in declarative conditions listed below - never an arbitrary
+`Predicate` or a scripting/expression language. Unlike `IWorkflowStep` (see [Steps](#steps)),
+`IWorkflowCondition` is also a trusted Java extension point: nothing prevents implementing it
+directly. A custom condition must be deterministic, side-effect-free, accurately report every
+variable it reads from `referencedVariables()`, and must not intentionally expose a secret from
+`describe()`. `WorkflowEngine` treats every method on a condition it did not create as
+caller-supplied code and handles it defensively: an `evaluate()`/`describe()` that throws becomes a
+structured `CONDITION_EVALUATION_FAILED` rather than propagating; a `describe()` returning `null` is
+treated the same way; a `describe()`'s text is still redacted against every currently-known secret
+as defense-in-depth, even though a well-behaved condition should never have put one there; and a
+`referencedVariables()` that is null, contains a null, or throws is rejected at
+`Workflow.Builder#build()` time as `IllegalArgumentException`, before any execution can begin.
 
 | Condition | Missing-variable semantics |
 |---|---|
@@ -174,10 +214,13 @@ literally what they test for. Every other condition treats a missing variable as
 failure rather than silently coercing it to `null` or `false` - an accidentally-missing variable
 stays visible instead of quietly changing which branch runs.
 
-A condition's `describe()` is always safe to render (secret values are masked at the point the
-condition is built, via the same rendering rule used everywhere else), and `referencedVariables()`
-lets `Workflow.Builder#build()` statically reject a condition that references a variable that is
-neither a declared input nor an earlier step's output.
+A built-in condition's `describe()` is always safe to render (secret values are masked at the point
+the condition is built, via the same rendering rule used everywhere else), and its
+`referencedVariables()` lets `Workflow.Builder#build()` statically reject a condition that
+references a variable that is neither a declared input nor an earlier step's output. Building a
+workflow does call a condition's own metadata methods (`referencedVariables()`, and `describe()` at
+evaluation time later) - the framework does not literally guarantee zero side effects from custom
+condition code, it requires custom conditions to be written that way.
 
 There is no `IfStep { thenSteps; elseSteps }` and no branching graph: every step is optionally
 guarded (`step.when(condition)`), and the workflow itself stays one linear, ordered list. A step
@@ -189,8 +232,13 @@ same fail-closed philosophy applied to dataflow that cannot be verified statical
 
 ## Steps
 
-`WorkflowSteps` is the only way to create an `IWorkflowStep`; there is no public extension point for
-a custom `IWorkflowStep` implementation in this phase.
+`WorkflowSteps` provides the complete executable step set for Phase 0.8. No custom executable step
+SPI is exposed - `IWorkflowStep` is `sealed` and permits only an internal implementation type in the
+same package, so a caller cannot implement it even by trying: the compiler rejects a foreign
+implementation at the point it would be declared, and the JVM's `PermittedSubclasses` check rejects
+one that somehow reached the classpath as compiled bytecode. This is what lets `WorkflowEngine`
+treat every step accepted by a built `Workflow` as one it knows how to run, without a runtime type
+check that could otherwise fail.
 
 - **`WorkflowSteps.action(id, factory)`** / **`WorkflowSteps.action(id, factory, output)`** - a step
   backed by the real `webagent4j-action` pipeline. See [Action integration](#action-integration).
@@ -250,23 +298,31 @@ mode, and no workflow-level retry or fallback. A condition evaluating to `false`
 it produces `SKIPPED`, and execution continues normally.
 
 `WorkflowFailure` carries a stable `WorkflowFailureType`: `MISSING_REQUIRED_INPUT`,
-`INPUT_TYPE_MISMATCH`, `MISSING_VARIABLE`, `CONDITION_EVALUATION_FAILED`, `ACTION_FACTORY_FAILED`,
-`ACTION_FAILED`, `STEP_FAILED`, `STEP_EXCEPTION`, `OUTPUT_TYPE_MISMATCH`, `NULL_OUTPUT`. Definition
-programmer errors (a duplicate step ID, a forward variable reference) throw `IllegalArgumentException`
-at build time; everything else that can go wrong at runtime - a missing input, a missing variable, a
-failed action, an unexpected exception from a step - produces a structured `WorkflowResult` with
-`WorkflowStatus.FAILED` rather than an exception escaping `execute()`. `WorkflowEngine` catches
-`RuntimeException` from condition evaluation, action factories, step execution, and output
-publication, and converts it to the appropriate structured failure; it never catches `Error`.
+`INPUT_TYPE_MISMATCH`, `UNDECLARED_INPUT`, `MISSING_VARIABLE`, `CONDITION_EVALUATION_FAILED`,
+`ACTION_FACTORY_FAILED`, `ACTION_FAILED`, `STEP_EXCEPTION`, `OUTPUT_TYPE_MISMATCH`, `NULL_OUTPUT`.
+Definition programmer errors (a duplicate step ID, a duplicate input declaration, a forward variable
+reference, malformed condition metadata) throw `IllegalArgumentException` at build time; everything
+else that can go wrong at runtime - a missing, mismatched, or undeclared input, a missing variable,
+a failed action, an unexpected exception from a step or condition - produces a structured
+`WorkflowResult` with `WorkflowStatus.FAILED` rather than an exception escaping `execute()`.
+
+Precisely: expected workflow/runtime failures and `RuntimeException`s originating from supported
+condition/action execution hooks are converted into structured failures. JVM `Error`s and programmer
+misuse at API construction boundaries (for example, building an invalid `Workflow` definition) are
+not swallowed.
 
 ## Determinism
 
 Given the same immutable `Workflow` definition, the same inputs, the same deterministic conditions,
 and the same deterministic underlying step/action outcomes, WebAgent4J guarantees: step traversal
-order, condition evaluation order, variable publication order, output identity, step result order,
-the location of the first failure, `NOT_RUN` ordering, and the final status are all deterministic
-and reproducible. Not guaranteed: wall-clock duration, browser/backend scheduling, external page
-content, or a third-party exception's identity.
+order (definition order), condition evaluation order, caller insertion order for `WorkflowInputs`
+rendering, declaration order for a workflow's inputs, publication order for `WorkflowOutputs`,
+step-result order (definition order), the location of the first failure, `NOT_RUN` ordering, and the
+final status are all deterministic and reproducible. Not guaranteed: wall-clock duration,
+browser/backend scheduling, external page content, a third-party exception's identity, or the
+rendered text of an arbitrary caller-supplied object's own `toString()` - the framework's own
+iteration and publication order is deterministic, but it does not control what a user-defined
+`toString()` implementation does with that position.
 
 ## Threading
 

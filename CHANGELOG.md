@@ -48,6 +48,18 @@ All notable changes to this project will be documented in this file. The format 
   secret-masking contract, and this phase's documented limitations.
 - Updated `docs/roadmap.md`, `docs/modules.md`, `docs/public-api.md`, and `README.md` to reflect
   Phase 0.8.
+- Hardened after strict review: `IWorkflowStep` is now `sealed` with no custom-implementation
+  extension point, eliminating a latent `ClassCastException` risk from the prior open-interface
+  design; `IWorkflowCondition` remains a trusted Java extension point but is now handled fully
+  defensively by `WorkflowEngine` (a throwing/null `describe()` or `referencedVariables()` never
+  escapes as a raw exception, and `referencedVariables()` null/throwing/containing-null is rejected
+  at build time). `WorkflowInputs.Builder#put` now rejects re-supplying an already-provided input
+  name (write-once is fully enforced, not just documented); `Workflow.Builder#build()` rejects a
+  duplicate required/optional input declaration and a `WorkflowInputs` entry naming an undeclared
+  input (`WorkflowFailureType.UNDECLARED_INPUT`) fails before step 0. `WorkflowInputs`/
+  `WorkflowOutputs#toString()` now redact a known secret's raw text everywhere it appears, including
+  inside an unrelated public field's value, not just the field declared secret; redaction always
+  happens before message bounding/truncation.
 
 ### Added (Browser Crawler — Phase 0.7)
 

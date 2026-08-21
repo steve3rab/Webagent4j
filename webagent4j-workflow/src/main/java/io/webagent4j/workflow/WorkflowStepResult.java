@@ -40,6 +40,30 @@ public record WorkflowStepResult(
         if (status != WorkflowStepStatus.FAILED && failure.isPresent()) {
             throw new IllegalArgumentException("only a FAILED step result may carry a failure");
         }
+        if (status == WorkflowStepStatus.SKIPPED) {
+            if (outputVariableName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a SKIPPED step result cannot carry an output variable name");
+            }
+            if (actionSummary.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a SKIPPED step result cannot carry an action summary");
+            }
+        }
+        if (status == WorkflowStepStatus.NOT_RUN) {
+            if (condition.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a NOT_RUN step result cannot carry a condition outcome");
+            }
+            if (outputVariableName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a NOT_RUN step result cannot carry an output variable name");
+            }
+            if (actionSummary.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a NOT_RUN step result cannot carry an action summary");
+            }
+        }
     }
 
     /** Renders only safe, already-structured fields - never a raw value or exception. */

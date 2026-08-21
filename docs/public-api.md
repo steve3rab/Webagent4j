@@ -580,9 +580,9 @@ result.throwIfFailed();
 | `WorkflowVariableMissingException` | thrown by `IWorkflowVariables#require` for a missing variable |
 | `WorkflowInputs`, `WorkflowInputs.Builder` | immutable, explicit execution inputs; secret-masked `toString()` |
 | `WorkflowOutputs` | immutable produced-variable set backing `WorkflowResult#output` |
-| `IWorkflowCondition`, `WorkflowConditions` | the fixed set of built-in conditions (`exists`, `notExists`, `equals`, `notEquals`, `isTrue`, `isFalse`, `not`, `allOf`, `anyOf`) |
+| `IWorkflowCondition`, `WorkflowConditions` | built-in conditions (`exists`, `notExists`, `equals`, `notEquals`, `isTrue`, `isFalse`, `not`, `allOf`, `anyOf`); `IWorkflowCondition` is also a trusted Java extension point, handled defensively by the engine (see [workflow.md#conditions](workflow.md#conditions)) |
 | `WorkflowConditionResult` | safe, structured outcome of one condition evaluation |
-| `IWorkflowStep`, `WorkflowSteps` | structural step contract; `action`/`assign` factories (no public constructor) |
+| `IWorkflowStep`, `WorkflowSteps` | `sealed` step contract with no custom-implementation extension point; `action`/`assign` factories (no public constructor) |
 | `IWorkflowActionFactory<R>` | single-use-per-execution preparation factory: `IWorkflowVariables -> IPreparedAction<R>` |
 | `WorkflowStatus`, `WorkflowStepStatus`, `WorkflowStepType` | terminal-outcome and category enums |
 | `WorkflowFailureType`, `WorkflowFailure` | stable failure taxonomy and safe, redacted failure detail (never a raw `Throwable`) |
@@ -592,10 +592,11 @@ result.throwIfFailed();
 
 **Secret masking:** explicit typed retrieval (`IWorkflowVariables#require`/`#find`,
 `WorkflowResult#output`) always returns the real value; every incidental, framework-owned
-rendering (every `toString()`, every condition `describe()`) masks a secret as `***`, centrally and
-exactly once, with longest-first redaction for overlapping secret values. See
-[workflow.md#secret-masking-contract](workflow.md#secret-masking-contract) for the full contract
-and its limits.
+rendering (every `toString()`, every condition `describe()`) masks a secret as `***`, centrally,
+with longest-first redaction for overlapping secret values, always applied before any
+bounding/truncation. `WorkflowInputs`/`WorkflowOutputs` rendering is cross-field: a known secret's
+raw text is redacted everywhere it appears, even inside a value from a field declared public. See
+[workflow.md#secret-masking](workflow.md#secret-masking) for the full contract and its limits.
 
 **Execution semantics:** strictly sequential, single-threaded, fail-fast only - the first failed
 step stops the workflow and marks every later step `NOT_RUN`. No workflow-level retry (a failed

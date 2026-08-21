@@ -1,6 +1,9 @@
 package io.webagent4j.workflow;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -12,11 +15,17 @@ import java.util.Optional;
  * <p>Values are never stored in a raw, publicly exposed {@code Map<String, Object>}: each is keyed
  * by its {@link WorkflowVariable}, validated against that variable's declared type at {@link
  * Builder#put}. Inputs are explicit only - there is no environment-variable or system-property
- * fallback, and no implicit default value.
+ * fallback, and no implicit default value. Rendering preserves the order values were supplied to
+ * the builder in.
+ *
+ * <p><b>Write-once:</b> {@link Builder#put} rejects a second call for a name already supplied -
+ * with the same value, an equal declaration, or a conflicting one - there is no last-write-wins.
  *
  * <p><b>Secret safety:</b> {@link #toString()} always masks every variable declared {@link
- * WorkflowVariable#secret()} as {@code ***}, regardless of its actual value. This is a masking
- * contract for framework-owned rendering, not encryption - see {@code
+ * WorkflowVariable#secret()} as {@code ***}, regardless of its actual value. It also redacts every
+ * currently-known secret value out of every <em>public</em> field's rendering, so a secret cannot
+ * leak simply because its raw text happens to also appear inside an unrelated public value. This is
+ * a masking contract for framework-owned rendering, not encryption - see {@code
  * docs/workflow.md#secret-masking}.
  */
 public final class WorkflowInputs {
@@ -59,9 +68,13 @@ public final class WorkflowInputs {
         return values;
     }
 
-    /** Renders every input's name and, for non-secret values, a bounded value preview. */
+    /**
+     * Renders every input's name and a bounded value preview, masking every secret value -
+     * including a secret's raw text if it happens to appear inside an unrelated public value.
+     */
     @Override
     public String toString() {
+        SecretRedactor redactor = SecretRedactor.of(activeSecretValues());
         StringBuilder text = new StringBuilder("WorkflowInputs[");
         boolean first = true;
         for (Entry entry : values.values()) {
@@ -69,11 +82,23 @@ public final class WorkflowInputs {
                 text.append(", ");
             }
             first = false;
-            text.append(entry.variable.name())
-                    .append('=')
-                    .append(SafeRendering.render(entry.variable, entry.value));
+            String rendered =
+                    entry.variable.secret()
+                            ? "***"
+                            : redactor.redact(SafeRendering.renderPublicValue(entry.value));
+            text.append(entry.variable.name()).append('=').append(rendered);
         }
         return text.append(']').toString();
+    }
+
+    private List<String> activeSecretValues() {
+        List<String> secretValues = new ArrayList<>();
+        for (Entry entry : values.values()) {
+            if (entry.variable.secret() && entry.value instanceof String secretValue) {
+                secretValues.add(secretValue);
+            }
+        }
+        return secretValues;
     }
 
     /** One validated (variable, value) pair. */
@@ -90,27 +115,26 @@ public final class WorkflowInputs {
          * Supplies {@code value} for {@code variable}, validated against its declared type.
          *
          * @throws IllegalArgumentException if {@code value} is null, not assignable to {@code
-         *     variable}'s declared type, or {@code variable}'s name was already supplied with a
-         *     conflicting {@link WorkflowVariable} (different type or sensitivity)
+         *     variable}'s declared type, or {@code variable}'s name was already supplied - even
+         *     with an equal value or an equal declaration; write-once, never last-write-wins
          */
         public <T> Builder put(WorkflowVariable<T> variable, T value) {
             Objects.requireNonNull(variable, "variable");
             variable.requireValid(value);
-            Entry existing = values.get(variable.name());
-            if (existing != null && !existing.variable.equals(variable)) {
+            if (values.containsKey(variable.name())) {
                 throw new IllegalArgumentException(
-                        "input '"
-                                + variable.name()
-                                + "' was already supplied with a conflicting variable"
-                                + " declaration (different type or secret status)");
+                        "input '" + variable.name() + "' was already supplied");
             }
             values.put(variable.name(), new Entry(variable, value));
             return this;
         }
 
-        /** Builds an immutable, defensively copied {@link WorkflowInputs}. */
+        /**
+         * Builds an immutable, insertion-order-preserving, defensively copied {@link
+         * WorkflowInputs}.
+         */
         public WorkflowInputs build() {
-            return new WorkflowInputs(Map.copyOf(values));
+            return new WorkflowInputs(Collections.unmodifiableMap(new LinkedHashMap<>(values)));
         }
     }
 }

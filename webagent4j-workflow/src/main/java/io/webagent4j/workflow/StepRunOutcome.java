@@ -1,23 +1,21 @@
-package io.webagent4j.workflow.internal;
+package io.webagent4j.workflow;
 
 import io.webagent4j.action.ActionFailureType;
-import io.webagent4j.workflow.WorkflowActionSummary;
-import io.webagent4j.workflow.WorkflowFailureType;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Internal, implementation-detail result of running one {@link IExecutableWorkflowStep} - not
- * public API. Carries the produced value on success, or structured failure data (no raw exception
- * object) on failure, which {@code WorkflowEngine} projects into a {@code WorkflowStepResult}.
+ * Internal, implementation-detail result of running one {@link AWorkflowStep} - not public API.
+ * Carries the produced value on success, or structured failure data (no raw exception object) on
+ * failure, which {@link WorkflowEngine} projects into a {@link WorkflowStepResult}.
  *
- * <p>{@link #safeMessage()} is <b>not yet redacted</b> at this layer: a factory-thrown exception's
- * message could itself contain a secret value, so every message reaching this type is passed
- * through {@code WorkflowEngine}'s single {@code SecretRedactor} exactly once, at the point a
- * {@code WorkflowStepResult}/{@code WorkflowFailure} is actually built - never here, and never
- * twice.
+ * <p>{@link #safeMessage()} is <b>not yet redacted or bounded</b> at this layer: a factory-thrown
+ * exception's message could itself contain a secret value or be arbitrarily long, so every message
+ * reaching this type is passed through {@code WorkflowEngine}'s single redaction-then-bounding
+ * helper exactly once, at the point a {@link WorkflowStepResult}/{@link WorkflowFailure} is
+ * actually built - never here, and never twice.
  */
-public final class StepRunOutcome {
+final class StepRunOutcome {
 
     private final boolean success;
     private final Object value;
@@ -45,23 +43,23 @@ public final class StepRunOutcome {
     }
 
     /** A successful run producing {@code value} (may be {@code null} if no output). */
-    public static StepRunOutcome success(Object value, WorkflowActionSummary actionSummary) {
+    static StepRunOutcome success(Object value, WorkflowActionSummary actionSummary) {
         return new StepRunOutcome(true, value, null, null, null, null, actionSummary);
     }
 
-    /** A failed run with a safe, redacted diagnostic and no thrown-exception detail. */
-    public static StepRunOutcome failure(WorkflowFailureType type, String safeMessage) {
+    /** A failed run with a safe, not-yet-redacted diagnostic and no thrown-exception detail. */
+    static StepRunOutcome failure(WorkflowFailureType type, String safeMessage) {
         return failure(type, safeMessage, null, null, null);
     }
 
     /** A failed run naming the thrown exception's class, never its message. */
-    public static StepRunOutcome failure(
+    static StepRunOutcome failure(
             WorkflowFailureType type, String safeMessage, String underlyingTypeName) {
         return failure(type, safeMessage, underlyingTypeName, null, null);
     }
 
     /** A failed action run, carrying the safe action failure category and summary. */
-    public static StepRunOutcome failure(
+    static StepRunOutcome failure(
             WorkflowFailureType type,
             String safeMessage,
             String underlyingTypeName,
@@ -79,31 +77,31 @@ public final class StepRunOutcome {
                 actionSummary);
     }
 
-    public boolean success() {
+    boolean success() {
         return success;
     }
 
-    public Object value() {
+    Object value() {
         return value;
     }
 
-    public WorkflowFailureType failureType() {
+    WorkflowFailureType failureType() {
         return failureType;
     }
 
-    public String safeMessage() {
+    String safeMessage() {
         return safeMessage;
     }
 
-    public Optional<String> underlyingTypeName() {
+    Optional<String> underlyingTypeName() {
         return Optional.ofNullable(underlyingTypeName);
     }
 
-    public Optional<ActionFailureType> actionFailureType() {
+    Optional<ActionFailureType> actionFailureType() {
         return Optional.ofNullable(actionFailureType);
     }
 
-    public Optional<WorkflowActionSummary> actionSummary() {
+    Optional<WorkflowActionSummary> actionSummary() {
         return Optional.ofNullable(actionSummary);
     }
 }

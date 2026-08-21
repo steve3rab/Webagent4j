@@ -1,14 +1,13 @@
 package io.webagent4j.workflow;
 
-import io.webagent4j.workflow.internal.IExecutableWorkflowStep;
-import io.webagent4j.workflow.internal.SecretRedactor;
-import io.webagent4j.workflow.internal.StepRunOutcome;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Deterministic, single-lane executor for {@link Workflow} definitions.
@@ -35,6 +34,16 @@ import java.util.Optional;
  * <p><b>Resource ownership:</b> {@code WorkflowEngine} owns nothing a caller supplied - no browser,
  * no page, no action backend - and never closes anything an {@link IWorkflowActionFactory}
  * captures.
+ *
+ * <p><b>Runtime failure contract:</b> a {@link RuntimeException} thrown from a supported extension
+ * hook - {@link IWorkflowCondition#evaluate}, {@link IWorkflowCondition#describe}, {@link
+ * IWorkflowCondition#referencedVariables} at execution time, an {@link IWorkflowActionFactory}, or
+ * {@link io.webagent4j.action.IPreparedAction#execute()} - is caught and converted into a
+ * structured {@link WorkflowResult}; it never escapes {@link #execute}. A {@link Throwable} that is
+ * not a {@code RuntimeException} (a JVM {@link Error}) is never caught. Programmer misuse at
+ * definition-construction time (an invalid {@link Workflow.Builder#build()} call) still throws
+ * {@link IllegalArgumentException} directly, since that is a build-time contract violation, not a
+ * runtime execution outcome.
  */
 public final class WorkflowEngine {
 
@@ -55,6 +64,21 @@ public final class WorkflowEngine {
     private static final class Session {
 
         private record VariableEntry(WorkflowVariable<?> variable, Object value) {}
+
+        /** Safe result of calling a (possibly custom) condition's {@code describe()} once. */
+        private record SafeDescription(String text, String failureMessage, String underlyingType) {
+            static SafeDescription of(String text) {
+                return new SafeDescription(text, null, null);
+            }
+
+            static SafeDescription failed(String failureMessage, String underlyingType) {
+                return new SafeDescription(null, failureMessage, underlyingType);
+            }
+
+            boolean failed() {
+                return text == null;
+            }
+        }
 
         private final Workflow workflow;
         private final WorkflowInputs inputs;
@@ -96,29 +120,9 @@ public final class WorkflowEngine {
         }
 
         WorkflowResult run() {
-            for (WorkflowVariable<?> required : workflow.requiredInputs()) {
-                WorkflowInputs.Entry entry = inputs.entries().get(required.name());
-                if (entry == null) {
-                    return failBeforeExecution(
-                            WorkflowFailureType.MISSING_REQUIRED_INPUT,
-                            "required input '" + required.name() + "' was not supplied");
-                }
-                if (!entry.variable().equals(required)) {
-                    return failBeforeExecution(
-                            WorkflowFailureType.INPUT_TYPE_MISMATCH,
-                            "input '"
-                                    + required.name()
-                                    + "' was supplied with a variable declaration that does not"
-                                    + " match the workflow's required input (different type or"
-                                    + " secret status)");
-                }
-                seedVariable(entry.variable(), entry.value());
-            }
-            for (WorkflowVariable<?> optional : workflow.optionalInputs()) {
-                WorkflowInputs.Entry entry = inputs.entries().get(optional.name());
-                if (entry != null && entry.variable().equals(optional)) {
-                    seedVariable(entry.variable(), entry.value());
-                }
+            WorkflowResult inputFailure = validateAndSeedInputs();
+            if (inputFailure != null) {
+                return inputFailure;
             }
 
             boolean failed = false;
@@ -153,6 +157,64 @@ public final class WorkflowEngine {
                     Optional.empty());
         }
 
+        /**
+         * Validates every declared required/optional input and rejects any supplied input that is
+         * not declared at all, seeding validated values as a side effect. Returns a terminal,
+         * all-steps-{@code NOT_RUN} failure result if validation fails, or {@code null} if
+         * execution may proceed to step 0.
+         */
+        private WorkflowResult validateAndSeedInputs() {
+            for (WorkflowVariable<?> required : workflow.requiredInputs()) {
+                WorkflowInputs.Entry entry = inputs.entries().get(required.name());
+                if (entry == null) {
+                    return failBeforeExecution(
+                            WorkflowFailureType.MISSING_REQUIRED_INPUT,
+                            "required input '" + required.name() + "' was not supplied");
+                }
+                if (!entry.variable().equals(required)) {
+                    return failBeforeExecution(
+                            WorkflowFailureType.INPUT_TYPE_MISMATCH,
+                            "input '"
+                                    + required.name()
+                                    + "' was supplied with a variable declaration that does not"
+                                    + " match the workflow's required input (different type or"
+                                    + " secret status)");
+                }
+                seedVariable(entry.variable(), entry.value());
+            }
+            for (WorkflowVariable<?> optional : workflow.optionalInputs()) {
+                WorkflowInputs.Entry entry = inputs.entries().get(optional.name());
+                if (entry == null) {
+                    continue;
+                }
+                if (!entry.variable().equals(optional)) {
+                    return failBeforeExecution(
+                            WorkflowFailureType.INPUT_TYPE_MISMATCH,
+                            "input '"
+                                    + optional.name()
+                                    + "' was supplied with a variable declaration that does not"
+                                    + " match the workflow's optional input (different type or"
+                                    + " secret status)");
+                }
+                seedVariable(entry.variable(), entry.value());
+            }
+
+            Set<String> declaredNames = new HashSet<>();
+            workflow.requiredInputs().forEach(variable -> declaredNames.add(variable.name()));
+            workflow.optionalInputs().forEach(variable -> declaredNames.add(variable.name()));
+            for (String suppliedName : inputs.entries().keySet()) {
+                if (!declaredNames.contains(suppliedName)) {
+                    return failBeforeExecution(
+                            WorkflowFailureType.UNDECLARED_INPUT,
+                            "input '"
+                                    + suppliedName
+                                    + "' was supplied but is not a declared required or optional"
+                                    + " input of this workflow");
+                }
+            }
+            return null;
+        }
+
         private WorkflowResult failBeforeExecution(WorkflowFailureType type, String message) {
             WorkflowFailure failure =
                     new WorkflowFailure(
@@ -172,9 +234,10 @@ public final class WorkflowEngine {
         }
 
         private static WorkflowStepResult notRun(IWorkflowStep step) {
+            // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
             return new WorkflowStepResult(
                     step.id(),
-                    ((IExecutableWorkflowStep) step).stepType(),
+                    ((AWorkflowStep) step).stepType(),
                     WorkflowStepStatus.NOT_RUN,
                     Optional.empty(),
                     Optional.empty(),
@@ -195,12 +258,40 @@ public final class WorkflowEngine {
             outputs.put(variable, typed);
         }
 
+        /** Redacts every currently-known secret, then bounds the result - never the other order. */
         private String redact(String message) {
-            return SecretRedactor.of(activeSecrets).redact(message);
+            String safe = message == null ? "<no message>" : message;
+            return SafeRendering.bounded(SecretRedactor.of(activeSecrets).redact(safe));
+        }
+
+        /**
+         * Calls {@code condition.describe()} at most once, defensively: a {@code RuntimeException}
+         * or a {@code null} return is reported as a safe failure rather than propagated or stored
+         * raw. A successful description is redacted against every currently-known secret and
+         * length-bounded before it is ever returned.
+         */
+        private SafeDescription describeConditionSafely(IWorkflowCondition condition) {
+            String raw;
+            try {
+                raw = condition.describe();
+            } catch (RuntimeException e) {
+                return SafeDescription.failed(
+                        "condition description failed with " + e.getClass().getSimpleName(),
+                        e.getClass().getName());
+            }
+            if (raw == null) {
+                return SafeDescription.failed("condition description was null", null);
+            }
+            return SafeDescription.of(SafeRendering.bounded(redactRaw(raw)));
+        }
+
+        private String redactRaw(String text) {
+            return SecretRedactor.of(activeSecrets).redact(text);
         }
 
         private WorkflowStepResult executeStep(IWorkflowStep step) {
-            IExecutableWorkflowStep executable = (IExecutableWorkflowStep) step;
+            // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
+            AWorkflowStep concreteStep = (AWorkflowStep) step;
             Optional<WorkflowConditionResult> conditionResult = Optional.empty();
 
             if (step.condition().isPresent()) {
@@ -211,7 +302,7 @@ public final class WorkflowEngine {
                 } catch (WorkflowVariableMissingException e) {
                     return failedResult(
                             step,
-                            executable.stepType(),
+                            concreteStep.stepType(),
                             Optional.empty(),
                             WorkflowFailureType.CONDITION_EVALUATION_FAILED,
                             e.getMessage(),
@@ -219,25 +310,43 @@ public final class WorkflowEngine {
                             null,
                             null);
                 } catch (RuntimeException e) {
+                    SafeDescription description = describeConditionSafely(condition);
+                    String message =
+                            description.failed()
+                                    ? "condition threw " + e.getClass().getSimpleName()
+                                    : "condition '"
+                                            + description.text()
+                                            + "' threw "
+                                            + e.getClass().getSimpleName();
                     return failedResult(
                             step,
-                            executable.stepType(),
+                            concreteStep.stepType(),
                             Optional.empty(),
                             WorkflowFailureType.CONDITION_EVALUATION_FAILED,
-                            "condition '"
-                                    + condition.describe()
-                                    + "' threw "
-                                    + e.getClass().getSimpleName(),
+                            message,
                             e.getClass().getName(),
                             null,
                             null);
                 }
+
+                SafeDescription description = describeConditionSafely(condition);
+                if (description.failed()) {
+                    return failedResult(
+                            step,
+                            concreteStep.stepType(),
+                            Optional.empty(),
+                            WorkflowFailureType.CONDITION_EVALUATION_FAILED,
+                            description.failureMessage(),
+                            description.underlyingType(),
+                            null,
+                            null);
+                }
                 conditionResult =
-                        Optional.of(new WorkflowConditionResult(outcome, condition.describe()));
+                        Optional.of(new WorkflowConditionResult(outcome, description.text()));
                 if (!outcome) {
                     return new WorkflowStepResult(
                             step.id(),
-                            executable.stepType(),
+                            concreteStep.stepType(),
                             WorkflowStepStatus.SKIPPED,
                             conditionResult,
                             Optional.empty(),
@@ -248,11 +357,11 @@ public final class WorkflowEngine {
 
             StepRunOutcome outcome;
             try {
-                outcome = executable.run(variablesView);
+                outcome = concreteStep.run(variablesView);
             } catch (RuntimeException e) {
                 return failedResult(
                         step,
-                        executable.stepType(),
+                        concreteStep.stepType(),
                         conditionResult,
                         WorkflowFailureType.STEP_EXCEPTION,
                         "step '" + step.id() + "' threw " + e.getClass().getSimpleName(),
@@ -264,7 +373,7 @@ public final class WorkflowEngine {
             if (!outcome.success()) {
                 return failedResult(
                         step,
-                        executable.stepType(),
+                        concreteStep.stepType(),
                         conditionResult,
                         outcome.failureType(),
                         outcome.safeMessage(),
@@ -274,7 +383,7 @@ public final class WorkflowEngine {
             }
 
             Optional<String> outputName = Optional.empty();
-            Optional<WorkflowVariable<?>> outputVariable = executable.outputVariable();
+            Optional<WorkflowVariable<?>> outputVariable = concreteStep.outputVariable();
             if (outputVariable.isPresent()) {
                 WorkflowVariable<?> variable = outputVariable.get();
                 publishOutput(variable, outcome.value());
@@ -283,7 +392,7 @@ public final class WorkflowEngine {
 
             return new WorkflowStepResult(
                     step.id(),
-                    executable.stepType(),
+                    concreteStep.stepType(),
                     WorkflowStepStatus.SUCCEEDED,
                     conditionResult,
                     outputName,

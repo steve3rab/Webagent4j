@@ -1,16 +1,22 @@
 package io.webagent4j.workflow;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
  * Immutable set of variables produced by a workflow execution's steps, exposed through {@link
- * WorkflowResult#output(WorkflowVariable)}.
+ * WorkflowResult#output(WorkflowVariable)}. Rendering preserves the order values were published in.
  *
  * <p><b>Secret safety:</b> {@link #toString()} always masks every output declared {@link
- * WorkflowVariable#secret()} as {@code ***} - see {@code docs/workflow.md#secret-masking}.
+ * WorkflowVariable#secret()} as {@code ***}, and also redacts every currently-known secret value
+ * out of every <em>public</em> output's rendering, so a secret cannot leak simply because its raw
+ * text happens to also appear inside an unrelated public output - see {@code
+ * docs/workflow.md#secret-masking}.
  */
 public final class WorkflowOutputs {
 
@@ -37,9 +43,13 @@ public final class WorkflowOutputs {
         return Optional.of(variable.type().cast(entry.value));
     }
 
-    /** Renders every output's name and, for non-secret values, a bounded value preview. */
+    /**
+     * Renders every output's name and a bounded value preview, masking every secret value -
+     * including a secret's raw text if it happens to appear inside an unrelated public value.
+     */
     @Override
     public String toString() {
+        SecretRedactor redactor = SecretRedactor.of(activeSecretValues());
         StringBuilder text = new StringBuilder("WorkflowOutputs[");
         boolean first = true;
         for (Entry entry : values.values()) {
@@ -47,11 +57,23 @@ public final class WorkflowOutputs {
                 text.append(", ");
             }
             first = false;
-            text.append(entry.variable.name())
-                    .append('=')
-                    .append(SafeRendering.render(entry.variable, entry.value));
+            String rendered =
+                    entry.variable.secret()
+                            ? "***"
+                            : redactor.redact(SafeRendering.renderPublicValue(entry.value));
+            text.append(entry.variable.name()).append('=').append(rendered);
         }
         return text.append(']').toString();
+    }
+
+    private List<String> activeSecretValues() {
+        List<String> secretValues = new ArrayList<>();
+        for (Entry entry : values.values()) {
+            if (entry.variable.secret() && entry.value instanceof String secretValue) {
+                secretValues.add(secretValue);
+            }
+        }
+        return secretValues;
     }
 
     private record Entry(WorkflowVariable<?> variable, Object value) {}
@@ -66,7 +88,7 @@ public final class WorkflowOutputs {
         }
 
         WorkflowOutputs build() {
-            return new WorkflowOutputs(Map.copyOf(values));
+            return new WorkflowOutputs(Collections.unmodifiableMap(new LinkedHashMap<>(values)));
         }
     }
 }

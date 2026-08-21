@@ -1,24 +1,19 @@
-package io.webagent4j.workflow.internal;
+package io.webagent4j.workflow;
 
-import io.webagent4j.workflow.IWorkflowCondition;
-import io.webagent4j.workflow.IWorkflowVariables;
-import io.webagent4j.workflow.WorkflowStepId;
-import io.webagent4j.workflow.WorkflowStepType;
-import io.webagent4j.workflow.WorkflowVariable;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
  * A deterministic step that assigns one literal, already-validated public value to a variable - not
- * public API. Produced only by {@code WorkflowSteps.assign}, which rejects a secret variable before
+ * public API. Produced only by {@link WorkflowSteps#assign}, which rejects a secret variable before
  * ever constructing this step (see its Javadoc for why secret literals are not supported).
  */
-public final class AssignWorkflowStep<T> extends AWorkflowStep {
+final class AssignWorkflowStep<T> extends AWorkflowStep {
 
     private final WorkflowVariable<T> variable;
     private final T value;
 
-    public AssignWorkflowStep(WorkflowStepId id, WorkflowVariable<T> variable, T value) {
+    AssignWorkflowStep(WorkflowStepId id, WorkflowVariable<T> variable, T value) {
         this(id, variable, value, null);
     }
 
@@ -33,22 +28,22 @@ public final class AssignWorkflowStep<T> extends AWorkflowStep {
     }
 
     @Override
-    public WorkflowStepType stepType() {
+    WorkflowStepType stepType() {
         return WorkflowStepType.ASSIGN;
     }
 
     @Override
-    public Optional<WorkflowVariable<?>> outputVariable() {
+    Optional<WorkflowVariable<?>> outputVariable() {
         return Optional.of(variable);
     }
 
     @Override
-    protected AWorkflowStep withCondition(IWorkflowCondition condition) {
+    AWorkflowStep withCondition(IWorkflowCondition condition) {
         return new AssignWorkflowStep<>(id(), variable, value, condition);
     }
 
     @Override
-    public StepRunOutcome run(IWorkflowVariables variables) {
+    StepRunOutcome run(IWorkflowVariables variables) {
         return StepRunOutcome.success(value, null);
     }
 }

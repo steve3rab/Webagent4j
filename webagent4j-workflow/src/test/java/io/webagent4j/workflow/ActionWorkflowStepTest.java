@@ -5,8 +5,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.webagent4j.action.ActionExecutionMode;
 import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionResult;
-import io.webagent4j.workflow.internal.ActionWorkflowStep;
-import io.webagent4j.workflow.internal.StepRunOutcome;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;

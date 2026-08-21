@@ -1,5 +1,6 @@
 package io.webagent4j.workflow;
 
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -125,10 +126,32 @@ public final class WorkflowConditions {
         return equals(variable, Boolean.FALSE);
     }
 
-    /** Negates {@code condition}. */
+    /**
+     * Negates {@code condition}. {@code condition}'s own {@code describe()}/{@code
+     * referencedVariables()} are invoked lazily - only when the returned condition's corresponding
+     * method is itself invoked - so a custom {@code condition} that throws from either is handled
+     * by the same defensive paths as any other condition ({@link WorkflowEngine} at evaluation
+     * time, {@code Workflow.Builder#build()} for {@code referencedVariables()}), not eagerly at
+     * composition time.
+     */
     public static IWorkflowCondition not(IWorkflowCondition condition) {
         Objects.requireNonNull(condition, "condition");
-        return not(condition, "not(" + condition.describe() + ")", condition.referencedVariables());
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return !condition.evaluate(variables);
+            }
+
+            @Override
+            public String describe() {
+                return "not(" + condition.describe() + ")";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return condition.referencedVariables();
+            }
+        };
     }
 
     private static IWorkflowCondition not(
@@ -223,6 +246,9 @@ public final class WorkflowConditions {
     private static Set<WorkflowVariable<?>> referencedByAll(List<IWorkflowCondition> conditions) {
         Set<WorkflowVariable<?>> all = new LinkedHashSet<>();
         conditions.forEach(condition -> all.addAll(condition.referencedVariables()));
-        return Set.copyOf(all);
+        // Collections.unmodifiableSet, not Set.copyOf: the latter does not guarantee it preserves
+        // the source's iteration order, and this project treats deterministic order as load-bearing
+        // even where it is not directly exposed through public API.
+        return Collections.unmodifiableSet(all);
     }
 }

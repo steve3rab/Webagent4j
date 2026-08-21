@@ -1,37 +1,28 @@
-package io.webagent4j.workflow.internal;
+package io.webagent4j.workflow;
 
 import io.webagent4j.action.ActionFailure;
 import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IPreparedAction;
-import io.webagent4j.workflow.IWorkflowActionFactory;
-import io.webagent4j.workflow.IWorkflowCondition;
-import io.webagent4j.workflow.IWorkflowVariables;
-import io.webagent4j.workflow.WorkflowActionSummary;
-import io.webagent4j.workflow.WorkflowFailureType;
-import io.webagent4j.workflow.WorkflowStepId;
-import io.webagent4j.workflow.WorkflowStepType;
-import io.webagent4j.workflow.WorkflowVariable;
-import io.webagent4j.workflow.WorkflowVariableMissingException;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Action-backed workflow step - not public API. Produced only by {@code WorkflowSteps.action}.
+ * Action-backed workflow step - not public API. Produced only by {@link WorkflowSteps#action}.
  *
  * <p>{@link #run} calls {@link IWorkflowActionFactory#prepare} exactly once, then {@link
  * IPreparedAction#execute()} exactly once - never {@code plan()}, never a second call to either.
  */
-public final class ActionWorkflowStep<R> extends AWorkflowStep {
+final class ActionWorkflowStep<R> extends AWorkflowStep {
 
     private final IWorkflowActionFactory<R> factory;
     private final WorkflowVariable<R> outputVariable;
 
-    public ActionWorkflowStep(WorkflowStepId id, IWorkflowActionFactory<R> factory) {
+    ActionWorkflowStep(WorkflowStepId id, IWorkflowActionFactory<R> factory) {
         this(id, factory, null, null);
     }
 
-    public ActionWorkflowStep(
+    ActionWorkflowStep(
             WorkflowStepId id,
             IWorkflowActionFactory<R> factory,
             WorkflowVariable<R> outputVariable) {
@@ -49,22 +40,22 @@ public final class ActionWorkflowStep<R> extends AWorkflowStep {
     }
 
     @Override
-    public WorkflowStepType stepType() {
+    WorkflowStepType stepType() {
         return WorkflowStepType.ACTION;
     }
 
     @Override
-    public Optional<WorkflowVariable<?>> outputVariable() {
+    Optional<WorkflowVariable<?>> outputVariable() {
         return Optional.ofNullable(outputVariable);
     }
 
     @Override
-    protected AWorkflowStep withCondition(IWorkflowCondition condition) {
+    AWorkflowStep withCondition(IWorkflowCondition condition) {
         return new ActionWorkflowStep<>(id(), factory, outputVariable, condition);
     }
 
     @Override
-    public StepRunOutcome run(IWorkflowVariables variables) {
+    StepRunOutcome run(IWorkflowVariables variables) {
         IPreparedAction<R> prepared;
         try {
             prepared = factory.prepare(variables);

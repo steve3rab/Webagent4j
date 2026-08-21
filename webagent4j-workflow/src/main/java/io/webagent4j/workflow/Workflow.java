@@ -1,6 +1,5 @@
 package io.webagent4j.workflow;
 
-import io.webagent4j.workflow.internal.IExecutableWorkflowStep;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -14,16 +13,20 @@ import java.util.Set;
  * Immutable, reusable, ordered sequence of {@link IWorkflowStep}s over a declared set of typed
  * inputs.
  *
- * <p>A {@code Workflow} is a pure definition: building one ({@link Builder#build()}) never touches
- * a backend, never calls an {@link IWorkflowActionFactory}, and never performs any side effect -
- * only structural validation. The same immutable instance can be passed to {@link
+ * <p>A {@code Workflow} is a pure definition: building one ({@link Builder#build()}) never calls an
+ * {@link IWorkflowActionFactory} and never performs a backend side effect - only structural
+ * validation. It does read a custom {@link IWorkflowCondition}'s metadata methods ({@code
+ * referencedVariables()}) if one is attached to a step, since that is required to validate the
+ * definition's dataflow; those methods are required to be side-effect-free (see {@code
+ * docs/workflow.md#conditions}). The same immutable instance can be passed to {@link
  * WorkflowEngine#execute(Workflow, WorkflowInputs)} any number of times, and each call is fully
  * independent (see {@code docs/workflow.md#determinism}).
  *
  * <p>{@link Builder#build()} rejects, before any execution: a blank ID, an empty step list, a
- * duplicate step ID, a variable name reused with a conflicting type or secret status, a step output
- * colliding with an existing input or earlier output, and a condition referencing a variable that
- * is neither a declared input nor produced by an earlier step. See {@code
+ * duplicate step ID, a variable name declared more than once among required and optional inputs
+ * (even if the two declarations are identical), a step output colliding with an existing input or
+ * an earlier step's output (even if identical), and a condition referencing a variable that is
+ * neither a declared input nor produced by an earlier step. See {@code
  * docs/workflow.md#workflow-definitions} for the complete contract.
  */
 public final class Workflow {
@@ -146,8 +149,9 @@ public final class Workflow {
             }
 
             Map<String, WorkflowVariable<?>> byName = new LinkedHashMap<>();
-            requiredInputs.forEach(variable -> registerVariable(byName, variable));
-            optionalInputs.forEach(variable -> registerVariable(byName, variable));
+            Set<String> declaredInputNames = new HashSet<>();
+            registerInputDeclarations(byName, declaredInputNames, requiredInputs);
+            registerInputDeclarations(byName, declaredInputNames, optionalInputs);
 
             Set<WorkflowVariable<?>> available = new LinkedHashSet<>();
             available.addAll(requiredInputs);
@@ -158,41 +162,16 @@ public final class Workflow {
                 if (!seenStepIds.add(step.id())) {
                     throw new IllegalArgumentException("duplicate step ID '" + step.id() + "'");
                 }
-                step.condition()
-                        .ifPresent(
-                                condition -> {
-                                    for (WorkflowVariable<?> referenced :
-                                            condition.referencedVariables()) {
-                                        if (!available.contains(referenced)) {
-                                            throw new IllegalArgumentException(
-                                                    "step '"
-                                                            + step.id()
-                                                            + "' condition '"
-                                                            + condition.describe()
-                                                            + "' references variable '"
-                                                            + referenced.name()
-                                                            + "', which is not a declared input or"
-                                                            + " an earlier step's output");
-                                        }
-                                    }
-                                });
 
-                IExecutableWorkflowStep executable = (IExecutableWorkflowStep) step;
-                executable
+                step.condition()
+                        .ifPresent(condition -> validateCondition(step, condition, available));
+
+                // Safe: IWorkflowStep is sealed and permits only AWorkflowStep (see its Javadoc),
+                // so every instance reachable here is guaranteed to be one.
+                AWorkflowStep concreteStep = (AWorkflowStep) step;
+                concreteStep
                         .outputVariable()
-                        .ifPresent(
-                                output -> {
-                                    registerVariable(byName, output);
-                                    if (!available.add(output)) {
-                                        throw new IllegalArgumentException(
-                                                "step '"
-                                                        + step.id()
-                                                        + "' output '"
-                                                        + output.name()
-                                                        + "' collides with an existing input or an"
-                                                        + " earlier step's output");
-                                    }
-                                });
+                        .ifPresent(output -> registerStepOutput(byName, available, step, output));
             }
 
             return new Workflow(
@@ -202,15 +181,83 @@ public final class Workflow {
                     List.copyOf(steps));
         }
 
-        private static void registerVariable(
-                Map<String, WorkflowVariable<?>> byName, WorkflowVariable<?> variable) {
-            WorkflowVariable<?> existing = byName.putIfAbsent(variable.name(), variable);
-            if (existing != null && !existing.equals(variable)) {
+        private static void registerInputDeclarations(
+                Map<String, WorkflowVariable<?>> byName,
+                Set<String> declaredInputNames,
+                List<WorkflowVariable<?>> inputs) {
+            for (WorkflowVariable<?> variable : inputs) {
+                if (!declaredInputNames.add(variable.name())) {
+                    throw new IllegalArgumentException(
+                            "input '" + variable.name() + "' is declared more than once");
+                }
+                byName.put(variable.name(), variable);
+            }
+        }
+
+        private static void validateCondition(
+                IWorkflowStep step,
+                IWorkflowCondition condition,
+                Set<WorkflowVariable<?>> available) {
+            Set<WorkflowVariable<?>> referenced;
+            try {
+                referenced = condition.referencedVariables();
+            } catch (RuntimeException e) {
                 throw new IllegalArgumentException(
-                        "variable '"
-                                + variable.name()
-                                + "' is declared more than once with a conflicting type or secret"
-                                + " status");
+                        "step '"
+                                + step.id()
+                                + "' condition's referencedVariables() threw "
+                                + e.getClass().getSimpleName(),
+                        e);
+            }
+            if (referenced == null) {
+                throw new IllegalArgumentException(
+                        "step '"
+                                + step.id()
+                                + "' condition returned a null referencedVariables() set");
+            }
+            for (WorkflowVariable<?> variable : referenced) {
+                if (variable == null) {
+                    throw new IllegalArgumentException(
+                            "step '"
+                                    + step.id()
+                                    + "' condition's referencedVariables() contains a null"
+                                    + " entry");
+                }
+                if (!available.contains(variable)) {
+                    throw new IllegalArgumentException(
+                            "step '"
+                                    + step.id()
+                                    + "' condition references variable '"
+                                    + variable.name()
+                                    + "', which is not a declared input or an earlier step's"
+                                    + " output");
+                }
+            }
+        }
+
+        private static void registerStepOutput(
+                Map<String, WorkflowVariable<?>> byName,
+                Set<WorkflowVariable<?>> available,
+                IWorkflowStep step,
+                WorkflowVariable<?> output) {
+            WorkflowVariable<?> existing = byName.putIfAbsent(output.name(), output);
+            if (existing != null && !existing.equals(output)) {
+                throw new IllegalArgumentException(
+                        "step '"
+                                + step.id()
+                                + "' output '"
+                                + output.name()
+                                + "' conflicts with an existing input or output declared with a"
+                                + " different type or secret status");
+            }
+            if (!available.add(output)) {
+                throw new IllegalArgumentException(
+                        "step '"
+                                + step.id()
+                                + "' output '"
+                                + output.name()
+                                + "' collides with an existing input or an earlier step's"
+                                + " output");
             }
         }
     }
