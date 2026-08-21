@@ -229,6 +229,15 @@ All notable changes to this project will be documented in this file. The format 
   real meta-refresh regression test, never asserted as a documented, versioned Playwright API
   contract. Also softened an unverified claim about exactly when Playwright reclaims a dropped
   `JSHandle` reference to simply noting WebAgent4j does not retain it.
+- **CI-caught regression from the fix above, fixed in a follow-up commit on the same branch:**
+  `BrowserCrawler`/`PageStabilityWaiter` pass `WaitBudget#remaining()` - a `Duration` computed from a
+  live monotonic clock, essentially never an exact whole millisecond - directly into
+  `IPage#navigate`/`waitForCondition`. The new whole-millisecond-precision validator rejected it on
+  every real navigation, not just the fractional-literal cases it was written for (caught by real CI's
+  `Java 21 / Linux` job across 28 integration/robustness tests, never reproduced by the mock-based unit
+  suite). Both call sites now floor the computed remaining budget to whole milliseconds immediately
+  before handing it to the backend-bounded call - flooring can only shorten the bound actually honored,
+  never exceed the real remaining time.
 
 ### Added (Public API documentation consolidation)
 
