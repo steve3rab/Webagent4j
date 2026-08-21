@@ -20,6 +20,14 @@ import java.util.List;
  * Backend-neutral live browser page.
  *
  * <p>Page instances are not thread-safe. Returned observations are immutable snapshots.
+ *
+ * <p><b>Timeout precision:</b> every caller-supplied {@link Duration} timeout this interface
+ * accepts ({@link #navigate(String, Duration)}, {@link #waitForCondition(String, Duration)}) must
+ * be positive, at least one millisecond, and carry no sub-millisecond remainder - a positive {@code
+ * Duration} like {@code Duration.ofNanos(1_500_000)} (1.5ms) is rejected with {@link
+ * IllegalArgumentException} rather than silently truncated or rounded to a duration the caller
+ * never asked for, since every implementation ultimately hands the timeout to a
+ * millisecond-resolution backend option.
  */
 public interface IPage extends IActionContext, IObservationSource, AutoCloseable {
 
@@ -42,16 +50,16 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
      * {@code timeout} to the native driver's own per-call navigation timeout option, so it is truly
      * enforced there.
      *
-     * @throws IllegalArgumentException if {@code timeout} is {@code null}, not positive, or
-     *     positive but under one millisecond (see {@link #requirePositiveMillisTimeout(Duration)} -
-     *     a sub-millisecond value can never be honestly represented once this call reaches a
+     * @throws IllegalArgumentException if {@code timeout} is {@code null}, not positive, under one
+     *     millisecond, or carries a sub-millisecond remainder (see the class-level note on timeout
+     *     precision) - such a value can never be honestly represented once this call reaches a
      *     millisecond-resolution backend timeout option, so it is rejected explicitly rather than
-     *     silently rounded up to a duration the caller never asked for)
+     *     silently rounded to a duration the caller never asked for
      * @throws UnsupportedOperationException if this backend cannot honor a caller-supplied
      *     navigation timeout
      */
     default void navigate(String url, Duration timeout) {
-        requirePositiveMillisTimeout(timeout);
+        requireWholeMillisecondTimeout(timeout);
         throw new UnsupportedOperationException(
                 "This browser backend does not support caller-supplied navigation timeouts");
     }
@@ -103,14 +111,16 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
      * a second, independently unbounded call after its own bounded wait resolves just to satisfy a
      * return value nothing here uses.
      *
-     * @throws IllegalArgumentException if {@code expression} is blank, or {@code timeout} does not
-     *     satisfy {@link #requirePositiveMillisTimeout(Duration)}
+     * @throws IllegalArgumentException if {@code expression} is blank, or {@code timeout} is not a
+     *     positive, whole-millisecond {@link Duration} of at least one millisecond (see the
+     *     class-level note on timeout precision)
      * @throws ConditionTimeoutException if {@code expression} did not become satisfied within
      *     {@code timeout} - not necessarily because it was literally evaluated and found falsy
-     *     every time: a backend that transparently re-establishes the wait across a document
-     *     replacement (see the Playwright adapter) may never observe a single truthy evaluation and
-     *     still report this the same way, since from the caller's perspective the only observable
-     *     fact is "not satisfied in time"
+     *     every time: how a document replacement mid-wait is handled is backend-specific (see the
+     *     Playwright adapter's own Javadoc for what is a guaranteed bound versus an observed,
+     *     version-specific behavior there), and a backend may never observe a single truthy
+     *     evaluation yet still report this the same way, since from the caller's perspective the
+     *     only observable fact is "not satisfied in time"
      * @throws UnsupportedOperationException if this backend cannot honor a natively-bounded
      *     condition wait
      */
@@ -118,38 +128,51 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
         if (expression == null || expression.isBlank()) {
             throw new IllegalArgumentException("expression cannot be blank");
         }
-        requirePositiveMillisTimeout(timeout);
+        requireWholeMillisecondTimeout(timeout);
         throw new UnsupportedOperationException(
                 "This browser backend does not support natively-bounded condition waits");
     }
 
     /**
-     * Validates that {@code timeout} is non-null and represents a whole number of milliseconds
-     * greater than zero.
+     * Validates that {@code timeout} is a positive {@link Duration} of at least one millisecond
+     * that carries no sub-millisecond remainder - an internal implementation detail shared by
+     * {@link #navigate(String, Duration)} and {@link #waitForCondition(String, Duration)}'s default
+     * methods, deliberately {@code private}: it is not, and must not become, its own public API
+     * surface just because two default methods happen to need the same three lines of validation.
      *
-     * <p>Every timeout this interface accepts ({@link #navigate(String, Duration)}, {@link
-     * #waitForCondition(String, Duration)}) is ultimately handed to a backend timeout option
+     * <p>Every timeout this interface accepts is ultimately handed to a backend timeout option
      * resolved in milliseconds (Playwright's own options are millisecond-`double`-valued). A
-     * positive but sub-millisecond {@code Duration} - {@code Duration.ofNanos(500_000)}, for
-     * example - cannot be honestly represented at that resolution: silently flooring it to one
-     * millisecond would let a caller believe a sub-millisecond bound was honored when a materially
-     * longer one was actually applied. Rejecting it explicitly here, in one shared place, means
-     * every implementation can convert an already-validated {@code timeout} to milliseconds
-     * directly, never needing its own {@code Math.max(1, ...)}-style silent floor.
+     * positive {@code Duration} carrying a sub-millisecond remainder - {@code
+     * Duration.ofNanos(500_000)} (0.5ms) or {@code Duration.ofNanos(1_500_000)} (1.5ms), for
+     * example - cannot be honestly represented at that resolution: silently truncating, rounding,
+     * or flooring it would let a caller believe a specific bound was honored when a different one
+     * was actually applied. Rejecting it explicitly here, in one shared place, means every
+     * implementation can convert an already-validated {@code timeout} to milliseconds directly
+     * ({@code timeout.toMillis()}), never needing its own truncating or flooring logic.
      *
-     * @throws IllegalArgumentException if {@code timeout} is {@code null}, zero, negative, or
-     *     positive but under one millisecond
+     * <p>The remainder check reads {@link Duration#getNano()} rather than {@link
+     * Duration#toNanos()}, since {@code getNano()} is always in {@code [0, 999_999_999]} regardless
+     * of how large the duration's whole-second component is - safe against the overflow {@code
+     * toNanos()} could raise for an implausibly large {@code Duration}, which a browser timeout has
+     * no legitimate reason to be.
+     *
+     * @throws IllegalArgumentException if {@code timeout} is {@code null}, zero, negative, under
+     *     one millisecond, or positive but not a whole number of milliseconds
      */
-    static void requirePositiveMillisTimeout(Duration timeout) {
+    private static void requireWholeMillisecondTimeout(Duration timeout) {
         if (timeout == null) {
             throw new IllegalArgumentException("timeout must not be null");
         }
         if (timeout.isZero() || timeout.isNegative()) {
             throw new IllegalArgumentException("timeout must be positive, was " + timeout);
         }
-        if (timeout.toMillis() < 1) {
+        if (timeout.compareTo(Duration.ofMillis(1)) < 0) {
             throw new IllegalArgumentException(
-                    "timeout must be at least 1 millisecond, was " + timeout.toNanos() + "ns");
+                    "timeout must be at least 1 millisecond, was " + timeout);
+        }
+        if (timeout.getNano() % 1_000_000 != 0) {
+            throw new IllegalArgumentException(
+                    "timeout must use whole-millisecond precision, was " + timeout);
         }
     }
 

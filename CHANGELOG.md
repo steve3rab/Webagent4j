@@ -194,6 +194,42 @@ All notable changes to this project will be documented in this file. The format 
   expected consequence of an additive enum change, called out explicitly rather than folded into a
   blanket compatibility claim.
 
+### Fixed (Browser Crawler — Phase 0.7 fifth correction round: timeout precision and thread-safety proof)
+
+- **Whole-millisecond timeout precision, not merely "at least 1ms".** The fourth round's timeout
+  validator rejected a sub-millisecond `Duration` (checking `toMillis() < 1`) but missed a distinct
+  bug: `Duration.toMillis()` truncates rather than rounds, so a positive, at-least-1ms `Duration`
+  carrying a sub-millisecond remainder (`Duration.ofNanos(1_500_000)`, 1.5ms) passed that check and
+  was silently truncated to 1ms - a bound the caller never asked for. `IPage`'s validator, `Playwright
+  Page`'s duplicated copy, and `BrowserCrawlRequest`'s `navigationTimeout`/`stabilityWindow`
+  validation now all additionally reject any positive `Duration` whose `getNano() % 1_000_000 != 0`,
+  with a distinct message from the "at least 1ms" rejection. `Duration#getNano()` is used rather than
+  `Duration#toNanos()` for this check specifically to stay overflow-safe for an arbitrarily large
+  `Duration`.
+- **The timeout validator is no longer public API.** `IPage#requirePositiveMillisTimeout` was a
+  `public static` method on a public interface - an implementation detail that should never have
+  become public surface merely because two default methods shared it. It is now `private static`
+  (Java 21 interface private static methods) and renamed `requireWholeMillisecondTimeout` to reflect
+  the stricter rule. Since the Playwright adapter could no longer call it externally, it gained its
+  own private, byte-for-byte-identical copy rather than a new shared public utility - duplication of
+  a small private helper is preferred here over expanding public surface for it.
+- **`everyBackendCallHappensOnTheSingleCallingThread` now instruments every backend call
+  `BrowserCrawler` actually makes** on its success path - `IBrowser#newPage()`, `IPage#navigate`,
+  `IPage#waitForCondition`, `IPage#url()`, `IPage#observe()`, `IPage#title()`, `IPage#close()` - not
+  only `navigate()`, and now asserts both that every recorded call landed on the calling thread and
+  that every required operation was actually observed, rather than passing vacuously on partial
+  instrumentation.
+- **Softened two previously overclaiming Playwright-behavior claims** (`PlaywrightPage#waitForCondition`
+  Javadoc, `PageStabilityWaiter`'s class Javadoc, and `docs/browser-crawler.md`'s Stability section):
+  what was written as "Playwright transparently continues polling in a newly-navigated execution
+  context" is now split into the actual architectural guarantee this design depends on
+  (`Page#waitForFunction` carries its own native timeout, so the call cannot hang past `timeout`
+  regardless of what happens to the execution context) and a separately-labeled empirical observation
+  specific to the pinned Playwright version (1.60.0), proven only by `BrowserCrawlerRobustnessIT`'s
+  real meta-refresh regression test, never asserted as a documented, versioned Playwright API
+  contract. Also softened an unverified claim about exactly when Playwright reclaims a dropped
+  `JSHandle` reference to simply noting WebAgent4j does not retain it.
+
 ### Added (Public API documentation consolidation)
 
 - New `docs/public-api.md`: a comprehensive public API reference spanning every implemented module

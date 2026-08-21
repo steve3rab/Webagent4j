@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -755,35 +756,94 @@ class BrowserCrawlerTest {
     @Test
     void everyBackendCallHappensOnTheSingleCallingThread() {
         long callingThreadId = Thread.currentThread().threadId();
-        List<Long> observedThreadIds = new ArrayList<>();
+        // Every IBrowser/IPage operation BrowserCrawler makes on its normal success path (see
+        // Session#execute and Session#run's closeQuietly) - recorded by name so the assertion below
+        // can verify BOTH that every recorded call landed on the calling thread AND that every
+        // required operation was actually observed, rather than passing vacuously if only one or
+        // two of these happened to be recorded.
+        Set<String> requiredOperations =
+                Set.of(
+                        "newPage",
+                        "navigate",
+                        "waitForCondition",
+                        "url",
+                        "observe",
+                        "title",
+                        "close");
+        Map<String, Long> observedThreadIdsByOperation = new HashMap<>();
         IBrowser browser = mock(IBrowser.class);
         when(browser.newPage())
                 .thenAnswer(
                         invocation -> {
-                            observedThreadIds.add(Thread.currentThread().threadId());
+                            observedThreadIdsByOperation.put(
+                                    "newPage", Thread.currentThread().threadId());
                             IPage page = mock(IPage.class);
-                            when(page.url()).thenReturn("https://example.com/");
-                            when(page.title()).thenReturn("Home");
-                            // page.waitForCondition(...) is void; an unstubbed mock call already
-                            // no-ops, which is exactly "stability succeeded immediately" here.
-                            when(page.observe(any()))
-                                    .thenReturn(
-                                            LinkObservationFixtures.withLinks(
-                                                    "https://example.com/", List.of()));
                             doAnswer(
                                             nav -> {
-                                                observedThreadIds.add(
+                                                observedThreadIdsByOperation.put(
+                                                        "navigate",
                                                         Thread.currentThread().threadId());
                                                 return null;
                                             })
                                     .when(page)
                                     .navigate(anyString(), any(Duration.class));
+                            // page.waitForCondition(...) is void; recorded via doAnswer so an
+                            // unstubbed call still no-ops, which is exactly "stability succeeded
+                            // immediately" here.
+                            doAnswer(
+                                            wait -> {
+                                                observedThreadIdsByOperation.put(
+                                                        "waitForCondition",
+                                                        Thread.currentThread().threadId());
+                                                return null;
+                                            })
+                                    .when(page)
+                                    .waitForCondition(anyString(), any(Duration.class));
+                            when(page.url())
+                                    .thenAnswer(
+                                            call -> {
+                                                observedThreadIdsByOperation.put(
+                                                        "url", Thread.currentThread().threadId());
+                                                return "https://example.com/";
+                                            });
+                            when(page.title())
+                                    .thenAnswer(
+                                            call -> {
+                                                observedThreadIdsByOperation.put(
+                                                        "title", Thread.currentThread().threadId());
+                                                return "Home";
+                                            });
+                            when(page.observe(any()))
+                                    .thenAnswer(
+                                            call -> {
+                                                observedThreadIdsByOperation.put(
+                                                        "observe",
+                                                        Thread.currentThread().threadId());
+                                                return LinkObservationFixtures.withLinks(
+                                                        "https://example.com/", List.of());
+                                            });
+                            doAnswer(
+                                            call -> {
+                                                observedThreadIdsByOperation.put(
+                                                        "close", Thread.currentThread().threadId());
+                                                return null;
+                                            })
+                                    .when(page)
+                                    .close();
                             return page;
                         });
 
+        // crawl() itself always runs on this JUnit test thread, exactly as in production - only
+        // CancellationToken.cancel() is ever dispatched from a second thread anywhere in this
+        // suite (see
+        // cancellationObservedDuringNavigationPreventsDiscoveredChildrenFromBeingClaimed,
+        // which still only ever calls it as an in-thread side effect here). Running crawl() itself
+        // on a second thread would not prove anything about the backend calls it makes internally.
         crawler.crawl(requestFor(browser, "https://example.com/").build());
 
-        assertThat(observedThreadIds).isNotEmpty();
-        assertThat(observedThreadIds).allMatch(id -> id == callingThreadId);
+        assertThat(observedThreadIdsByOperation.keySet())
+                .as("every backend operation BrowserCrawler calls on its success path")
+                .containsExactlyInAnyOrderElementsOf(requiredOperations);
+        assertThat(observedThreadIdsByOperation.values()).allMatch(id -> id == callingThreadId);
     }
 }

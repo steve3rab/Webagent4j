@@ -113,23 +113,12 @@ public record BrowserCrawlRequest(
         if (navigationTimeout.isNegative() || navigationTimeout.isZero()) {
             throw new IllegalArgumentException("navigationTimeout must be positive");
         }
-        if (navigationTimeout.toMillis() < 1) {
-            // Both navigate() and waitForCondition() ultimately resolve to a millisecond-valued
-            // backend timeout option (see IPage#requirePositiveMillisTimeout) - a positive but
-            // sub-millisecond navigationTimeout can never be honestly honored at that resolution,
-            // so it is rejected here rather than silently floored to a bound the caller never asked
-            // for.
-            throw new IllegalArgumentException(
-                    "navigationTimeout must be at least 1 millisecond, was " + navigationTimeout);
-        }
+        requireWholeMillisecondPrecision(navigationTimeout, "navigationTimeout");
         Objects.requireNonNull(stabilityWindow, "stabilityWindow");
         if (stabilityWindow.isNegative() || stabilityWindow.isZero()) {
             throw new IllegalArgumentException("stabilityWindow must be positive");
         }
-        if (stabilityWindow.toMillis() < 1) {
-            throw new IllegalArgumentException(
-                    "stabilityWindow must be at least 1 millisecond, was " + stabilityWindow);
-        }
+        requireWholeMillisecondPrecision(stabilityWindow, "stabilityWindow");
         if (stabilityWindow.compareTo(navigationTimeout) > 0) {
             // navigation and stability share one monotonic budget (navigationTimeout) - a
             // stabilityWindow longer than that whole budget could never be satisfied even if
@@ -165,6 +154,29 @@ public record BrowserCrawlRequest(
         excludeUrlPatterns =
                 List.copyOf(Objects.requireNonNull(excludeUrlPatterns, "excludeUrlPatterns"));
         Objects.requireNonNull(cancellationToken, "cancellationToken");
+    }
+
+    /**
+     * Rejects any positive {@code timeout} that is at least one millisecond but carries a
+     * sub-millisecond remainder (e.g. {@code Duration.ofNanos(1_500_000)}, 1.5ms) - such a value
+     * can never be honestly honored, since both {@code navigate()} and {@code waitForCondition()}
+     * ultimately resolve to a millisecond-valued backend timeout option (see {@link
+     * io.webagent4j.browser.IPage}'s class-level note on timeout precision), and silently flooring
+     * it via {@link Duration#toMillis()} would honor a bound the caller never asked for. Uses
+     * {@link Duration#getNano()} rather than {@link Duration#toNanos()} for the remainder check
+     * since {@code getNano()} is always bounded to {@code [0, 999_999_999]} regardless of the
+     * duration's magnitude, avoiding {@code toNanos()}'s overflow risk on arbitrarily large
+     * durations.
+     */
+    private static void requireWholeMillisecondPrecision(Duration timeout, String fieldName) {
+        if (timeout.compareTo(Duration.ofMillis(1)) < 0) {
+            throw new IllegalArgumentException(
+                    fieldName + " must be at least 1 millisecond, was " + timeout);
+        }
+        if (timeout.getNano() % 1_000_000 != 0) {
+            throw new IllegalArgumentException(
+                    fieldName + " must use whole-millisecond precision, was " + timeout);
+        }
     }
 
     private static void requireAbsoluteHttpSeed(URI seed) {

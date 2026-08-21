@@ -165,6 +165,66 @@ class BrowserCrawlRequestTest {
     }
 
     /**
+     * DUR-UNIT-004: the precision-truncation bug - {@code Duration.ofNanos(1_500_000).toMillis()}
+     * truncates to {@code 1}, so a validator checking only {@code toMillis() < 1} would silently
+     * accept and truncate this 1.5ms value instead of rejecting it. A positive, at-least-1ms
+     * navigationTimeout carrying a sub-millisecond remainder must still be rejected explicitly.
+     */
+    @Test
+    void fractionalMillisecondNavigationTimeoutRejected() {
+        assertThatThrownBy(
+                        () ->
+                                BrowserCrawlRequest.builder(browser)
+                                        .seed("https://example.com/")
+                                        .navigationTimeout(Duration.ofNanos(1_500_000))
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("whole-millisecond");
+    }
+
+    /** DUR-UNIT-005: same fractional-millisecond rejection for stabilityWindow. */
+    @Test
+    void fractionalMillisecondStabilityWindowRejected() {
+        assertThatThrownBy(
+                        () ->
+                                BrowserCrawlRequest.builder(browser)
+                                        .seed("https://example.com/")
+                                        .navigationTimeout(Duration.ofSeconds(5))
+                                        .stabilityWindow(Duration.ofNanos(1_500_000))
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("whole-millisecond");
+    }
+
+    /** DUR-UNIT-006: exactly 1ms is whole-millisecond precision and must be accepted. */
+    @Test
+    void exactlyOneMillisecondNavigationTimeoutAndStabilityWindowAccepted() {
+        BrowserCrawlRequest request =
+                BrowserCrawlRequest.builder(browser)
+                        .seed("https://example.com/")
+                        .navigationTimeout(Duration.ofMillis(1))
+                        .stabilityWindow(Duration.ofMillis(1))
+                        .build();
+
+        assertThat(request.navigationTimeout()).isEqualTo(Duration.ofMillis(1));
+        assertThat(request.stabilityWindow()).isEqualTo(Duration.ofMillis(1));
+    }
+
+    /** DUR-UNIT-007: exactly 1500ms is whole-millisecond precision and must be accepted. */
+    @Test
+    void exactly1500MillisecondsNavigationTimeoutAndStabilityWindowAccepted() {
+        BrowserCrawlRequest request =
+                BrowserCrawlRequest.builder(browser)
+                        .seed("https://example.com/")
+                        .navigationTimeout(Duration.ofMillis(1500))
+                        .stabilityWindow(Duration.ofMillis(1500))
+                        .build();
+
+        assertThat(request.navigationTimeout()).isEqualTo(Duration.ofMillis(1500));
+        assertThat(request.stabilityWindow()).isEqualTo(Duration.ofMillis(1500));
+    }
+
+    /**
      * DUR-UNIT-003: navigation and stability share one monotonic budget - a stabilityWindow longer
      * than the whole navigationTimeout budget could never be satisfied, so it is rejected at
      * build() rather than discovered mid-crawl as a page that can structurally never succeed.

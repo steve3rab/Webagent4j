@@ -93,7 +93,7 @@ final class PlaywrightPage implements IPage {
      */
     @Override
     public void navigate(String url, Duration timeout) {
-        IPage.requirePositiveMillisTimeout(timeout);
+        requireWholeMillisecondTimeout(timeout);
         PlaywrightUrlValidator.requireAbsoluteHttp(url);
         try {
             page.navigate(url, new Page.NavigateOptions().setTimeout((double) timeout.toMillis()));
@@ -142,13 +142,23 @@ final class PlaywrightPage implements IPage {
      * Overrides the default {@link IPage#waitForCondition(String, Duration)}, mapping directly onto
      * {@link Page#waitForFunction(String, Object, Page.WaitForFunctionOptions)} - Playwright's own
      * native, driver-enforced polling primitive - rather than a Java-side loop calling {@link
-     * #evaluate(String)} repeatedly. Playwright polls {@code expression} itself (re-evaluating it
-     * in whatever execution context is current, including transparently after a same-frame
-     * navigation), and enforces {@code timeout} on the driver side: the call either returns once
-     * {@code expression} is truthy or throws Playwright's typed {@link
-     * com.microsoft.playwright.TimeoutError} - translated here to the backend-neutral {@link
-     * ConditionTimeoutException} - never hangs past {@code timeout}, even if a bare {@link
-     * #evaluate(String)} call evaluating the same expression once could.
+     * #evaluate(String)} repeatedly. {@code timeout} is enforced on the driver side, by Playwright
+     * itself: the call either returns once {@code expression} is truthy or throws Playwright's
+     * typed {@link com.microsoft.playwright.TimeoutError} - translated here to the backend-neutral
+     * {@link ConditionTimeoutException}. That native timeout bound is the architectural guarantee
+     * this method relies on: {@code BrowserCrawler} never falls back to an unbounded {@link
+     * #evaluate(String)} loop that only a Java-side deadline could (imperfectly) police.
+     *
+     * <p>Separately, and empirically: in the Playwright version currently pinned by this project
+     * (1.60.0), this wait has been exercised by real integration coverage ({@code
+     * BrowserCrawlerRobustnessIT}'s client-side-navigation-during-stability regression) across a
+     * client-side document navigation (a meta-refresh) occurring mid-wait, and it completes rather
+     * than hanging or erroring. That specific cross-navigation resilience is an observed behavior
+     * of the pinned Playwright version, proven by that test - not a documented, versioned contract
+     * of the Playwright Java API asserted here as a universal guarantee. The property this method's
+     * design actually depends on is narrower and does not rest on that behavior: {@code
+     * waitForFunction} carries its own native timeout, so this call cannot hang past {@code
+     * timeout} regardless of what happens to the execution context while it runs.
      *
      * <p>{@code waitForFunction} itself returns a {@link com.microsoft.playwright.JSHandle}
      * wrapping the truthy result, but this method deliberately never calls {@code
@@ -158,18 +168,16 @@ final class PlaywrightPage implements IPage {
      * waitForFunction(timeout)} would still be bounded, but overall "did {@code waitForCondition}
      * return" would not be, since a call after it could still hang. This interface's contract
      * doesn't need the value (see {@link IPage#waitForCondition(String, Duration)}), so the handle
-     * is simply dropped: an unreferenced {@link com.microsoft.playwright.JSHandle} does not pin any
-     * Java-side resource, and the underlying page-side object it wraps is reclaimed by Playwright
-     * itself when its execution context is destroyed - which, for a per-navigation stability
-     * condition like this one, is always by the very next {@code navigate()} call at the latest, if
-     * not sooner.
+     * reference is simply not retained by WebAgent4j - this project makes no claim about, and does
+     * not depend on, exactly when or how Playwright itself reclaims the underlying page-side
+     * object.
      */
     @Override
     public void waitForCondition(String expression, Duration timeout) {
         if (expression == null || expression.isBlank()) {
             throw new IllegalArgumentException("expression cannot be blank");
         }
-        IPage.requirePositiveMillisTimeout(timeout);
+        requireWholeMillisecondTimeout(timeout);
         try {
             page.waitForFunction(
                     expression,
@@ -178,6 +186,29 @@ final class PlaywrightPage implements IPage {
         } catch (com.microsoft.playwright.TimeoutError e) {
             throw new ConditionTimeoutException(
                     "Condition did not become true within " + timeout, e);
+        }
+    }
+
+    /**
+     * Validates {@code timeout} against exactly the same contract {@link IPage}'s private {@code
+     * requireWholeMillisecondTimeout} enforces (positive, at least one millisecond, no
+     * sub-millisecond remainder) - duplicated here, not shared via a new public utility, since that
+     * validator is deliberately not part of {@link IPage}'s public surface.
+     */
+    private static void requireWholeMillisecondTimeout(Duration timeout) {
+        if (timeout == null) {
+            throw new IllegalArgumentException("timeout must not be null");
+        }
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive, was " + timeout);
+        }
+        if (timeout.compareTo(Duration.ofMillis(1)) < 0) {
+            throw new IllegalArgumentException(
+                    "timeout must be at least 1 millisecond, was " + timeout);
+        }
+        if (timeout.getNano() % 1_000_000 != 0) {
+            throw new IllegalArgumentException(
+                    "timeout must use whole-millisecond precision, was " + timeout);
         }
     }
 

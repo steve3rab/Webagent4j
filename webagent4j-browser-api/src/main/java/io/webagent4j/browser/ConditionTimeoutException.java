@@ -7,10 +7,11 @@ import java.time.Duration;
  * Indicates that a {@link IPage#waitForCondition(String, Duration)} call's condition did not become
  * satisfied within the caller-supplied timeout.
  *
- * <p>Not necessarily "the expression was evaluated and found falsy every time": a backend may
- * transparently re-establish the wait across a document replacement (a client-side navigation
- * during the wait, for example - see the Playwright adapter), in which case no single evaluation
- * ever definitively failed, yet the condition still was not satisfied in time from the caller's
+ * <p>Not necessarily "the expression was evaluated and found falsy every time": how a backend
+ * handles a document replacement occurring mid-wait (a client-side navigation, for example) is
+ * backend-specific - see the Playwright adapter's own Javadoc for what is a guaranteed bound versus
+ * an observed, version-specific behavior there. A backend may never observe a single evaluation
+ * definitively fail, yet still report the condition was not satisfied in time from the caller's
  * point of view. This type reports exactly that outward-observable fact, nothing more specific.
  *
  * <p>Backend-neutral by design: a caller such as {@code BrowserCrawler}'s stability wait can

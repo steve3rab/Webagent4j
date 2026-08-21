@@ -277,11 +277,10 @@ public final class BrowserCrawler implements IBrowserCrawler {
             WaitBudget budget = WaitBudget.start(request.navigationTimeout(), waitEngine.clock());
             // budget.remaining().toMillis() < 1, not budget.expired(): IPage#navigate(String,
             // Duration) now rejects a positive-but-sub-millisecond timeout with
-            // IllegalArgumentException (see IPage#requirePositiveMillisTimeout) rather than
-            // silently
-            // flooring it, so a remaining budget under 1ms must be treated as already-expired here,
-            // before ever reaching that validation, exactly like PageStabilityWaiter does for the
-            // stability leg.
+            // IllegalArgumentException (see IPage's class-level "Timeout precision" note) rather
+            // than silently flooring it, so a remaining budget under 1ms must be treated as
+            // already-expired here, before ever reaching that validation, exactly like
+            // PageStabilityWaiter does for the stability leg.
             if (budget.remaining().toMillis() < 1) {
                 return new NavigationFailure(
                         BrowserCrawlFailureType.NAVIGATION_TIMEOUT,

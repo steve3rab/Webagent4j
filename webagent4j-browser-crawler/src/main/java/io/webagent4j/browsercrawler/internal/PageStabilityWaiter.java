@@ -24,13 +24,23 @@ import java.time.Duration;
  * <p><b>The fix:</b> the entire "is the DOM stable" condition - fingerprint computation, change
  * detection, and the {@code stabilityWindow} bookkeeping - is expressed as one JavaScript predicate
  * and handed to the backend's own native timeout-aware polling primitive ({@link
- * IPage#waitForCondition}; the Playwright adapter maps this onto {@code Page.waitForFunction},
- * which polls entirely driver-side and transparently continues polling in a newly-navigated
- * execution context rather than throwing "context destroyed"). There is exactly one call from this
- * class into the backend per stability wait, and that call - not a loop wrapped around it - is what
- * the backend itself bounds to {@code timeout}. If the backend cannot honor this natively-bounded
- * contract, {@link IPage#waitForCondition} fails explicitly ({@link UnsupportedOperationException})
- * rather than silently falling back to an unbounded loop.
+ * IPage#waitForCondition}). There is exactly one call from this class into the backend per
+ * stability wait, and that call - not a loop wrapped around it - is what the backend itself bounds
+ * to {@code timeout}: this is the architectural guarantee the whole class depends on, and it holds
+ * regardless of what happens to the page's execution context while the call is in flight. If the
+ * backend cannot honor this natively-bounded contract, {@link IPage#waitForCondition} fails
+ * explicitly ({@link UnsupportedOperationException}) rather than silently falling back to an
+ * unbounded loop.
+ *
+ * <p>Separately, and empirically: the Playwright adapter maps this onto {@code
+ * Page.waitForFunction}, which polls entirely driver-side. In the Playwright version currently
+ * pinned by this project (1.60.0), {@code BrowserCrawlerRobustnessIT}'s client-side-navigation-
+ * during-stability regression exercises this call across a client-side navigation (a meta-refresh)
+ * that replaces the page's execution context mid-wait, and it completes rather than throwing
+ * "context destroyed" or hanging. That specific cross-navigation resilience is an observed behavior
+ * of the pinned Playwright version, proven by that test - not a documented, versioned contract of
+ * the Playwright Java API asserted here as a universal guarantee. This class's correctness does not
+ * rest on it: it rests only on the native-timeout guarantee described above.
  *
  * <p>{@link #awaitStable} deliberately has no return value: {@code IPage#waitForCondition} itself
  * carries none (see its contract - this caller never needed the fingerprint value, only "did it

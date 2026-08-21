@@ -185,20 +185,27 @@ own, so a poll that happened to land during a client-side navigation transition 
 JS `location.assign`/`location.replace`, or a router push mid-flight) could block the underlying
 call indefinitely - no exception, no timeout, ever, until (if ever) the driver call itself
 returned. `navigationTimeout` was, in that design, not actually authoritative over stability the way
-this document claimed. The Playwright adapter now maps `waitForCondition` directly onto
-`Page.waitForFunction`, which polls entirely driver-side, is bounded by its own native `timeout`
-option, and transparently continues polling in a newly-navigated execution context rather than
-throwing "context destroyed" - so there is exactly one call from Java into the backend per stability
-wait, and that call, not a loop wrapped around it, is what the backend itself bounds. `IPage`'s
-`waitForCondition` contract is deliberately return-value-free (`void`, not the JavaScript predicate's
-own truthy value) precisely so no implementation needs a second, independently-unbounded call after
-its own bounded wait resolves - the Playwright adapter never calls `JSHandle#jsonValue()` or
-`JSHandle#dispose()` on `waitForFunction`'s returned handle for exactly this reason; a call after the
-bounded one would still leave "did the whole operation return" unbounded even though the wait itself
-was bounded. The predicate tracks its own "stable since" timestamp using the page's own monotonic
-`performance.now()`, never wall-clock `Date.now()`. See `BrowserCrawlerRobustnessIT`'s real-Playwright
-client-side-navigation-during-stability regression test for the scenario this replaces a hang with a
-bounded, structured outcome for.
+this document claimed. There is exactly one call from Java into the backend per stability wait, and
+that call, not a loop wrapped around it, is what the backend itself bounds to its native `timeout` -
+this is the architectural guarantee the whole design depends on, and it holds regardless of what
+happens to the page's execution context while the call is in flight. `IPage`'s `waitForCondition`
+contract is deliberately return-value-free (`void`, not the JavaScript predicate's own truthy value)
+precisely so no implementation needs a second, independently-unbounded call after its own bounded
+wait resolves - the Playwright adapter never calls `JSHandle#jsonValue()` or `JSHandle#dispose()` on
+`waitForFunction`'s returned handle for exactly this reason; a call after the bounded one would still
+leave "did the whole operation return" unbounded even though the wait itself was bounded. The
+predicate tracks its own "stable since" timestamp using the page's own monotonic `performance.now()`,
+never wall-clock `Date.now()`.
+
+Separately, and empirically: the Playwright adapter maps `waitForCondition` directly onto
+`Page.waitForFunction`, which polls entirely driver-side. In the Playwright version currently pinned
+by this project (1.60.0), `BrowserCrawlerRobustnessIT`'s real-Playwright client-side-navigation-
+during-stability regression test exercises this call across a client-side navigation (a meta-refresh)
+that replaces the page's execution context mid-wait, and it completes rather than throwing "context
+destroyed" or hanging. That specific cross-navigation resilience is an observed behavior of the
+pinned Playwright version, proven by that test - not a documented, versioned contract of the
+Playwright Java API asserted here as a universal guarantee. This design's correctness does not rest
+on it: it rests only on the native-timeout guarantee described above.
 
 The stability predicate's fingerprint is four parts: `document.readyState`; the total element count;
 the total count of `href`-bearing anchors and image-map areas (`a[href]`, `area[href]` - see
@@ -342,11 +349,14 @@ See [URL identities and deduplication](#url-identities-and-deduplication) above.
 
 `maxDepth`, `maxPages`, `maxConcurrency`, `navigationTimeout`, `stabilityWindow` - every one
 validated at `BrowserCrawlRequest.Builder.build()`, never discovered invalid mid-crawl.
-`navigationTimeout` and `stabilityWindow` must each be at least one millisecond: both are
-ultimately handed to a backend timeout option resolved in milliseconds, and a positive-but-shorter
-value can never be honestly honored at that resolution (see `IPage#requirePositiveMillisTimeout`,
-shared by `navigate(String, Duration)` and `waitForCondition(String, Duration)`) - rejected
-explicitly rather than silently rounded up to a duration the caller never asked for.
+`navigationTimeout` and `stabilityWindow` must each be a positive, whole-millisecond `Duration` of
+at least one millisecond: both are ultimately handed to a backend timeout option resolved in
+milliseconds, so a positive value carrying a sub-millisecond remainder (`Duration.ofNanos(1_500_000)`,
+1.5ms, for example) can never be honestly honored at that resolution - rejected explicitly rather
+than silently truncated or rounded to a duration the caller never asked for. `IPage`'s own
+implementations enforce the identical precision contract on the `Duration` values they accept (see
+`IPage`'s class-level "Timeout precision" note); the validator itself is a private implementation
+detail, not shared public API (see [Public API](#public-api)).
 `stabilityWindow` must not exceed `navigationTimeout`: since both draw from one shared budget, a
 `stabilityWindow` longer than the whole budget could never be satisfied even by a page that
 navigates instantly, so that configuration is rejected at `build()` rather than discovered mid-crawl
