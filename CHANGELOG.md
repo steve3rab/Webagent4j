@@ -6,6 +6,155 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Recording — Phase 0.9-A)
+
+- New `webagent4j-recording` module: a deterministic, versioned, secret-safe recording of one
+  `WorkflowResult`, plus a safe offline replay-verification mechanism. A recording is data, not a
+  program - `WorkflowRecording` has no `execute()` method and cannot replay itself; there is
+  deliberately **no automatic live replay of browser actions** in this phase. Depends only on
+  `webagent4j-workflow` and, internally, `jackson-databind` (never exposed in a public signature).
+- Recording model: `RecordingId` (caller-supplied, never randomly generated - mirrors `WorkflowId`),
+  `RecordingSchemaVersion` (closed, numbered enum, `V1` only), `WorkflowRecording`,
+  `RecordedWorkflowStep` (mirrors `WorkflowStepResult`'s FAILED/SKIPPED/NOT_RUN invariants, plus an
+  `ASSIGN`-step-never-carries-an-action check and a general false-condition-outcome-requires-SKIPPED
+  check), `RecordedCondition`, `RecordedAction`, `RecordedFailure`.
+- `WorkflowRecorder`: stateless capture, `WorkflowResult -> WorkflowRecording`. Secret safety is
+  structural, not a redaction pass - it only ever reads already-safe fields
+  (`WorkflowStepResult#condition`/`#outputVariableName`/`#failure`/`#actionSummary`) and never calls
+  `WorkflowResult#output(WorkflowVariable)`, so a secret cannot appear in a recording because the
+  code path that could observe one is never exercised. Never records `WorkflowInputs`, a raw output
+  value, `ActionResult#value()`, a raw `Throwable`, or the secret registry.
+- Canonical JSON encoding/decoding: `IWorkflowRecordingCodec`, `JsonWorkflowRecordingCodec`,
+  `RecordingFormatException`. Encoding is deterministic (fixed field order via manual
+  `JsonGenerator` writes, never default POJO ordering), never pretty-printed, never trailing a
+  newline; every optional field is always emitted (`null` when absent, never omitted); every enum
+  is written by name, never ordinal. Decoding is strict: rejects malformed JSON, a duplicate JSON
+  object key at any nesting level (`JsonParser.Feature.STRICT_DUPLICATE_DETECTION`), a missing or
+  unknown field, an unsupported `schemaVersion` (no fallback), an invalid enum value, a malformed
+  `Instant`, a value of the wrong JSON type, an invariant violation, and trailing content after the
+  document - every `RecordingFormatException` message references only a fixed schema field path,
+  never the offending raw value. No polymorphic/annotation-driven deserialization anywhere.
+- Replay verification: `WorkflowReplayVerifier#verify(WorkflowRecording, WorkflowResult)` is pure
+  and synchronous - never re-execution, never a browser/backend call. Never fails fast: every
+  mismatch is collected in one deterministic traversal (workflow identity/status, step count, each
+  common step in order, missing/extra trailing steps, then the top-level failure).
+  `WorkflowReplayResult#matches()` is derived from `mismatches().isEmpty()`, never an independently
+  settable field. `RecordingId`, `capturedAt`, `ActionId` (a fresh random correlation ID per
+  execution), a condition's description text, and a failure's `safeMessage`/underlying exception
+  type name are deliberately never compared - see [docs/recording.md](docs/recording.md) for the
+  full rationale per field. `WorkflowReplayMismatchType`, `WorkflowReplayMismatch`,
+  `WorkflowReplayResult`.
+- New unit test suites (`webagent4j-recording`): `RecordingIdTest`, `RecordingSchemaVersionTest`,
+  `RecordingModelInvariantsTest`, `WorkflowRecorderTest` (REC-001..003, REC-SAFE-001),
+  `RecordingSecretSafetyTest` (SEC-REC-001..004), `JsonWorkflowRecordingCodecTest`
+  (JSON-001..009 plus additional strictness cases), `WorkflowReplayVerifierTest`
+  (REPLAY-001..011).
+- New real-Playwright integration test `WorkflowRecordingIT` (`webagent4j-integration-tests`):
+  records a real login execution with a secret sentinel, encodes it, asserts the sentinel is
+  absent from the JSON, decodes it, executes a second independent real login, and verifies a
+  MATCH despite the two executions producing different `ActionId`s.
+- New ArchUnit rules in `ArchitectureTest`: `recordingRemainsIndependentFromPlaywright`,
+  `recordingRemainsIndependentFromBrowserAndCrawlerModules`, `recordingRemainsIndependentFromPluginApi`,
+  `recordingRemainsIndependentFromAiLibraries`.
+- New example `WorkflowRecordingExample` (`webagent4j-examples`): records a real login, round-trips
+  it through JSON, and verifies a second real login against the decoded recording.
+- New `docs/recording.md`; `docs/roadmap.md` splits Phase 0.9 into 0.9-A (this phase) and 0.9-B
+  (plugin `ServiceLoader` extension points; persistence and any future live replay remain
+  unscoped future candidates, not a promise of 0.9-B); `docs/modules.md`, `docs/public-api.md`,
+  `docs/limitations.md`, and `README.md` updated - `webagent4j-recording` graduates from the
+  reserved-module list.
+
+### Fixed (Recording — Phase 0.9-A strict review, round 1)
+
+- **`schemaVersion` integer overflow:** the decoder converted `schemaVersion` via
+  `JsonNode#intValue()` alone, which silently truncates a value outside the signed 32-bit range
+  (`2^32 + 1`'s low 32 bits equal `1`) rather than rejecting it - an out-of-range value could have
+  been accidentally accepted as `RecordingSchemaVersion.V1`. Fixed by requiring
+  `JsonNode#canConvertToInt()` before ever calling `intValue()`.
+- **Decoder diagnostics could echo external JSON:** an unknown field's own name was included in its
+  `RecordingFormatException` message (`"unknown field: " + path + "." + name`, where `name` came
+  directly from the untrusted document); the raw Jackson parser exception was attached as a public
+  cause on malformed-JSON errors; and an internal domain-validation message was blindly
+  concatenated and attached as a cause on invariant-violation errors. All three could leak a
+  secret embedded in a malformed recording through `exception.getMessage()`/`getCause()`. Fixed:
+  unknown-field messages now name only the parent schema path (`"unknown field under: $.workflow"`);
+  no cause is ever attached to a decoder-thrown `RecordingFormatException`; invariant-violation
+  messages are now a fixed literal (`"recording invariant violation"`), never a concatenation of
+  internal exception text. `RecordingFormatException`'s constructors are now package-private - it is
+  a type callers catch, not construct.
+- **`WorkflowRecording`/`RecordedWorkflowStep` did not enforce a real fail-fast execution shape:**
+  a `COMPLETED` recording could contain a `FAILED` or `NOT_RUN` step; a `FAILED` recording could
+  contain multiple `FAILED` steps, or a step succeeding after the `FAILED` one; step IDs could
+  repeat; a `SKIPPED` step could carry a `true` condition outcome; a `FAILED` step could carry a
+  published output variable name; a `SUCCEEDED` `ACTION` step could omit its action summary. None
+  of these traces can come from a real `WorkflowEngine` execution. Fixed by adding cross-step
+  invariants (new package-private `RecordingInvariants`, invoked from `WorkflowRecording`'s
+  constructor) and two new per-step invariants (in `RecordedWorkflowStep`) - enforced identically
+  for direct construction, `WorkflowRecorder` output, and JSON decoding, since all three funnel
+  through the same constructors. See [docs/recording.md#recording-validity](docs/recording.md).
+- Rewrote `WorkflowReplayVerifierTest`'s `REPLAY-003`/`REPLAY-009`/`REPLAY-010` cases, which had
+  mutated a valid recording into one of the now-rejected impossible shapes to isolate a mismatch
+  type; they now compare two independently valid executions instead, per the strengthened
+  invariants above.
+- Added `SchemaVersionRangeTest` (`VERSION-RANGE-001..006`), `RecordingDecoderErrorSafetyTest`
+  (`ERR-SAFE-001..006` plus a cause-is-null case), `RecordingModelInvariantsTest`
+  (`INV-GLOBAL-001..009`, `INV-STEP-001..007`), and `JsonRecordingInvariantTest`
+  (`JSON-INV-001..009`).
+
+### Fixed (Recording — Phase 0.9-A strict review, round 2)
+
+- **Preflight/runtime failure classification was one-directional:** a recording was accepted as
+  valid whenever every step happened to be `NOT_RUN`, regardless of whether the overall failure's
+  *type* was actually one of the three preflight types - so a runtime type (e.g. `ACTION_FAILED`)
+  with no `stepId` was wrongly accepted as if it were preflight-shaped. Fixed: `RecordingInvariants`
+  now classifies by `failure.type()` first, then enforces the matching shape in both directions -
+  only `MISSING_REQUIRED_INPUT`/`INPUT_TYPE_MISMATCH`/`UNDECLARED_INPUT` may omit a `stepId`, and
+  every other type must carry one.
+- **A `FAILED` step's own `failure.stepId` could disagree with the step's own `stepId`:** nothing
+  previously checked this. Fixed: `RecordedWorkflowStep`'s constructor now rejects a `FAILED` step
+  whose `failure.stepId()` is absent or names a different step.
+- **The overall failure vs. the FAILED step's own failure was only compared on `type` and
+  `actionFailureType`:** since `WorkflowEngine.Session#run` reuses the exact same `WorkflowFailure`
+  object for both, they can never legitimately differ in any field within one recording. Fixed:
+  `RecordingInvariants` now requires full `RecordedFailure` equality (`type`, `safeMessage`,
+  `stepId`, `underlyingTypeName`, `actionFailureType`) between the two - distinct from, and not in
+  tension with, `WorkflowReplayVerifier` still ignoring `safeMessage`/`underlyingTypeName` when
+  comparing two *separate* executions (see
+  [docs/recording.md#full-equality-vs-replay-semantics](docs/recording.md)).
+- **`RecordedFailure` did not enforce the `ActionFailureType` taxonomy:** any failure type could
+  carry, or omit, an `ActionFailureType`, even though only `ACTION_FAILED` ever can (`ActionResult`'s
+  own invariant guarantees one is present exactly when `status != SUCCESS`). Fixed: `RecordedFailure`'s
+  compact constructor now requires `ACTION_FAILED` to carry one and forbids every other type from
+  carrying one.
+- **`ACTION_FAILED` could be recorded with no action summary, or one reporting `SUCCESS`:**
+  `RecordedWorkflowStep` did not check that an `ACTION_FAILED` step's action summary is present and
+  reports a non-success status. Fixed, alongside enforcing the complete failure-type/step-type/
+  action-summary matrix derived from `ActionWorkflowStep#run` (see
+  [docs/recording.md#the-failure-type--step-type--action-summary-matrix](docs/recording.md)):
+  `MISSING_VARIABLE`/`ACTION_FACTORY_FAILED`/`STEP_EXCEPTION`/`CONDITION_EVALUATION_FAILED` never
+  carry a summary; `ACTION_FAILED` always carries one reporting a non-success status; `NULL_OUTPUT`/
+  `OUTPUT_TYPE_MISMATCH` always carry one reporting `SUCCESS`; and every failure type except
+  `CONDITION_EVALUATION_FAILED` can only occur on an `ACTION` step, never `ASSIGN` (provable today
+  from the closed `sealed IWorkflowStep`/`AWorkflowStep` hierarchy, since `AssignWorkflowStep#run`
+  never fails on its own).
+- **A `SUCCEEDED` `ASSIGN` step could omit its published output variable name:** `AssignWorkflowStep`
+  always declares and publishes one. Fixed: `RecordedWorkflowStep` now requires it.
+- **`RecordingFixtures.failure(type, stepId)` fabricated an `ActionFailureType` for every failure
+  type**, regardless of whether that type could legitimately carry one - masking exactly the missing
+  validation above. Removed, and replaced with explicit, per-failure-type, engine-reachable builders
+  (`preflightFailure`, `conditionEvaluationFailedFailure`, `missingVariableFailure`,
+  `actionFactoryFailedFailure`, `stepExceptionFailure`, `actionFailedFailure`, `nullOutputFailure`,
+  `outputTypeMismatchFailure`, plus matching step-shape builders).
+- Rewrote `WorkflowReplayVerifierTest`'s `REPLAY-008` to compare two genuine engine executions that
+  differ only in an incidental factory-exception message, since mutating a single recording's
+  top-level `safeMessage` alone is no longer a constructible (valid) recording under full equality.
+- Added `RecordingFailureTaxonomyTest` (`INV-FAIL-PREFLIGHT-001..008`, `INV-FAIL-COHERENCE-001..006`,
+  `INV-FAIL-ACTION-001..006`, `INV-TAX-001..009`, `INV-ACTION-001..011`, `INV-ASSIGN-001..006`),
+  `JSON-TAX-001..006`/`JSON-ACTION-001..003`/`JSON-ASSIGN-001` in `JsonRecordingInvariantTest`, and
+  engine-backed `REC-FAIL-001..010` in `WorkflowRecorderTest` - one real `WorkflowEngine.execute()`
+  per `WorkflowFailureType`, recorded via `WorkflowRecorder`, proving the strengthened model is not
+  over-tight for any state the current engine can actually produce.
+
 ### Added (Workflows — Phase 0.8)
 
 - New `webagent4j-workflow` module: a deterministic, sequential orchestration layer over

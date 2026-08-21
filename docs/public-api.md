@@ -604,10 +604,72 @@ action may already have a real side effect), no workflow-wide timeout, no cancel
 phase.
 
 **Explicitly not implemented in this phase:** loops, branching graphs, parallel execution,
-persistence, scheduling, an expression/DSL language, and recording/replay or AI/MCP integration.
+persistence, scheduling, an expression/DSL language, and AI/MCP integration. Recording is a
+separate module - see [Recording](#recording) below.
 
 **Related guide:** [workflow.md](workflow.md) (full architecture, the complete secret-masking
 contract, condition semantics, and determinism guarantee).
+
+### Recording
+
+**What it is:** a deterministic, versioned, secret-safe recording of one `WorkflowResult`
+(`WorkflowRecorder`), canonical JSON encoding/decoding (`IWorkflowRecordingCodec`), and a pure,
+offline structured comparison between a recording and a new execution's `WorkflowResult`
+(`WorkflowReplayVerifier`). A recording is data, not a program - it has no `execute()` method and
+cannot replay itself; there is no automatic live browser replay in this phase. **Module:**
+`webagent4j-recording` (depends on `webagent4j-workflow`; `jackson-databind` internally, never
+exposed in a public signature).
+
+```java
+WorkflowResult result = new WorkflowEngine().execute(login, inputs);
+
+WorkflowRecorder recorder = new WorkflowRecorder();
+WorkflowRecording recording = recorder.record(new RecordingId("run-42"), Instant.now(), result);
+
+IWorkflowRecordingCodec codec = new JsonWorkflowRecordingCodec();
+String json = codec.encode(recording);                 // canonical, deterministic JSON
+WorkflowRecording decoded = codec.decode(json);         // throws RecordingFormatException if malformed
+
+// Later, a new independent execution of the same workflow:
+WorkflowResult newResult = new WorkflowEngine().execute(login, newInputs);
+WorkflowReplayResult replay = new WorkflowReplayVerifier().verify(decoded, newResult);
+if (!replay.matches()) {
+    System.out.println(replay.mismatches());
+}
+```
+
+**Public types:**
+
+| Type | Purpose |
+| --- | --- |
+| `RecordingId` | caller-supplied recording identity (never randomly generated); ignored by replay comparison |
+| `RecordingSchemaVersion` | closed, numbered JSON schema version enum (`V1` only in this phase) |
+| `WorkflowRecording` | immutable top-level recording: `schemaVersion`, `recordingId`, `capturedAt`, `workflowId`, `status`, `steps`, `failure`; construction enforces the fail-fast execution shapes described in [recording.md#recording-validity](recording.md#recording-validity-a-recording-represents-one-fail-fast-execution) |
+| `RecordedWorkflowStep` | safe per-step projection, mirroring `WorkflowStepResult`'s invariants |
+| `RecordedCondition`, `RecordedAction`, `RecordedFailure` | safe per-field projections of `WorkflowConditionResult`/`WorkflowActionSummary`/`WorkflowFailure` |
+| `WorkflowRecorder` | stateless capture: `WorkflowResult -> WorkflowRecording`; never calls `WorkflowResult#output` |
+| `IWorkflowRecordingCodec`, `JsonWorkflowRecordingCodec` | encode/decode to canonical JSON; strict decoding, no fallback; `schemaVersion` uses an exact-range numeric check, never a truncating conversion |
+| `RecordingFormatException` | thrown by decoding; messages are fixed and framework-owned and never echo the offending input; `getCause()` is always `null`; constructors are package-private (catch it, don't construct it) |
+| `WorkflowReplayVerifier` | stateless, pure, synchronous structured comparison: `(WorkflowRecording, WorkflowResult) -> WorkflowReplayResult` |
+| `WorkflowReplayResult`, `WorkflowReplayMismatch`, `WorkflowReplayMismatchType` | every difference found, in deterministic order; `matches()` is derived from `mismatches().isEmpty()` |
+
+**Secret safety:** structural, not a redaction pass - `WorkflowRecorder` only ever reads already-safe
+fields (`WorkflowConditionResult.description`, `WorkflowFailure.safeMessage`, categorical enums, an
+output variable's *name*) and never calls `WorkflowResult#output(WorkflowVariable)`, so a secret
+cannot appear in a recording because the code path that could observe one is never exercised.
+
+**Replay semantics:** `WorkflowReplayVerifier#verify` never re-executes anything - the caller
+supplies a `WorkflowResult` from its own new `WorkflowEngine#execute` call. Comparison never fails
+fast (every mismatch is collected, in deterministic order) and deliberately ignores `RecordingId`,
+`capturedAt`, `ActionId` (a fresh random correlation ID per execution), a condition's description
+text, and a failure's `safeMessage`/underlying exception type name - see
+[recording.md#ignored-fields-and-why](recording.md#ignored-fields-and-why) for the full rationale.
+
+**Explicitly not implemented in this phase:** automatic live replay of recorded browser actions,
+action recreation, persistence, a plugin SPI, or AI/MCP integration.
+
+**Related guide:** [recording.md](recording.md) (full architecture, JSON schema, and replay
+semantics).
 
 ## Error and result semantics
 
@@ -791,12 +853,13 @@ public API. Do not add a dependency on them expecting functionality:
 | --- | --- |
 | `webagent4j-http` | A future standalone non-browser HTTP transport boundary (the HTTP crawler currently has its own fetcher and does not need this) |
 | `webagent4j-storage` | A future persistence boundary |
-| `webagent4j-recording` | Phase 0.9 record/replay |
-| `webagent4j-plugin-api` | Phase 0.9 `ServiceLoader`-based extension points |
+| `webagent4j-plugin-api` | Phase 0.9-B `ServiceLoader`-based extension points |
 
-`webagent4j-crawler` graduated from this list to a real implementation in Phase 0.6, and
+`webagent4j-crawler` graduated from this list to a real implementation in Phase 0.6,
 `webagent4j-workflow` graduated in Phase 0.8 (see [Workflows](#workflows) and
-[workflow.md](workflow.md)); nothing else on this list has graduated yet. See
+[workflow.md](workflow.md)), and `webagent4j-recording` graduated in Phase 0.9-A (see
+[Recording](#recording) and [recording.md](recording.md)); nothing else on this list has graduated
+yet. See
 [modules.md](modules.md) for the full dependency graph and [roadmap.md](roadmap.md) for what each
 future phase is expected to deliver.
 
