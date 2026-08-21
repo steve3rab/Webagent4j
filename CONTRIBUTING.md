@@ -34,6 +34,39 @@ Use `./mvnw spotless:apply` before committing when formatting needs correction.
   tests end in `IT`.
 - Do not expose native browser-backend objects from public APIs.
 
+## Branch naming
+
+Every new development branch must use exactly one of these prefixes:
+
+- `feat/` for a new user-visible capability;
+- `fix/` for a bug or correctness fix;
+- `refactor/` for internal restructuring without an intended behavior change;
+- `version/` for release and versioning work;
+- `task/` for repository, build, or maintenance work that does not fit another prefix;
+- `docs/` for documentation-only changes; or
+- `test/` for test-only changes.
+
+Use the form `<type>/<short-kebab-case-description>`. Branch names must be lowercase, use
+kebab-case after the prefix, and describe the software task. Do not put personal names, automated
+tool names, ticket prose, or session metadata in branch names. New branches must match:
+
+```text
+^(feat|fix|refactor|version|task|docs|test)/[a-z0-9]+(?:-[a-z0-9]+)*$
+```
+
+Examples:
+
+- `feat/plugin-service-loader`
+- `fix/locator-duplicate-strategy`
+- `refactor/action-result-validation`
+- `version/1-0-0`
+- `task/update-build-tooling`
+- `docs/plugin-guide`
+- `test/plugin-loader-failures`
+
+This policy applies to new branches. Historical merged branches do not need to be renamed and
+history must not be rewritten solely to apply this convention retroactively.
+
 ## Commits
 
 Keep commits focused and write imperative Conventional Commit messages, for example:
@@ -43,6 +76,11 @@ Keep commits focused and write imperative Conventional Commit messages, for exam
 - `docs(observation): explain redaction defaults`
 - `test(action): cover failed postconditions`
 - `refactor(core): simplify provider discovery`
+
+Repository artifacts should describe the software and contribution itself, not the automated tools
+used to prepare it. Do not add automated coding-tool attribution, generated-by footers, session
+links, or tool-specific co-author metadata to source files, documentation, branches, commit
+messages, pull requests, issues, or review comments.
 
 Configure Git with a public GitHub noreply address if you do not want a personal email embedded in
 commit metadata. See GitHub's documentation for keeping an email address private.
