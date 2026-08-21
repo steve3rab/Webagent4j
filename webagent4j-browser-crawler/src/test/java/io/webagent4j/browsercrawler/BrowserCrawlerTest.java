@@ -616,6 +616,71 @@ class BrowserCrawlerTest {
     }
 
     /**
+     * Regression test for a documentation/implementation mismatch: {@code
+     * BrowserCrawledPage#timeToStability} is documented as navigation-plus-stability elapsed time
+     * only, excluding {@code page.url()}/{@code page.observe()}/{@code page.title()}, but the
+     * engine previously captured {@code budget.elapsed()} only after those three post-stability
+     * calls had already run, silently inflating the value by however long they took. Each backend
+     * call here advances the deterministic {@link FakeTime} clock by a distinct amount so the
+     * post-stability calls' time (100ms + 2s + 300ms = 2.4s) is proven to never reach {@code
+     * timeToStability}, which must be exactly navigation (400ms) + stability (200ms) = 600ms.
+     */
+    @Test
+    void timeToStabilityExcludesPostStabilityObservationAndMetadataCalls() {
+        IBrowser browser = mock(IBrowser.class);
+        IPage page = mock(IPage.class);
+        when(browser.newPage()).thenReturn(page);
+        doAnswer(
+                        invocation -> {
+                            fakeTime.sleep(Duration.ofMillis(400));
+                            return null;
+                        })
+                .when(page)
+                .navigate(anyString(), any(Duration.class));
+        doAnswer(
+                        invocation -> {
+                            fakeTime.sleep(Duration.ofMillis(200));
+                            return null;
+                        })
+                .when(page)
+                .waitForCondition(anyString(), any(Duration.class));
+        when(page.url())
+                .thenAnswer(
+                        invocation -> {
+                            fakeTime.sleep(Duration.ofMillis(100));
+                            return "https://example.com/";
+                        });
+        when(page.observe(any()))
+                .thenAnswer(
+                        invocation -> {
+                            fakeTime.sleep(Duration.ofSeconds(2));
+                            return LinkObservationFixtures.withLinks(
+                                    "https://example.com/", List.of());
+                        });
+        when(page.title())
+                .thenAnswer(
+                        invocation -> {
+                            fakeTime.sleep(Duration.ofMillis(300));
+                            return "Home";
+                        });
+
+        BrowserCrawlRequest request = requestFor(browser, "https://example.com/").build();
+
+        BrowserCrawlResult result = crawler.crawl(request);
+
+        assertThat(result.pages()).hasSize(1);
+        Duration timeToStability = result.pages().get(0).timeToStability();
+        assertThat(timeToStability)
+                .as(
+                        "timeToStability must be navigation + stability only (600ms), never"
+                                + " inflated by the 2.4s spent afterward in url()/observe()/title()")
+                .isEqualTo(Duration.ofMillis(600));
+        assertThat(timeToStability)
+                .as("timeToStability must never exceed the configured navigationTimeout")
+                .isLessThanOrEqualTo(request.navigationTimeout());
+    }
+
+    /**
      * When navigation itself consumes the entire shared budget, {@code PageStabilityWaiter} must
      * never attempt a backend call at all (see its {@code awaitStable} contract) - it synthesizes
      * its own {@link io.webagent4j.browser.ConditionTimeoutException} with no cause, still

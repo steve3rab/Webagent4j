@@ -328,6 +328,14 @@ public final class BrowserCrawler implements IBrowserCrawler {
                         e.getMessage(),
                         Optional.of(e));
             }
+            // Captured here, immediately after awaitStable() returns successfully and before any
+            // post-stability call - navigationTimeout's documented scope is navigate() + stability
+            // only (see BrowserCrawledPage#timeToStability), so page.url()/observe()/title() below
+            // must never be allowed to inflate this value. A failure in any of those calls still
+            // discards this local variable along with the rest of the outcome (see the catch below
+            // and BrowserCrawledPage#timeToStability's Javadoc) - only a successful page carries
+            // it.
+            Duration timeToStability = budget.elapsed();
             try {
                 URI finalUrl = URI.create(page.url());
                 CrawlDecision finalScope = ScopeEvaluator.evaluate(finalUrl, request);
@@ -351,14 +359,11 @@ public final class BrowserCrawler implements IBrowserCrawler {
                 }
                 List<RawLink> rawLinks = LinkDiscoverer.discover(observation, finalUrl);
                 String title = page.title();
-                // budget.elapsed() here is deliberately total navigation+stability elapsed time -
-                // budget.start() precedes navigate() - not stability-only. See
-                // BrowserCrawledPage#timeToStability.
                 return new NavigationSuccess(
                         finalUrl,
                         (title == null || title.isBlank()) ? Optional.empty() : Optional.of(title),
                         rawLinks,
-                        budget.elapsed());
+                        timeToStability);
             } catch (RuntimeException e) {
                 return new NavigationFailure(
                         BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE,

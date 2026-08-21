@@ -239,6 +239,33 @@ All notable changes to this project will be documented in this file. The format 
   before handing it to the backend-bounded call - flooring can only shorten the bound actually honored,
   never exceed the real remaining time.
 
+### Fixed (Browser Crawler — Phase 0.7 sixth correction round: `timeToStability` measurement point)
+
+- **`BrowserCrawledPage#timeToStability` was captured after, not before, the post-stability
+  calls its own Javadoc says it excludes.** `budget.elapsed()` was read only once, right before
+  constructing the successful `NavigationSuccess` outcome - by that point `page.url()`,
+  `page.observe(...)`, and `page.title()` had already run, silently inflating `timeToStability` by
+  however long those three calls took, contradicting the documented contract ("excludes any time
+  spent afterward in `page.url()`/`page.observe()`/`page.title()`") and the
+  `timeToStability <= navigationTimeout` invariant for a page whose post-stability calls happened to
+  be slow. Fixed: `budget.elapsed()` is now captured exactly once, immediately after
+  `stabilityWaiter.awaitStable(...)` returns successfully and before `page.url()` is ever called;
+  `WaitBudget` itself is unchanged - only the read point moved.
+- **`BrowserCrawledPage`'s Javadoc no longer implies `page.url()`/`page.observe()`/`page.title()`
+  are one atomic snapshot.** They are three separate, sequential backend calls made immediately
+  after stability is accepted; a new class-level note states there is a small window - between
+  stability acceptance and these calls, and between the calls themselves - during which the page
+  could theoretically mutate or navigate again, and that Phase 0.7 does not provide an atomic
+  cross-call snapshot. `title`'s and `links()`'s per-field Javadoc were reworded from implying an
+  atomic "at the moment of stability" read to "read/discovered immediately after accepted
+  stability."
+- New deterministic regression test,
+  `BrowserCrawlerTest.timeToStabilityExcludesPostStabilityObservationAndMetadataCalls`, using the
+  suite's existing fake monotonic clock: navigation and stability together advance it by 600ms,
+  then `page.url()`/`page.observe()`/`page.title()` advance it by a further 2.4s: `timeToStability`
+  is asserted to be exactly 600ms, proving the 2.4s spent afterward never reaches it, and that it
+  remains `<= navigationTimeout`.
+
 ### Added (Public API documentation consolidation)
 
 - New `docs/public-api.md`: a comprehensive public API reference spanning every implemented module

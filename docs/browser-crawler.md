@@ -170,7 +170,11 @@ timeout-aware, backend-natively-bounded overload, so extending the same bounded-
 them would be a separate, larger change. In practice the window in which one of these calls could
 race a client-side navigation is much narrower than the navigation/stability window it replaced -
 they only run after stability has already certified the DOM quiescent - but it is not zero, and it
-is not enforced. See [Current limitations](#current-limitations).
+is not enforced. These three calls are also not one atomic snapshot of browser state: `page.url()`,
+`page.observe(...)`, and `page.title()` are separate, sequential calls, so `BrowserCrawledPage`'s
+`finalUrl`, `links`, and `title` are not guaranteed to reflect exactly the same instant as each other
+or as `timeToStability`'s own deadline (see `BrowserCrawledPage`'s Javadoc). See
+[Current limitations](#current-limitations).
 
 ## Stability
 
