@@ -1,0 +1,228 @@
+package io.webagent4j.workflow;
+
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * Factory for the small, fixed set of declarative {@link IWorkflowCondition}s Phase 0.8 supports.
+ *
+ * <p>There is deliberately no expression language, regex, or scripting facade here - see {@code
+ * docs/workflow.md#conditions}. Missing-variable semantics are fail-closed and asymmetric: {@link
+ * #exists}/{@link #notExists} tolerate a missing variable (that is exactly what they test for),
+ * while {@link #equals}, {@link #notEquals}, {@link #isTrue}, and {@link #isFalse} treat a missing
+ * variable as an evaluation failure rather than silently treating it as {@code null} or {@code
+ * false}.
+ */
+public final class WorkflowConditions {
+
+    private WorkflowConditions() {}
+
+    /** True when {@code variable} currently has a value. */
+    public static IWorkflowCondition exists(WorkflowVariable<?> variable) {
+        Objects.requireNonNull(variable, "variable");
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return variables.exists(variable);
+            }
+
+            @Override
+            public String describe() {
+                return "exists(" + variable.name() + ")";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of(variable);
+            }
+        };
+    }
+
+    /** True when {@code variable} currently has no value. */
+    public static IWorkflowCondition notExists(WorkflowVariable<?> variable) {
+        Objects.requireNonNull(variable, "variable");
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return !variables.exists(variable);
+            }
+
+            @Override
+            public String describe() {
+                return "notExists(" + variable.name() + ")";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of(variable);
+            }
+        };
+    }
+
+    /**
+     * True when {@code variable}'s current value equals {@code expected}.
+     *
+     * @throws WorkflowVariableMissingException at evaluation time if {@code variable} is missing
+     */
+    public static <T> IWorkflowCondition equals(WorkflowVariable<T> variable, T expected) {
+        Objects.requireNonNull(variable, "variable");
+        Objects.requireNonNull(expected, "expected");
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return Objects.equals(variables.require(variable), expected);
+            }
+
+            @Override
+            public String describe() {
+                return "equals("
+                        + variable.name()
+                        + ", "
+                        + SafeRendering.render(variable, expected)
+                        + ")";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of(variable);
+            }
+        };
+    }
+
+    /**
+     * True when {@code variable}'s current value does not equal {@code expected}.
+     *
+     * @throws WorkflowVariableMissingException at evaluation time if {@code variable} is missing
+     */
+    public static <T> IWorkflowCondition notEquals(WorkflowVariable<T> variable, T expected) {
+        return not(
+                equals(variable, expected),
+                "notEquals("
+                        + variable.name()
+                        + ", "
+                        + SafeRendering.render(variable, expected)
+                        + ")",
+                Set.of(variable));
+    }
+
+    /**
+     * True when boolean {@code variable}'s current value is {@code true}.
+     *
+     * @throws WorkflowVariableMissingException at evaluation time if {@code variable} is missing
+     */
+    public static IWorkflowCondition isTrue(WorkflowVariable<Boolean> variable) {
+        return equals(variable, Boolean.TRUE);
+    }
+
+    /**
+     * True when boolean {@code variable}'s current value is {@code false}.
+     *
+     * @throws WorkflowVariableMissingException at evaluation time if {@code variable} is missing
+     */
+    public static IWorkflowCondition isFalse(WorkflowVariable<Boolean> variable) {
+        return equals(variable, Boolean.FALSE);
+    }
+
+    /** Negates {@code condition}. */
+    public static IWorkflowCondition not(IWorkflowCondition condition) {
+        Objects.requireNonNull(condition, "condition");
+        return not(condition, "not(" + condition.describe() + ")", condition.referencedVariables());
+    }
+
+    private static IWorkflowCondition not(
+            IWorkflowCondition condition, String description, Set<WorkflowVariable<?>> referenced) {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return !condition.evaluate(variables);
+            }
+
+            @Override
+            public String describe() {
+                return description;
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return referenced;
+            }
+        };
+    }
+
+    /** True only when every one of {@code conditions} is true. */
+    public static IWorkflowCondition allOf(IWorkflowCondition... conditions) {
+        List<IWorkflowCondition> copy = List.of(conditions);
+        if (copy.isEmpty()) {
+            throw new IllegalArgumentException("allOf requires at least one condition");
+        }
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                for (IWorkflowCondition condition : copy) {
+                    if (!condition.evaluate(variables)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            @Override
+            public String describe() {
+                return "allOf(" + describeAll(copy) + ")";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return referencedByAll(copy);
+            }
+        };
+    }
+
+    /** True when at least one of {@code conditions} is true. */
+    public static IWorkflowCondition anyOf(IWorkflowCondition... conditions) {
+        List<IWorkflowCondition> copy = List.of(conditions);
+        if (copy.isEmpty()) {
+            throw new IllegalArgumentException("anyOf requires at least one condition");
+        }
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                for (IWorkflowCondition condition : copy) {
+                    if (condition.evaluate(variables)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            @Override
+            public String describe() {
+                return "anyOf(" + describeAll(copy) + ")";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return referencedByAll(copy);
+            }
+        };
+    }
+
+    private static String describeAll(List<IWorkflowCondition> conditions) {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < conditions.size(); i++) {
+            if (i > 0) {
+                text.append(", ");
+            }
+            text.append(conditions.get(i).describe());
+        }
+        return text.toString();
+    }
+
+    private static Set<WorkflowVariable<?>> referencedByAll(List<IWorkflowCondition> conditions) {
+        Set<WorkflowVariable<?>> all = new LinkedHashSet<>();
+        conditions.forEach(condition -> all.addAll(condition.referencedVariables()));
+        return Set.copyOf(all);
+    }
+}

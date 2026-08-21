@@ -303,6 +303,47 @@ class ArchitectureTest {
     }
 
     @Test
+    void workflowRemainsIndependentFromPlaywright() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.workflow..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void workflowRemainsIndependentFromAiLibraries() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.workflow..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("com.openai..", "dev.langchain4j..", "org.springframework.ai..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void workflowRemainsIndependentFromBrowserAndCrawlerModules() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.workflow..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "io.webagent4j.browser..",
+                        "io.webagent4j.crawler..",
+                        "io.webagent4j.crawler.api..",
+                        "io.webagent4j.browsercrawler..",
+                        "io.webagent4j.recording..",
+                        "io.webagent4j.plugin..",
+                        "io.webagent4j.cli..")
+                .check(projectClasses);
+    }
+
+    @Test
     void interfacesUseTheProjectPrefix() {
         // package-info.java compiles to a synthetic interface at the bytecode level, so
         // areInterfaces() matches it too; it is excluded explicitly rather than renamed, since

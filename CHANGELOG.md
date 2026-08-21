@@ -6,6 +6,49 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Workflows — Phase 0.8)
+
+- New `webagent4j-workflow` module: a deterministic, sequential orchestration layer over
+  `webagent4j-action`. `Workflow`/`Workflow.Builder` (immutable, reusable definitions; building
+  performs structural validation only, never a side effect), `WorkflowEngine` (stateless; one
+  private, isolated session per `execute()` call), `WorkflowId`/`WorkflowStepId`.
+- Typed, write-once variables: `WorkflowVariable<T>` (`publicValue`/`secret` factories - no
+  `Map<String, Object>` anywhere in the public API), `IWorkflowVariables`,
+  `WorkflowVariableMissingException`, `WorkflowInputs`/`WorkflowInputs.Builder`, `WorkflowOutputs`.
+  Required inputs are validated before step 0 runs; optional inputs have no implicit default.
+- Masked secret variables with a centralized, single-point redaction contract
+  (`SecretRedactor`, internal): explicit typed retrieval always returns the real value; every
+  incidental framework-owned rendering (`toString()` on every public workflow type, every condition
+  `describe()`) masks a secret as `***`, longest-first for overlapping secret values. No public
+  result type exposes an arbitrary raw `Throwable`.
+- A small, fixed set of fail-closed declarative conditions: `IWorkflowCondition`,
+  `WorkflowConditions` (`exists`, `notExists`, `equals`, `notEquals`, `isTrue`, `isFalse`, `not`,
+  `allOf`, `anyOf`) - never an arbitrary `Predicate` or an expression language.
+- Real action-pipeline integration through single-use preparation factories:
+  `IWorkflowActionFactory<R>` is invoked at most once per execution, only when a step actually
+  runs, and only ever calls `IPreparedAction#execute()` once - no `IActionPlan` is ever cached
+  inside a workflow definition. `WorkflowSteps.action`/`WorkflowSteps.assign` are the only ways to
+  create a step; `WorkflowActionSummary` safely projects an `ActionResult` without leaking its raw
+  value, observations, or cause.
+- Fail-fast-only sequential execution: `WorkflowStatus`/`WorkflowStepStatus`
+  (`SUCCEEDED`/`SKIPPED`/`FAILED`/`NOT_RUN`), `WorkflowFailureType`/`WorkflowFailure`,
+  `WorkflowStepResult`/`WorkflowResult`, `WorkflowFailedException`. The first failed step stops
+  execution immediately; no workflow-level retry, no workflow-wide timeout, no cancellation in this
+  phase.
+- Everything runs synchronously on the calling thread - no `ExecutorService`, no
+  `CompletableFuture`, no parallelism anywhere in the engine.
+- New unit test suite (`webagent4j-workflow`: structural validation, condition semantics, secret
+  masking/redaction, and action-factory integration using fakes), real-Playwright
+  `WorkflowLoginIT` and `WorkflowRobustnessIT` suites (`webagent4j-integration-tests`, reusing the
+  existing `/login` -> `/dashboard` fixture), three new ArchUnit rules
+  (`workflowRemainsIndependentFromPlaywright`, `workflowRemainsIndependentFromAiLibraries`,
+  `workflowRemainsIndependentFromBrowserAndCrawlerModules`), and a new `WorkflowLoginExample`.
+- Depends only on `webagent4j-action` - never Playwright, the browser crawler, or the HTTP crawler
+  directly. See [docs/workflow.md](docs/workflow.md) for the full architecture, the complete
+  secret-masking contract, and this phase's documented limitations.
+- Updated `docs/roadmap.md`, `docs/modules.md`, `docs/public-api.md`, and `README.md` to reflect
+  Phase 0.8.
+
 ### Added (Browser Crawler — Phase 0.7)
 
 - New `webagent4j-browser-crawler` module: a deterministic, single-lane browser crawler.

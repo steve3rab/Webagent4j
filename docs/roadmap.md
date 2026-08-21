@@ -22,7 +22,13 @@ Javadoc, user documentation, and a green `clean verify` build.
   Navigation runs on one thread only (`IBrowser`/`IPage` carry no thread-safety contract to build
   physical concurrency on), so determinism is structural rather than a scheduling guarantee. See
   [docs/browser-crawler.md](browser-crawler.md).
-- **0.8 Workflows:** variables, masked secrets, simple conditions, and structured results.
+- **0.8 Workflows:** a deterministic, sequential orchestration layer over `webagent4j-action` -
+  immutable, reusable workflow definitions; typed, write-once variables with explicit
+  required/optional inputs; masked secret variables with a centralized, tested redaction contract;
+  a small, fixed set of fail-closed declarative conditions; real action-pipeline integration through
+  single-use preparation factories (no `IActionPlan` ever cached in a definition); fail-fast-only
+  execution with structured per-step and overall results; no hidden retries, no workflow-wide
+  timeout, no cancellation. See [docs/workflow.md](workflow.md).
 - **0.9 Recording and plugins:** record/replay foundation and small `ServiceLoader` extension points.
 - **1.0 Stable non-AI API:** compatibility policy and production hardening.
 
