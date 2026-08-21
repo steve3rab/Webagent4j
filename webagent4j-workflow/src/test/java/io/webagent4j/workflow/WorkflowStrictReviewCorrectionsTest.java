@@ -1067,6 +1067,188 @@ class WorkflowStrictReviewCorrectionsTest {
         assertThat(description).doesNotContain(secretValue).doesNotContain("WA4J_BOUNDARY_SECRET");
     }
 
+    // ---- SEC-LATE-COND: a condition description recorded for an earlier step is finalized at
+    // workflow termination, not at evaluation time - so a secret revealed by a later successful
+    // step still masks it, whether the condition was TRUE, FALSE, or the workflow later failed ----
+
+    @Test
+    void secLateCond001TrueConditionDescriptionMaskedByLaterSecretOutput() {
+        String value = "WA4J_LATE_CONDITION_SECRET_12345";
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateSecret");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", FLAG, true)
+                                        .when(WorkflowConditions.equals(status, value)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(status, value).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.steps().get(0).condition().orElseThrow().outcome()).isTrue();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(value).contains("***");
+        assertThat(result.steps().get(0).toString()).doesNotContain(value);
+        assertThat(result.toString()).doesNotContain(value);
+    }
+
+    @Test
+    void secLateCond002SkippedConditionDescriptionMaskedByLaterSecretOutput() {
+        String value = "WA4J_LATE_CONDITION_SKIPPED_98765";
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateSecretSkipped");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", FLAG, true)
+                                        .when(WorkflowConditions.equals(status, value)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(status, "not-" + value).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.steps().get(0).status()).isEqualTo(WorkflowStepStatus.SKIPPED);
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(value).contains("***");
+    }
+
+    @Test
+    void secLateCond003BoundaryStraddlingFutureSecretIsFullyRedacted() {
+        String secretValue = "WA4J_LATE_BOUNDARY_SECRET_928374";
+        String prefix = "p".repeat(190);
+        String publicLiteral = prefix + secretValue;
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateBoundarySecret");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", FLAG, true)
+                                        .when(WorkflowConditions.equals(status, publicLiteral)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(secretValue),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(status, publicLiteral).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description)
+                .doesNotContain(secretValue)
+                .doesNotContain("WA4J_LATE_BOUNDARY_SECRET");
+    }
+
+    @Test
+    void secLateCond004FailedWorkflowStillMasksEarlierConditionDescriptionAfterLateSecret() {
+        String value = "WA4J_LATE_CONDITION_FAILED_45612";
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateSecretFailed");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", FLAG, true)
+                                        .when(WorkflowConditions.equals(status, value)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s3",
+                                        vars -> {
+                                            throw new RuntimeException("boom");
+                                        }))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(status, value).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(value).contains("***");
+        assertThat(result.toString()).doesNotContain(value);
+    }
+
+    @Test
+    void condCallOnce001EvaluateAndDescribeEachCalledExactlyOnceDespiteLateFinalization() {
+        AtomicInteger evaluateCount = new AtomicInteger();
+        AtomicInteger describeCount = new AtomicInteger();
+        String value = "WA4J_CALL_ONCE_SECRET_5544";
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        evaluateCount.incrementAndGet();
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        describeCount.incrementAndGet();
+                        return "custom(" + value + ")";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("callOnceLateSecret");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(evaluateCount).hasValue(1);
+        assertThat(describeCount).hasValue(1);
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(value).contains("***");
+    }
+
     // ---- STEP-RESULT: WorkflowStepResult invariants --------------------------------------------
 
     @Test

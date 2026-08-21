@@ -160,10 +160,20 @@ fragment through the "public" remainder. If two known secrets overlap as substri
 `"abc"` and `"abcdef"`), the longer one is matched first, so a shorter secret's redaction can never
 leave a partial fragment of a longer one behind. This is also why a built-in condition's own
 `describe()` (see [Conditions](#conditions)) renders its public literal comparison value without
-bounding it: bounding happens only once, in `WorkflowEngine`, after that text has already been
-redacted against every secret known at evaluation time - a condition literal that is pre-truncated
-before redaction could otherwise split a secret across the truncation boundary and leak a fragment
-of it.
+bounding it: bounding happens only once, after that text has already been redacted - a condition
+literal that is pre-truncated before redaction could otherwise split a secret across the truncation
+boundary and leak a fragment of it.
+
+**A retained condition description is finalized at workflow termination, not at evaluation time.**
+`condition.describe()` is still called at most once, right when its step's condition is evaluated,
+but a `SKIPPED` or `SUCCEEDED` step's resulting `WorkflowConditionResult` is not built until the
+workflow terminates - it is redacted against every secret the execution ever discovers, all the way
+through its last step (or its point of failure), then bounded. This lets a secret revealed by a
+*later* successful step retroactively mask an *earlier* step's already-recorded condition
+description, exactly like it already retroactively masks an earlier public output (see below). A
+`WorkflowFailure`'s own message is the one exception: it is redacted and bounded immediately,
+because a step failure terminates execution right there - no later step can ever run, so no later
+secret can ever need to redact it.
 
 **Redaction is cross-field, not per-field.** `WorkflowInputs#toString()` and
 `WorkflowOutputs#toString()` do not decide masking per value based only on that value's own
@@ -208,11 +218,12 @@ this guarantee entirely.
 `IWorkflowCondition` is also a trusted Java extension point: nothing prevents implementing it
 directly. A custom condition must be deterministic, side-effect-free, accurately report every
 variable it reads from `referencedVariables()`, and must not intentionally expose a secret from
-`describe()`. A description stored in a `WorkflowConditionResult` is always redacted against every
-currently-known secret and length-bounded by `WorkflowEngine` before it is stored; calling
-`describe()` directly, outside `WorkflowEngine`, returns the condition's own text as-is - for a
-built-in condition, that is a crash-safe rendering of its public literal, deliberately not yet
-bounded (see the note in [Secret masking](#secret-masking) above). `WorkflowEngine` treats every
+`describe()`. A description stored in a `WorkflowConditionResult` is always redacted - against every
+secret known by workflow termination, not only those known when the condition was evaluated (see
+[Secret masking](#secret-masking) above) - and length-bounded by `WorkflowEngine` before it is
+stored; calling `describe()` directly, outside `WorkflowEngine`, returns the condition's own text
+as-is - for a built-in condition, that is a crash-safe rendering of its public literal, deliberately
+not yet bounded. `WorkflowEngine` treats every
 method on a condition it did not create as caller-supplied code and handles it defensively: an
 `evaluate()`/`describe()` that throws becomes a structured `CONDITION_EVALUATION_FAILED` rather than
 propagating; a `describe()` returning `null` is

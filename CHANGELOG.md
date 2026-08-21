@@ -70,6 +70,14 @@ All notable changes to this project will be documented in this file. The format 
   200-character truncation limit could leak a partial fragment. Added a `WorkflowStepResult`
   invariant requiring a `SKIPPED` result to carry its condition outcome, and 9 new regression tests
   covering both fixes.
+- Third strict-review pass fixed a remaining condition-result leak: a `SKIPPED`/`SUCCEEDED` step's
+  `WorkflowConditionResult` used to be redacted and bounded immediately when its condition was
+  evaluated, so a secret a *later* step went on to reveal could never retroactively mask an
+  *earlier* condition's already-recorded description. `WorkflowEngine` now captures a condition's
+  description once, at evaluation time, but keeps it as unredacted, unbounded internal state until
+  the workflow terminates (`COMPLETED` or `FAILED`), then redacts it against every secret known by
+  then and bounds it - mirroring the fix already applied to `WorkflowOutputs`. `condition.describe()`
+  is still called at most once per evaluated condition either way. Added 5 new regression tests.
 
 ### Added (Browser Crawler — Phase 0.7)
 

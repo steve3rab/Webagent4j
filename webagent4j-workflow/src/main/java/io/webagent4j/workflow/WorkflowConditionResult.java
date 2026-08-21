@@ -7,7 +7,10 @@ import java.util.Objects;
  * step was executed or {@link WorkflowStepStatus#SKIPPED}.
  *
  * @param outcome whether the condition evaluated to {@code true} or {@code false}
- * @param description the condition's own safe, secret-masked {@link IWorkflowCondition#describe()}
+ * @param description the condition's own {@link IWorkflowCondition#describe()} text, in its final,
+ *     execution-result-safe form: redacted against every secret value known to the workflow at
+ *     termination (not only those known when this condition was evaluated) and length-bounded by
+ *     {@link WorkflowEngine}
  */
 public record WorkflowConditionResult(boolean outcome, String description) {
 
