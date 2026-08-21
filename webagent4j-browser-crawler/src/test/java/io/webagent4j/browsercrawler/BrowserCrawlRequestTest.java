@@ -135,6 +135,69 @@ class BrowserCrawlRequestTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /**
+     * DUR-UNIT-001: a positive but sub-millisecond navigationTimeout can never be honestly honored
+     * once it reaches a millisecond-resolution backend timeout option - rejected explicitly.
+     */
+    @Test
+    void subMillisecondNavigationTimeoutRejected() {
+        assertThatThrownBy(
+                        () ->
+                                BrowserCrawlRequest.builder(browser)
+                                        .seed("https://example.com/")
+                                        .navigationTimeout(Duration.ofNanos(500_000))
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("millisecond");
+    }
+
+    /** DUR-UNIT-002: same rejection for stabilityWindow. */
+    @Test
+    void subMillisecondStabilityWindowRejected() {
+        assertThatThrownBy(
+                        () ->
+                                BrowserCrawlRequest.builder(browser)
+                                        .seed("https://example.com/")
+                                        .stabilityWindow(Duration.ofNanos(500_000))
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("millisecond");
+    }
+
+    /**
+     * DUR-UNIT-003: navigation and stability share one monotonic budget - a stabilityWindow longer
+     * than the whole navigationTimeout budget could never be satisfied, so it is rejected at
+     * build() rather than discovered mid-crawl as a page that can structurally never succeed.
+     */
+    @Test
+    void stabilityWindowExceedingNavigationTimeoutRejected() {
+        assertThatThrownBy(
+                        () ->
+                                BrowserCrawlRequest.builder(browser)
+                                        .seed("https://example.com/")
+                                        .navigationTimeout(Duration.ofSeconds(1))
+                                        .stabilityWindow(Duration.ofSeconds(5))
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("stabilityWindow")
+                .hasMessageContaining("navigationTimeout");
+    }
+
+    /**
+     * A stabilityWindow exactly equal to navigationTimeout is the permitted boundary, not rejected.
+     */
+    @Test
+    void stabilityWindowEqualToNavigationTimeoutIsAllowed() {
+        BrowserCrawlRequest request =
+                BrowserCrawlRequest.builder(browser)
+                        .seed("https://example.com/")
+                        .navigationTimeout(Duration.ofSeconds(2))
+                        .stabilityWindow(Duration.ofSeconds(2))
+                        .build();
+
+        assertThat(request.stabilityWindow()).isEqualTo(request.navigationTimeout());
+    }
+
     @Test
     void sameOriginFramesRejectedInThisPhase() {
         assertThatThrownBy(

@@ -25,14 +25,19 @@ import java.util.Optional;
  * @param discoveredFrom the page this URL was discovered from; empty for a seed
  * @param title the page's title at the moment of stability, if the backend reported one
  * @param links every link discovered in the rendered DOM at stability, in document order
- * @param navigationOrder this page's position in deterministic frontier order - stable regardless
- *     of actual completion timing under concurrency (see {@code
- *     docs/browser-crawler.md#bounded-concurrency})
- * @param timeToStability wall-clock time from navigation start to the stability window being
- *     satisfied - despite the name, this is the combined navigation-plus-stability elapsed time (it
- *     is measured from the same {@code WaitBudget} that starts before {@code navigate()} is called,
- *     not from a separate stability-only clock), which is exactly what makes it comparable to
- *     {@code navigationTimeout}; excluded from the determinism contract; see {@code
+ * @param navigationOrder this page's position in deterministic FIFO frontier order - the sequence
+ *     assigned once, at claim/enqueue time, by the single thread that runs the whole crawl (see
+ *     {@code docs/browser-crawler.md#concurrency-model}); there is no physical navigation
+ *     concurrency in this engine for it to stay stable "despite," so this is a structural
+ *     guarantee, not one that merely happens to hold
+ * @param timeToStability monotonic elapsed duration, measured against {@code WaitBudget}'s clock,
+ *     from the start of the navigation attempt until the stability window is satisfied - combined
+ *     navigation-plus-stability elapsed time, not stability-only (the same {@code WaitBudget}
+ *     starts before {@code navigate()} is called and is never restarted for the stability leg),
+ *     which is exactly what makes it directly comparable to {@code navigationTimeout}; excludes any
+ *     time spent afterward in {@code page.url()}/{@code page.observe()}/{@code page.title()}, which
+ *     are not bounded by any deadline (see {@code docs/browser-crawler.md#navigation-timeout});
+ *     excluded from the determinism contract - see {@code
  *     docs/browser-crawler.md#determinism-contract}
  */
 public record BrowserCrawledPage(

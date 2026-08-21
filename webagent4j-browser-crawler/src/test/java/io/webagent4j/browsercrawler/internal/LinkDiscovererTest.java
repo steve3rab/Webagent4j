@@ -2,6 +2,7 @@ package io.webagent4j.browsercrawler.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.webagent4j.crawler.api.LinkKind;
 import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.SemanticElement;
 import java.net.URI;
@@ -29,6 +30,36 @@ class LinkDiscovererTest {
         assertThat(links.get(0).documentOrder()).isEqualTo(0);
         assertThat(links.get(1).resolvedUrl()).isEqualTo(URI.create("https://example.com/b"));
         assertThat(links.get(1).documentOrder()).isEqualTo(1);
+    }
+
+    /** AREA-UNIT-001/002: {@code <a>} maps to {@link LinkKind#ANCHOR}, {@code <area>} to AREA. */
+    @Test
+    void mapsSourceTagToTheCorrespondingLinkKind() {
+        SemanticElement anchor =
+                LinkObservationFixtures.linkElement(1, "/a", "https://example.com/a", "Anchor");
+        SemanticElement area =
+                LinkObservationFixtures.areaElement(2, "/b", "https://example.com/b", "Area");
+        Observation observation =
+                LinkObservationFixtures.withLinks(PAGE_URL.toString(), List.of(anchor, area));
+
+        List<RawLink> links = LinkDiscoverer.discover(observation, PAGE_URL);
+
+        assertThat(links).hasSize(2);
+        assertThat(links.get(0).kind()).isEqualTo(LinkKind.ANCHOR);
+        assertThat(links.get(0).documentOrder()).isEqualTo(0);
+        assertThat(links.get(1).kind()).isEqualTo(LinkKind.AREA);
+        assertThat(links.get(1).documentOrder()).isEqualTo(1);
+    }
+
+    @Test
+    void skipsAnHrefBearingLinkRoleElementFromNeitherAnchorNorArea() {
+        SemanticElement template =
+                LinkObservationFixtures.linkElement(1, "/a", "https://example.com/a", "Text");
+        SemanticElement customElement = withTagName(template, "div");
+        Observation observation =
+                LinkObservationFixtures.withLinks(PAGE_URL.toString(), List.of(customElement));
+
+        assertThat(LinkDiscoverer.discover(observation, PAGE_URL)).isEmpty();
     }
 
     @Test
@@ -71,6 +102,27 @@ class LinkDiscovererTest {
                 template.state(),
                 template.reference(),
                 attributes,
+                template.capabilities(),
+                template.parentId(),
+                template.formId(),
+                template.headingLevel(),
+                template.fieldType(),
+                template.sensitive(),
+                template.value());
+    }
+
+    private static SemanticElement withTagName(SemanticElement template, String tagName) {
+        return new SemanticElement(
+                template.index(),
+                template.id(),
+                template.stableKey(),
+                template.role(),
+                template.accessibleName(),
+                template.text(),
+                tagName,
+                template.state(),
+                template.reference(),
+                template.attributes(),
                 template.capabilities(),
                 template.parentId(),
                 template.formId(),

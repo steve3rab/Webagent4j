@@ -1,5 +1,6 @@
 package io.webagent4j.browsercrawler.internal;
 
+import io.webagent4j.crawler.api.LinkKind;
 import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.SemanticElement;
 import java.net.URI;
@@ -14,10 +15,11 @@ import java.util.Optional;
  *
  * <p>{@code Observation.links()} already filters to {@code ElementRole.LINK}, and the Playwright
  * observation backend already captures {@code href-resolved} - the browser's own absolute
- * resolution of an anchor's {@code href} against the document's current base URI - alongside the
- * raw {@code href} attribute (see {@code PlaywrightObservationBackend}'s DOM-capture script). This
- * class only reads that already-resolved value; it never re-implements relative/root-relative/
- * protocol-relative/base-href resolution, which the browser has already done correctly.
+ * resolution of an {@code <a>}'s or {@code <area>}'s {@code href} against the document's current
+ * base URI - alongside the raw {@code href} attribute (see {@code PlaywrightObservationBackend}'s
+ * DOM-capture script). This class only reads that already-resolved value; it never re-implements
+ * relative/root-relative/protocol-relative/base-href resolution, which the browser has already done
+ * correctly.
  */
 public final class LinkDiscoverer {
 
@@ -32,6 +34,14 @@ public final class LinkDiscoverer {
             if (rawHref == null || rawHref.isBlank()) {
                 continue;
             }
+            Optional<LinkKind> kind = kindOf(element.tagName());
+            if (kind.isEmpty()) {
+                // ElementRole.LINK plus an href, but sourced from neither <a> nor <area> - for
+                // example an arbitrary element carrying an explicit role="link" and a hand-set href
+                // attribute via script. LinkKind has no honest third value for this, and inventing
+                // provenance for it would be worse than skipping it.
+                continue;
+            }
             Optional<URI> resolved = resolve(element, documentBaseUrl, rawHref);
             if (resolved.isEmpty()) {
                 continue;
@@ -43,10 +53,19 @@ public final class LinkDiscoverer {
                             resolved.get(),
                             rawHref,
                             anchorText.isBlank() ? Optional.empty() : Optional.of(anchorText),
+                            kind.get(),
                             order));
             order++;
         }
         return List.copyOf(discovered);
+    }
+
+    private static Optional<LinkKind> kindOf(String tagName) {
+        return switch (tagName) {
+            case "a" -> Optional.of(LinkKind.ANCHOR);
+            case "area" -> Optional.of(LinkKind.AREA);
+            default -> Optional.empty();
+        };
     }
 
     private static Optional<URI> resolve(

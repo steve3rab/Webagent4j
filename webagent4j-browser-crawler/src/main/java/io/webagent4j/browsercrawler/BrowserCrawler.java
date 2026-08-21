@@ -1,5 +1,6 @@
 package io.webagent4j.browsercrawler;
 
+import io.webagent4j.browser.ConditionTimeoutException;
 import io.webagent4j.browser.IPage;
 import io.webagent4j.browser.NavigationTimeoutException;
 import io.webagent4j.browsercrawler.internal.BrowserCrawlFrontier;
@@ -21,7 +22,6 @@ import io.webagent4j.observation.ObservationStatistics;
 import io.webagent4j.observation.ObservationTruncation;
 import io.webagent4j.wait.WaitBudget;
 import io.webagent4j.wait.WaitEngine;
-import io.webagent4j.wait.WaitResult;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -197,7 +197,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
                                     Optional.of(normalized),
                                     candidate.toString(),
                                     Optional.empty(),
-                                    LinkKind.ANCHOR,
+                                    SEED_LINK_KIND,
                                     false,
                                     Optional.of(
                                             CrawlDecision.reject(
@@ -213,7 +213,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
                                     Optional.of(normalized),
                                     candidate.toString(),
                                     Optional.empty(),
-                                    LinkKind.ANCHOR,
+                                    SEED_LINK_KIND,
                                     false,
                                     Optional.of(
                                             CrawlDecision.reject(
@@ -234,13 +234,24 @@ public final class BrowserCrawler implements IBrowserCrawler {
             }
         }
 
+        /**
+         * A rejected seed never originated from any HTML element, so no {@link LinkKind} value
+         * genuinely describes it - {@code DiscoveredLink#kind()} is non-nullable, though, and
+         * {@code HttpCrawler} sidesteps this entirely by never representing a rejected seed as a
+         * {@code DiscoveredLink} in the first place (see its {@code enqueueSeed}), so there is no
+         * cross-engine convention to match either way. {@link LinkKind#ANCHOR} is used here as the
+         * closest existing value - a deliberate, documented convention, not an inferred provenance
+         * claim that a seed came from an {@code <a>} element.
+         */
+        private static final LinkKind SEED_LINK_KIND = LinkKind.ANCHOR;
+
         private DiscoveredLink rejectedLink(URI candidate, CrawlDecision decision) {
             return new DiscoveredLink(
                     candidate,
                     Optional.empty(),
                     candidate.toString(),
                     Optional.empty(),
-                    LinkKind.ANCHOR,
+                    SEED_LINK_KIND,
                     false,
                     Optional.of(decision),
                     0);
@@ -264,7 +275,14 @@ public final class BrowserCrawler implements IBrowserCrawler {
             }
             IPage page = page();
             WaitBudget budget = WaitBudget.start(request.navigationTimeout(), waitEngine.clock());
-            if (budget.expired()) {
+            // budget.remaining().toMillis() < 1, not budget.expired(): IPage#navigate(String,
+            // Duration) now rejects a positive-but-sub-millisecond timeout with
+            // IllegalArgumentException (see IPage#requirePositiveMillisTimeout) rather than
+            // silently
+            // flooring it, so a remaining budget under 1ms must be treated as already-expired here,
+            // before ever reaching that validation, exactly like PageStabilityWaiter does for the
+            // stability leg.
+            if (budget.remaining().toMillis() < 1) {
                 return new NavigationFailure(
                         BrowserCrawlFailureType.NAVIGATION_TIMEOUT,
                         "navigationTimeout budget already elapsed before navigation began",
@@ -287,24 +305,26 @@ public final class BrowserCrawler implements IBrowserCrawler {
                 return new NavigationFailure(
                         classifyNavigationException(e), e.getMessage(), Optional.of(e));
             }
-            WaitResult<String> stability;
             try {
-                stability = stabilityWaiter.awaitStable(page, budget, request.stabilityWindow());
+                // ConditionTimeoutException carries its own honest cause (present when the backend
+                // genuinely observed the condition never settle, absent when the shared budget was
+                // already exhausted before a backend call was even attempted - see
+                // PageStabilityWaiter#awaitStable) - preserved here, never re-inferred from
+                // WaitBudget timing or a message.
+                stabilityWaiter.awaitStable(page, budget, request.stabilityWindow());
+            } catch (ConditionTimeoutException e) {
+                return new NavigationFailure(
+                        BrowserCrawlFailureType.PAGE_STABILITY_TIMEOUT,
+                        e.getMessage(),
+                        Optional.of(e));
             } catch (RuntimeException e) {
-                // stabilityWaiter itself never lets a raw backend failure escape uncaught, but an
-                // unsupported backend (IPage#waitForCondition's default) or another genuinely
+                // An unsupported backend (IPage#waitForCondition's default) or another genuinely
                 // unexpected backend failure still surfaces as a RuntimeException here rather than
                 // crashing the whole crawl.
                 return new NavigationFailure(
                         BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE,
                         e.getMessage(),
                         Optional.of(e));
-            }
-            if (!stability.success()) {
-                return new NavigationFailure(
-                        BrowserCrawlFailureType.PAGE_STABILITY_TIMEOUT,
-                        "page did not stabilize within " + request.navigationTimeout(),
-                        Optional.empty());
             }
             try {
                 URI finalUrl = URI.create(page.url());
@@ -484,7 +504,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
                     normalized,
                     raw.rawHref(),
                     raw.anchorText(),
-                    LinkKind.ANCHOR,
+                    raw.kind(),
                     allowed,
                     Optional.ofNullable(rejection),
                     raw.documentOrder());

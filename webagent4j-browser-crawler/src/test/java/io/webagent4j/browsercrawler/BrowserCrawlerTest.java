@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -110,8 +111,9 @@ class BrowserCrawlerTest {
                             }
                             when(page.url()).thenReturn(script.finalUrl());
                             when(page.title()).thenReturn(script.title());
-                            when(page.waitForCondition(anyString(), any(Duration.class)))
-                                    .thenReturn("stable");
+                            // page.waitForCondition(...) is void; a Mockito mock already no-ops on
+                            // an unstubbed void call, which is exactly "stability succeeded
+                            // immediately" here.
                             when(page.observe(any()))
                                     .thenReturn(
                                             LinkObservationFixtures.withLinks(
@@ -303,6 +305,55 @@ class BrowserCrawlerTest {
         assertThat(result.rejectedUrls()).hasSize(1);
         assertThat(result.rejectedUrls().get(0).allowed()).isFalse();
         assertThat(result.statistics().outOfScopeUrls()).isEqualTo(1);
+    }
+
+    /**
+     * AREA-UNIT: an {@code <area href>}-sourced link's {@link
+     * io.webagent4j.crawler.api.LinkKind#AREA} provenance survives both the accepted/claimed path
+     * and the out-of-scope-rejected path - {@code BrowserCrawler} must never default either to
+     * {@code ANCHOR}.
+     */
+    @Test
+    void areaSourcedLinksPreserveAreaKindWhenAcceptedAndWhenRejected() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.ok(
+                        "https://example.com/",
+                        "Home",
+                        List.of(
+                                LinkObservationFixtures.areaElement(
+                                        1, "/area-target", "https://example.com/area-target", "T"),
+                                LinkObservationFixtures.areaElement(
+                                        2,
+                                        "https://other.example/",
+                                        "https://other.example/",
+                                        "Other"))));
+        scripts.put(
+                "https://example.com/area-target",
+                PageScript.ok("https://example.com/area-target", "Target", List.of()));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages()).hasSize(2);
+        assertThat(result.pages().get(0).links())
+                .filteredOn(link -> link.resolvedUrl().toString().endsWith("/area-target"))
+                .singleElement()
+                .satisfies(
+                        link -> {
+                            assertThat(link.kind())
+                                    .isEqualTo(io.webagent4j.crawler.api.LinkKind.AREA);
+                            assertThat(link.allowed()).isTrue();
+                        });
+        assertThat(result.rejectedUrls())
+                .singleElement()
+                .satisfies(
+                        link -> {
+                            assertThat(link.kind())
+                                    .isEqualTo(io.webagent4j.crawler.api.LinkKind.AREA);
+                            assertThat(link.allowed()).isFalse();
+                        });
     }
 
     @Test
@@ -564,10 +615,46 @@ class BrowserCrawlerTest {
     }
 
     /**
-     * STABILITY: a {@link io.webagent4j.browser.ConditionTimeoutException} thrown from {@link
+     * When navigation itself consumes the entire shared budget, {@code PageStabilityWaiter} must
+     * never attempt a backend call at all (see its {@code awaitStable} contract) - it synthesizes
+     * its own {@link io.webagent4j.browser.ConditionTimeoutException} with no cause, still
+     * resulting in {@link BrowserCrawlFailureType#PAGE_STABILITY_TIMEOUT}, distinguishable from a
+     * genuine backend-observed timeout only by that absent cause chain.
+     */
+    @Test
+    void navigationConsumingTheEntireBudgetNeverAttemptsAStabilityBackendCall() {
+        IBrowser browser = scriptedBrowser();
+        scripts.put(
+                "https://example.com/",
+                PageScript.okWithSideEffect(
+                        "https://example.com/",
+                        "Home",
+                        List.of(),
+                        () -> fakeTime.sleep(Duration.ofSeconds(1))));
+
+        BrowserCrawlResult result =
+                crawler.crawl(
+                        requestFor(browser, "https://example.com/")
+                                .navigationTimeout(Duration.ofSeconds(1))
+                                .stabilityWindow(Duration.ofMillis(200))
+                                .build());
+
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.PAGE_STABILITY_TIMEOUT);
+        assertThat(result.failures().get(0).cause())
+                .get()
+                .satisfies(cause -> assertThat(cause.getCause()).isNull());
+        verify(createdPages.get(0), org.mockito.Mockito.never())
+                .waitForCondition(anyString(), any(Duration.class));
+    }
+
+    /**
+     * STAB-UNIT-001: a {@link io.webagent4j.browser.ConditionTimeoutException} thrown from {@link
      * IPage#waitForCondition} - the typed signal a backend's own native, natively-bounded polling
      * primitive gives when the condition never becomes true in time - is what classifies a
-     * navigation as {@link BrowserCrawlFailureType#PAGE_STABILITY_TIMEOUT}.
+     * navigation as {@link BrowserCrawlFailureType#PAGE_STABILITY_TIMEOUT}, and its typed cause is
+     * preserved into {@link BrowserCrawlFailure#cause()} rather than discarded.
      */
     @Test
     void stabilityConditionTimeoutBecomesPageStabilityTimeoutFailure() {
@@ -575,8 +662,9 @@ class BrowserCrawlerTest {
         IPage page = mock(IPage.class);
         when(browser.newPage()).thenReturn(page);
         when(page.url()).thenReturn("https://example.com/");
-        when(page.waitForCondition(anyString(), any(Duration.class)))
-                .thenThrow(new io.webagent4j.browser.ConditionTimeoutException("not stable"));
+        io.webagent4j.browser.ConditionTimeoutException timeout =
+                new io.webagent4j.browser.ConditionTimeoutException("not stable");
+        doThrow(timeout).when(page).waitForCondition(anyString(), any(Duration.class));
 
         BrowserCrawlResult result =
                 crawler.crawl(requestFor(browser, "https://example.com/").build());
@@ -585,6 +673,31 @@ class BrowserCrawlerTest {
         assertThat(result.failures()).hasSize(1);
         assertThat(result.failures().get(0).type())
                 .isEqualTo(BrowserCrawlFailureType.PAGE_STABILITY_TIMEOUT);
+        assertThat(result.failures().get(0).cause()).contains(timeout);
+    }
+
+    /**
+     * STAB-UNIT-002: an unsupported backend - {@link IPage#waitForCondition}'s own default throws
+     * {@link UnsupportedOperationException} - is classified as {@link
+     * BrowserCrawlFailureType#BROWSER_BACKEND_FAILURE}, not misclassified as a stability timeout.
+     */
+    @Test
+    void unsupportedStabilityBackendBecomesBrowserBackendFailure() {
+        IBrowser browser = mock(IBrowser.class);
+        IPage page = mock(IPage.class);
+        when(browser.newPage()).thenReturn(page);
+        when(page.url()).thenReturn("https://example.com/");
+        doThrow(new UnsupportedOperationException("not supported"))
+                .when(page)
+                .waitForCondition(anyString(), any(Duration.class));
+
+        BrowserCrawlResult result =
+                crawler.crawl(requestFor(browser, "https://example.com/").build());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type())
+                .isEqualTo(BrowserCrawlFailureType.BROWSER_BACKEND_FAILURE);
     }
 
     @Test
@@ -651,8 +764,8 @@ class BrowserCrawlerTest {
                             IPage page = mock(IPage.class);
                             when(page.url()).thenReturn("https://example.com/");
                             when(page.title()).thenReturn("Home");
-                            when(page.waitForCondition(anyString(), any(Duration.class)))
-                                    .thenReturn("stable");
+                            // page.waitForCondition(...) is void; an unstubbed mock call already
+                            // no-ops, which is exactly "stability succeeded immediately" here.
                             when(page.observe(any()))
                                     .thenReturn(
                                             LinkObservationFixtures.withLinks(

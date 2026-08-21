@@ -32,6 +32,21 @@ public final class LinkObservationFixtures {
     /** One {@code <a href>} link element with the given raw href and (already-resolved) target. */
     public static SemanticElement linkElement(
             int index, String rawHref, String resolvedHref, String text) {
+        return linkElement(index, rawHref, resolvedHref, text, "a");
+    }
+
+    /**
+     * One {@code <area href>} image-map link element with the given raw href and (already-resolved)
+     * target - see {@code LinkDiscovererTest} and {@code BrowserCrawlerTest} for {@link
+     * io.webagent4j.crawler.api.LinkKind#AREA} provenance coverage.
+     */
+    public static SemanticElement areaElement(
+            int index, String rawHref, String resolvedHref, String text) {
+        return linkElement(index, rawHref, resolvedHref, text, "area");
+    }
+
+    private static SemanticElement linkElement(
+            int index, String rawHref, String resolvedHref, String text, String tagName) {
         ElementState interaction =
                 new ElementState(
                         true, true, true, false, false, false, false, false, true, true, false,
@@ -43,7 +58,7 @@ public final class LinkObservationFixtures {
                 ElementRole.LINK,
                 text,
                 text,
-                "a",
+                tagName,
                 new ObservedElementState(interaction, false, Optional.empty()),
                 new ElementReference(LocatorDefinition.forRole(ElementRole.LINK).named(text)),
                 Map.of("href", rawHref, "href-resolved", resolvedHref),

@@ -93,17 +93,10 @@ final class PlaywrightPage implements IPage {
      */
     @Override
     public void navigate(String url, Duration timeout) {
-        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
-            throw new IllegalArgumentException("timeout must be positive");
-        }
+        IPage.requirePositiveMillisTimeout(timeout);
         PlaywrightUrlValidator.requireAbsoluteHttp(url);
-        // Math.max(1, ...): a sub-millisecond-but-positive remaining budget must never floor to 0,
-        // since Playwright treats a timeout of exactly 0 as "disabled" rather than "immediate".
         try {
-            page.navigate(
-                    url,
-                    new Page.NavigateOptions()
-                            .setTimeout((double) Math.max(1L, timeout.toMillis())));
+            page.navigate(url, new Page.NavigateOptions().setTimeout((double) timeout.toMillis()));
         } catch (com.microsoft.playwright.TimeoutError e) {
             throw new NavigationTimeoutException(
                     "Navigation to " + url + " did not commit within " + timeout, e);
@@ -156,39 +149,36 @@ final class PlaywrightPage implements IPage {
      * com.microsoft.playwright.TimeoutError} - translated here to the backend-neutral {@link
      * ConditionTimeoutException} - never hangs past {@code timeout}, even if a bare {@link
      * #evaluate(String)} call evaluating the same expression once could.
+     *
+     * <p>{@code waitForFunction} itself returns a {@link com.microsoft.playwright.JSHandle}
+     * wrapping the truthy result, but this method deliberately never calls {@code
+     * handle.jsonValue()} (a second, independent Playwright round-trip with no timeout of its own)
+     * or {@code handle.dispose()} (likewise): doing either on the success path would reintroduce
+     * exactly the kind of unbounded-call risk this whole method exists to eliminate - {@code
+     * waitForFunction(timeout)} would still be bounded, but overall "did {@code waitForCondition}
+     * return" would not be, since a call after it could still hang. This interface's contract
+     * doesn't need the value (see {@link IPage#waitForCondition(String, Duration)}), so the handle
+     * is simply dropped: an unreferenced {@link com.microsoft.playwright.JSHandle} does not pin any
+     * Java-side resource, and the underlying page-side object it wraps is reclaimed by Playwright
+     * itself when its execution context is destroyed - which, for a per-navigation stability
+     * condition like this one, is always by the very next {@code navigate()} call at the latest, if
+     * not sooner.
      */
     @Override
-    public Object waitForCondition(String expression, Duration timeout) {
+    public void waitForCondition(String expression, Duration timeout) {
         if (expression == null || expression.isBlank()) {
             throw new IllegalArgumentException("expression cannot be blank");
         }
-        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
-            throw new IllegalArgumentException("timeout must be positive");
-        }
-        // Math.max(1, ...): a sub-millisecond-but-positive remaining budget must never floor to 0,
-        // since Playwright treats a timeout of exactly 0 as "disabled" rather than "immediate".
-        com.microsoft.playwright.JSHandle handle;
+        IPage.requirePositiveMillisTimeout(timeout);
         try {
-            handle =
-                    page.waitForFunction(
-                            expression,
-                            null,
-                            new Page.WaitForFunctionOptions()
-                                    .setTimeout((double) Math.max(1L, timeout.toMillis())));
+            page.waitForFunction(
+                    expression,
+                    null,
+                    new Page.WaitForFunctionOptions().setTimeout((double) timeout.toMillis()));
         } catch (com.microsoft.playwright.TimeoutError e) {
             throw new ConditionTimeoutException(
                     "Condition did not become true within " + timeout, e);
         }
-        Object value = handle.jsonValue();
-        try {
-            handle.dispose();
-        } catch (RuntimeException disposeFailure) {
-            // Best-effort cleanup only: value was already read successfully above, so a page that
-            // has since navigated away and invalidated this handle must not turn an
-            // already-obtained
-            // result into a spurious failure.
-        }
-        return value;
     }
 
     @Override

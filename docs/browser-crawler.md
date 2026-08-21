@@ -125,6 +125,15 @@ otherwise make them read as "not visible" and be filtered out of every observati
 whether their image map is actually shown; the Playwright observation backend exempts `<area>` from
 that specific check so an image-map link is discoverable the same as any other visible link.
 
+`LinkDiscoverer` maps each element's source tag to `DiscoveredLink#kind()` explicitly -
+`<a>` &rarr; `LinkKind.ANCHOR`, `<area>` &rarr; `LinkKind.AREA` - and this provenance is carried
+through unchanged, never defaulted to `ANCHOR`, on every decision path (accepted, out-of-scope,
+duplicate, max-depth, max-pages, cancelled). A link-role element sourced from neither tag (for
+example, an arbitrary element with an explicit `role="link"` and a script-set `href`) is skipped
+rather than assigned an invented `LinkKind`. Seeds are the one exception: they never originate from
+an HTML element at all, so a rejected seed's `DiscoveredLink` uses `LinkKind.ANCHOR` as a documented
+convention, not a provenance claim - see `BrowserCrawler`'s `SEED_LINK_KIND` Javadoc.
+
 ## Navigation timeout
 
 `navigationTimeout` is one authoritative, monotonic budget covering both the navigation attempt
@@ -142,11 +151,16 @@ genuinely enforced *by the backend itself*, not by a Java-side deadline check wr
 unbounded call. A real navigation timeout surfaces as the backend-neutral
 `io.webagent4j.browser.NavigationTimeoutException`; a real stability timeout surfaces as
 `io.webagent4j.browser.ConditionTimeoutException` (the Playwright adapter translates its native
-`TimeoutError` to each type, respectively); `BrowserCrawler` classifies these typed exceptions
-directly to `NAVIGATION_TIMEOUT` and `PAGE_STABILITY_TIMEOUT` - never inferred from
-`WaitBudget.expired()`'s timing or from matching an exception message. Navigation and stability
-draw from the same budget, so a slow navigation leaves correspondingly less time for stability,
-never a fresh full timeout for each stage.
+`TimeoutError` to each type, respectively). Both propagate with their typed identity intact all the
+way into the resulting `BrowserCrawlFailure.cause()` - `BrowserCrawler` classifies them directly to
+`NAVIGATION_TIMEOUT` and `PAGE_STABILITY_TIMEOUT` - never inferred from `WaitBudget.expired()`'s
+timing or from matching an exception message, and never discarded in favor of a generic message.
+The one exception carries no cause by construction, not by loss: if navigation itself already
+consumes the entire shared budget, `PageStabilityWaiter` never attempts a backend call for
+stability at all - it raises its own `ConditionTimeoutException` (still classified the same way)
+rather than pass a sub-millisecond timeout into a backend call that could not honor it either.
+Navigation and stability draw from the same budget, so a slow navigation leaves correspondingly
+less time for stability, never a fresh full timeout for each stage.
 
 **What `navigationTimeout` does *not* bound:** once stability succeeds, `BrowserCrawler` still
 calls `page.url()`, `page.observe(...)`, and `page.title()` to assemble the result - none of these
@@ -175,9 +189,16 @@ this document claimed. The Playwright adapter now maps `waitForCondition` direct
 `Page.waitForFunction`, which polls entirely driver-side, is bounded by its own native `timeout`
 option, and transparently continues polling in a newly-navigated execution context rather than
 throwing "context destroyed" - so there is exactly one call from Java into the backend per stability
-wait, and that call, not a loop wrapped around it, is what the backend itself bounds. See
-`BrowserCrawlerRobustnessIT`'s real-Playwright client-side-navigation-during-stability regression
-test for the scenario this replaces a hang with a bounded, structured outcome for.
+wait, and that call, not a loop wrapped around it, is what the backend itself bounds. `IPage`'s
+`waitForCondition` contract is deliberately return-value-free (`void`, not the JavaScript predicate's
+own truthy value) precisely so no implementation needs a second, independently-unbounded call after
+its own bounded wait resolves - the Playwright adapter never calls `JSHandle#jsonValue()` or
+`JSHandle#dispose()` on `waitForFunction`'s returned handle for exactly this reason; a call after the
+bounded one would still leave "did the whole operation return" unbounded even though the wait itself
+was bounded. The predicate tracks its own "stable since" timestamp using the page's own monotonic
+`performance.now()`, never wall-clock `Date.now()`. See `BrowserCrawlerRobustnessIT`'s real-Playwright
+client-side-navigation-during-stability regression test for the scenario this replaces a hang with a
+bounded, structured outcome for.
 
 The stability predicate's fingerprint is four parts: `document.readyState`; the total element count;
 the total count of `href`-bearing anchors and image-map areas (`a[href]`, `area[href]` - see
@@ -321,6 +342,15 @@ See [URL identities and deduplication](#url-identities-and-deduplication) above.
 
 `maxDepth`, `maxPages`, `maxConcurrency`, `navigationTimeout`, `stabilityWindow` - every one
 validated at `BrowserCrawlRequest.Builder.build()`, never discovered invalid mid-crawl.
+`navigationTimeout` and `stabilityWindow` must each be at least one millisecond: both are
+ultimately handed to a backend timeout option resolved in milliseconds, and a positive-but-shorter
+value can never be honestly honored at that resolution (see `IPage#requirePositiveMillisTimeout`,
+shared by `navigate(String, Duration)` and `waitForCondition(String, Duration)`) - rejected
+explicitly rather than silently rounded up to a duration the caller never asked for.
+`stabilityWindow` must not exceed `navigationTimeout`: since both draw from one shared budget, a
+`stabilityWindow` longer than the whole budget could never be satisfied even by a page that
+navigates instantly, so that configuration is rejected at `build()` rather than discovered mid-crawl
+as a page that can structurally never succeed.
 
 ## Failure model
 
@@ -393,7 +423,7 @@ See `webagent4j-examples` for runnable `BrowserCrawlSimpleExample` and
   any further deadline - only navigation and stability are natively bounded by the backend today. See
   [Navigation timeout](#navigation-timeout) for the exact, honest scope of what is and is not
   enforced.
-- `BrowserCrawlerRobustnessIT` (BC-ROB-001..017, STABILITY-002, real Playwright, in
+- `BrowserCrawlerRobustnessIT` (BC-ROB-001..020, STABILITY-002, real Playwright, in
   `webagent4j-integration-tests`) covers the adversarial scenario matrix this phase's own
   instructions asked for; it does not duplicate the dedicated `webagent4j-robustness-tests`
   100-scenario corpus's element-level model, which was never designed for a crawl-graph concept.
@@ -403,8 +433,10 @@ See `webagent4j-examples` for runnable `BrowserCrawlSimpleExample` and
 
 ## Compatibility
 
-Three additive public API changes were introduced, all backward-compatible - no existing method
-signature changed and no existing type was removed:
+Three additive public API changes were introduced. No existing method signature changed and no
+existing type was removed. Two are unconditionally source- and binary-compatible (new default
+methods with a body - nothing that does not already call them is affected); the third is additive
+but not unconditionally consequence-free for every possible caller:
 
 - `IPage` (`webagent4j-browser-api`) gained a default method, `navigate(String, Duration)`, and a
   new type, `NavigationTimeoutException`, in the same package - required to make
@@ -419,7 +451,13 @@ signature changed and no existing type was removed:
   affected unless it is called.
 - `CrawlDecisionType` (`webagent4j-crawler-api`) gained one new enum constant, `REJECT_CANCELLED`
   (see [Cancellation](#cancellation) for why it belongs on the shared type rather than a
-  browser-crawler-local one).
+  browser-crawler-local one). No exhaustive `switch` over this enum exists anywhere in this
+  repository today, confirmed by search - but a *downstream* consumer's own exhaustive `switch`
+  expression over `CrawlDecisionType` (legal, idiomatic Java against an enum from another module)
+  would fail to compile against this new constant until updated to handle it. That is a normal,
+  expected consequence of adding an enum constant, not a signature change or a removed type, but it
+  is not literally true to call it "no consequence for any existing caller" - so it is called out
+  explicitly here rather than folded into a blanket "all backward-compatible" claim.
 
 `IBrowserCrawler` is, and remains, a new, separate contract from `ICrawler` - both
 `ICrawler#crawl(CrawlRequest)` and `ICrawlScopePolicy#evaluate(URI, URI, CrawlRequest)` are bound to

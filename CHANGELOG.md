@@ -149,6 +149,51 @@ All notable changes to this project will be documented in this file. The format 
 - Removed stale Javadoc/comments describing the earlier abandoned Java-side polling-loop stability
   design as current.
 
+### Fixed (Browser Crawler — Phase 0.7 fourth correction round: strict code review)
+
+- **`IPage#waitForCondition` no longer requires an unbounded call after its own bounded wait.** The
+  third round's Playwright adapter called `Page#waitForFunction` (bounded) but then called the
+  returned `JSHandle`'s `jsonValue()` and `dispose()` (neither bounded by anything) to satisfy a
+  return value nothing actually used. `waitForCondition`'s signature is now `void` - callers only
+  ever needed "did it stabilize in time," never the JavaScript predicate's own value - so the
+  Playwright adapter drops the handle without an extra round-trip: it is reclaimed automatically
+  once its execution context is destroyed, which for a per-navigation condition like this one
+  happens by the very next `navigate()` at the latest.
+- **`ConditionTimeoutException`'s typed provenance now survives into `BrowserCrawlFailure.cause()`.**
+  `PageStabilityWaiter#awaitStable` no longer catches and reclassifies its own timeout into a
+  cause-less `WaitResult`; it now either returns normally (success) or lets `ConditionTimeoutException`
+  propagate - synthesizing its own instance, with no cause, only for the case where the shared
+  budget was already exhausted before a backend call could even be attempted. `BrowserCrawler`
+  catches the typed exception directly (before its generic `RuntimeException` handler) and preserves
+  it as the failure's cause.
+- The stability predicate now tracks elapsed time with the page's own monotonic `performance.now()`,
+  never wall-clock `Date.now()`.
+- `IPage#navigate`/`waitForCondition` (and `BrowserCrawlRequest.navigationTimeout`/`stabilityWindow`)
+  now reject a positive-but-sub-millisecond `Duration` explicitly (`IPage#requirePositiveMillisTimeout`)
+  instead of silently flooring it to 1ms via `Math.max(1, ...)` - both ultimately resolve to a
+  millisecond-valued backend option, so a caller asking for less than that can never be honestly
+  honored. `BrowserCrawlRequest` additionally rejects a `stabilityWindow` longer than
+  `navigationTimeout` at `build()`, since the two share one budget.
+- **`<area href>` links now carry `LinkKind.AREA` through the whole discovery pipeline**, not
+  `LinkKind.ANCHOR`: new `RawLink#kind()` field, populated by `LinkDiscoverer` from the source
+  element's tag (`<a>` → `ANCHOR`, `<area>` → `AREA`; an unexpected link-role element sourced from
+  neither is skipped rather than assigned an invented kind), and threaded unchanged through
+  `BrowserCrawler#toDiscoveredLink` on every decision path (accepted, out-of-scope, duplicate,
+  max-depth, max-pages, cancelled). A rejected seed - which never originates from an HTML element -
+  still uses `LinkKind.ANCHOR` as a documented convention, not a provenance claim.
+- New real-Playwright `BrowserCrawlerRobustnessIT` scenarios BC-ROB-018/019/020 (AREA-IT-001..003):
+  a root-relative `<area href>` discovered with `LinkKind.AREA` and actually navigated, a
+  dot-relative `<area href>` resolved by the browser's own `href-resolved`, and an out-of-scope
+  `<area href>` discovered but never navigated, correctly rejected.
+- Removed further stale Javadoc implying navigation-order/statistics determinism holds only "despite"
+  concurrent completion timing - this engine has no physical navigation concurrency to be despite of;
+  the determinism is structural.
+- Reworded the "all backward-compatible" compatibility claim: `CrawlDecisionType.REJECT_CANCELLED` is
+  additive and breaks no existing method signature or type, but a downstream consumer's own
+  exhaustive `switch` over that enum would need updating to handle the new constant - a normal,
+  expected consequence of an additive enum change, called out explicitly rather than folded into a
+  blanket compatibility claim.
+
 ### Added (Public API documentation consolidation)
 
 - New `docs/public-api.md`: a comprehensive public API reference spanning every implemented module

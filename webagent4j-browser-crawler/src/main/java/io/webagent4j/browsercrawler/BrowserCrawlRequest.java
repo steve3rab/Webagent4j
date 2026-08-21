@@ -113,9 +113,35 @@ public record BrowserCrawlRequest(
         if (navigationTimeout.isNegative() || navigationTimeout.isZero()) {
             throw new IllegalArgumentException("navigationTimeout must be positive");
         }
+        if (navigationTimeout.toMillis() < 1) {
+            // Both navigate() and waitForCondition() ultimately resolve to a millisecond-valued
+            // backend timeout option (see IPage#requirePositiveMillisTimeout) - a positive but
+            // sub-millisecond navigationTimeout can never be honestly honored at that resolution,
+            // so it is rejected here rather than silently floored to a bound the caller never asked
+            // for.
+            throw new IllegalArgumentException(
+                    "navigationTimeout must be at least 1 millisecond, was " + navigationTimeout);
+        }
         Objects.requireNonNull(stabilityWindow, "stabilityWindow");
         if (stabilityWindow.isNegative() || stabilityWindow.isZero()) {
             throw new IllegalArgumentException("stabilityWindow must be positive");
+        }
+        if (stabilityWindow.toMillis() < 1) {
+            throw new IllegalArgumentException(
+                    "stabilityWindow must be at least 1 millisecond, was " + stabilityWindow);
+        }
+        if (stabilityWindow.compareTo(navigationTimeout) > 0) {
+            // navigation and stability share one monotonic budget (navigationTimeout) - a
+            // stabilityWindow longer than that whole budget could never be satisfied even if
+            // navigation itself took zero time, so this configuration is rejected here rather than
+            // discovered mid-crawl as a page that can structurally never succeed.
+            throw new IllegalArgumentException(
+                    "stabilityWindow ("
+                            + stabilityWindow
+                            + ") must not exceed navigationTimeout ("
+                            + navigationTimeout
+                            + ") - navigation and stability share one budget, so a longer stability"
+                            + " window could never be satisfied");
         }
         if (maxConcurrency != 1) {
             throw new IllegalArgumentException(

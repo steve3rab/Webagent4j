@@ -12,8 +12,11 @@ import io.webagent4j.browsercrawler.BrowserCrawler;
 import io.webagent4j.browsercrawler.CancellationToken;
 import io.webagent4j.core.WebAgent;
 import io.webagent4j.crawler.api.CrawlDecisionType;
+import io.webagent4j.crawler.api.DiscoveredLink;
+import io.webagent4j.crawler.api.LinkKind;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
@@ -28,7 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..017, STABILITY-002) for
+ * Named, deterministic, real-Playwright adversarial scenarios (BC-ROB-001..020, STABILITY-002) for
  * {@link BrowserCrawler} - pathological and boundary-case graphs the engine must survive without
  * hanging, losing pages, exceeding a configured limit, or leaking a crawler-owned page, against a
  * local HTTP fixture only. Mirrors {@code HttpCrawlerRobustnessIT}'s naming and structure for the
@@ -213,6 +216,31 @@ class BrowserCrawlerRobustnessIT {
         server.createContext(
                 "/rob/clientsideredirect/landed",
                 exchange -> respond(exchange, html("ClientSideRedirectLanded", "")));
+
+        // BC-ROB-018/019/020 (AREA-IT-001..003): image-map <area href> link discovery - a root-
+        // relative href, a dot-relative href, and an out-of-scope href, each inside a real <map>
+        // associated with an <img usemap>, using an inline data: URL so no external image is
+        // fetched.
+        server.createContext(
+                "/rob/area/basic",
+                exchange ->
+                        respond(exchange, html("AreaBasic", areaMap("/rob/area/basic/target"))));
+        server.createContext(
+                "/rob/area/basic/target", exchange -> respond(exchange, html("AreaTarget", "")));
+        server.createContext(
+                "/rob/area/relative/page",
+                exchange -> respond(exchange, html("AreaRelative", areaMap("../relative/target"))));
+        server.createContext(
+                "/rob/area/relative/target",
+                exchange -> respond(exchange, html("AreaRelativeTarget", "")));
+        server.createContext(
+                "/rob/area/outofscope",
+                exchange ->
+                        respond(
+                                exchange,
+                                html(
+                                        "AreaOutOfScope",
+                                        areaMap("https://out-of-scope.invalid/never"))));
 
         // BC-ROB-006/013: resource cleanup - a small multi-page graph, and a failFast graph
         // (absolute href, same reasoning as BC-ROB-002 above)
@@ -429,6 +457,23 @@ class BrowserCrawlerRobustnessIT {
                 + "\"></head><body>Redirecting</body></html>";
     }
 
+    /**
+     * A 1x1 transparent GIF as a {@code data:} URL, so an image-map fixture never needs to fetch an
+     * external image resource.
+     */
+    private static final String TRANSPARENT_GIF_DATA_URL =
+            "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+
+    /** A real {@code <map>}/{@code <area href>} image map, associated via {@code <img usemap>}. */
+    private static String areaMap(String href) {
+        return "<img src=\""
+                + TRANSPARENT_GIF_DATA_URL
+                + "\" usemap=\"#navmap\" alt=\"\">"
+                + "<map name=\"navmap\"><area shape=\"rect\" coords=\"0,0,10,10\" href=\""
+                + href
+                + "\" alt=\"Area\"></map>";
+    }
+
     private BrowserCrawlRequest.Builder requestFor(String path) {
         return BrowserCrawlRequest.builder(browser)
                 .seed(baseUrl + path)
@@ -550,6 +595,11 @@ class BrowserCrawlerRobustnessIT {
         assertThat(result.failures()).hasSize(1);
         assertThat(result.failures().get(0).type())
                 .isEqualTo(BrowserCrawlFailureType.PAGE_STABILITY_TIMEOUT);
+        // The typed ConditionTimeoutException - the real backend timeout signal, not an inferred
+        // one - is preserved into the failure's cause rather than discarded.
+        assertThat(result.failures().get(0).cause())
+                .get()
+                .isInstanceOf(io.webagent4j.browser.ConditionTimeoutException.class);
     }
 
     // BC-ROB-009: a link inserted before stability completes (here, at 50ms) is part of that same
@@ -768,17 +818,30 @@ class BrowserCrawlerRobustnessIT {
      * {@code evaluate()} indefinitely under real CI timing (see the {@link #redirect} Javadoc for
      * the incident and the second correction round's insufficient fix). This test proves the
      * current, real fix: the crawl completes, in scope, within the class's {@code @Timeout} and
-     * well within {@code navigationTimeout} - never a hang - and lands on the redirected-to page as
-     * its final URL. It is deliberately run several times in one method, not because a single pass
-     * proves nothing, but because the original bug was a race that did not reproduce on every run -
-     * a single green pass here would be exactly the kind of false confidence this regression test
-     * exists to rule out.
+     * within an explicit, deliberately short {@code navigationTimeout} - never a hang - and lands
+     * on the redirected-to page as its final URL, with {@code timeToStability} itself never
+     * exceeding that same configured timeout. It is deliberately run several times in one method,
+     * not because a single pass proves nothing, but because the original bug was a race that did
+     * not reproduce on every run - a single green pass here would be exactly the kind of false
+     * confidence this regression test exists to rule out.
+     *
+     * <p>{@code navigationTimeout} is set explicitly here (5s), well under the class's 45s
+     * {@code @Timeout} watchdog, so the two bounds stay clearly distinguishable: the watchdog only
+     * exists to fail this test fast with a thread dump if production code regresses back to
+     * hanging, while {@code navigationTimeout} is the actual, production-meaningful bound under
+     * test.
      */
     @Test
     void bcRob017ClientSideNavigationDuringStabilityCompletesWithinBudgetNeverHangs() {
+        Duration navigationTimeout = Duration.ofSeconds(5);
         for (int attempt = 0; attempt < 5; attempt++) {
             BrowserCrawlResult result =
-                    new BrowserCrawler().crawl(requestFor("/rob/clientsideredirect").build());
+                    new BrowserCrawler()
+                            .crawl(
+                                    requestFor("/rob/clientsideredirect")
+                                            .navigationTimeout(navigationTimeout)
+                                            .stabilityWindow(Duration.ofMillis(300))
+                                            .build());
 
             assertThat(result.failures()).isEmpty();
             assertThat(result.pages())
@@ -786,6 +849,86 @@ class BrowserCrawlerRobustnessIT {
                     .containsExactly(baseUrl + "/rob/clientsideredirect/landed");
             assertThat(result.terminationReason())
                     .isEqualTo(BrowserCrawlTerminationReason.COMPLETED);
+            assertThat(result.pages().get(0).timeToStability())
+                    .isLessThanOrEqualTo(navigationTimeout);
         }
+    }
+
+    /**
+     * BC-ROB-018 / AREA-IT-001: a real {@code <area href>} image-map link, with a root-relative
+     * href, is discovered with {@link LinkKind#AREA} - not defaulted to {@code ANCHOR} - and its
+     * target is actually navigated (the crawl reaches both pages).
+     */
+    @Test
+    void bcRob018AreaHrefLinkIsDiscoveredWithAreaKindAndNavigated() {
+        BrowserCrawlResult result =
+                new BrowserCrawler().crawl(requestFor("/rob/area/basic").maxDepth(1).build());
+
+        assertThat(result.failures()).isEmpty();
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .containsExactlyInAnyOrder(
+                        baseUrl + "/rob/area/basic", baseUrl + "/rob/area/basic/target");
+        DiscoveredLink areaLink =
+                result.pages().get(0).links().stream()
+                        .filter(link -> link.resolvedUrl().toString().endsWith("/basic/target"))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(areaLink.rawHref()).isEqualTo("/rob/area/basic/target");
+        assertThat(areaLink.resolvedUrl())
+                .isEqualTo(URI.create(baseUrl + "/rob/area/basic/target"));
+        assertThat(areaLink.kind()).isEqualTo(LinkKind.AREA);
+        assertThat(areaLink.allowed()).isTrue();
+    }
+
+    /**
+     * BC-ROB-019 / AREA-IT-002: a dot-relative {@code <area href>} is resolved by the browser's own
+     * {@code href-resolved} (never {@code LinkDiscoverer}'s manual {@code URI.resolve()} fallback -
+     * see its Javadoc), landing on the correct absolute target.
+     */
+    @Test
+    void bcRob019RelativeAreaHrefIsResolvedByTheBrowserItself() {
+        BrowserCrawlResult result =
+                new BrowserCrawler()
+                        .crawl(requestFor("/rob/area/relative/page").maxDepth(1).build());
+
+        assertThat(result.failures()).isEmpty();
+        DiscoveredLink areaLink =
+                result.pages().get(0).links().stream()
+                        .filter(link -> link.kind() == LinkKind.AREA)
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(areaLink.rawHref()).isEqualTo("../relative/target");
+        assertThat(areaLink.resolvedUrl())
+                .isEqualTo(URI.create(baseUrl + "/rob/area/relative/target"));
+        assertThat(areaLink.allowed()).isTrue();
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .contains(baseUrl + "/rob/area/relative/target");
+    }
+
+    /**
+     * BC-ROB-020 / AREA-IT-003: an out-of-scope {@code <area href>} is discovered but never
+     * navigated - it appears in {@code rejectedUrls()} with the correct rejection reason and its
+     * {@link LinkKind#AREA} provenance intact.
+     */
+    @Test
+    void bcRob020OutOfScopeAreaHrefIsDiscoveredButNeverNavigated() {
+        BrowserCrawlResult result =
+                new BrowserCrawler().crawl(requestFor("/rob/area/outofscope").build());
+
+        assertThat(result.pages())
+                .extracting(p -> p.finalUrl().toString())
+                .containsExactly(baseUrl + "/rob/area/outofscope");
+        assertThat(result.rejectedUrls())
+                .singleElement()
+                .satisfies(
+                        link -> {
+                            assertThat(link.kind()).isEqualTo(LinkKind.AREA);
+                            assertThat(link.allowed()).isFalse();
+                            assertThat(link.rejection()).isPresent();
+                            assertThat(link.rejection().orElseThrow().type())
+                                    .isEqualTo(CrawlDecisionType.REJECT_DOMAIN);
+                        });
     }
 }

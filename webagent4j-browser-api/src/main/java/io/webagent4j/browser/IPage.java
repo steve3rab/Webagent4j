@@ -42,14 +42,16 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
      * {@code timeout} to the native driver's own per-call navigation timeout option, so it is truly
      * enforced there.
      *
-     * @throws IllegalArgumentException if {@code timeout} is {@code null}, zero, or negative
+     * @throws IllegalArgumentException if {@code timeout} is {@code null}, not positive, or
+     *     positive but under one millisecond (see {@link #requirePositiveMillisTimeout(Duration)} -
+     *     a sub-millisecond value can never be honestly represented once this call reaches a
+     *     millisecond-resolution backend timeout option, so it is rejected explicitly rather than
+     *     silently rounded up to a duration the caller never asked for)
      * @throws UnsupportedOperationException if this backend cannot honor a caller-supplied
      *     navigation timeout
      */
     default void navigate(String url, Duration timeout) {
-        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
-            throw new IllegalArgumentException("timeout must be positive");
-        }
+        requirePositiveMillisTimeout(timeout);
         throw new UnsupportedOperationException(
                 "This browser backend does not support caller-supplied navigation timeouts");
     }
@@ -94,23 +96,61 @@ public interface IPage extends IActionContext, IObservationSource, AutoCloseable
      * reason. The Playwright adapter overrides this method and maps it directly onto the native
      * driver's own timeout-aware function-polling primitive.
      *
-     * @return the expression's final truthy value
-     * @throws IllegalArgumentException if {@code expression} is blank, or {@code timeout} is {@code
-     *     null}, zero, or negative
-     * @throws ConditionTimeoutException if {@code expression} never becomes truthy within {@code
-     *     timeout}
+     * <p>Returns normally - carries no value - once {@code expression} is satisfied; a caller that
+     * only needs to know "did the condition become true before the deadline" (every current caller,
+     * including {@code PageStabilityWaiter}) does not need a backend to hand back the JavaScript
+     * result and pay for however that backend fetches it. A backend implementation must not require
+     * a second, independently unbounded call after its own bounded wait resolves just to satisfy a
+     * return value nothing here uses.
+     *
+     * @throws IllegalArgumentException if {@code expression} is blank, or {@code timeout} does not
+     *     satisfy {@link #requirePositiveMillisTimeout(Duration)}
+     * @throws ConditionTimeoutException if {@code expression} did not become satisfied within
+     *     {@code timeout} - not necessarily because it was literally evaluated and found falsy
+     *     every time: a backend that transparently re-establishes the wait across a document
+     *     replacement (see the Playwright adapter) may never observe a single truthy evaluation and
+     *     still report this the same way, since from the caller's perspective the only observable
+     *     fact is "not satisfied in time"
      * @throws UnsupportedOperationException if this backend cannot honor a natively-bounded
      *     condition wait
      */
-    default Object waitForCondition(String expression, Duration timeout) {
+    default void waitForCondition(String expression, Duration timeout) {
         if (expression == null || expression.isBlank()) {
             throw new IllegalArgumentException("expression cannot be blank");
         }
-        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
-            throw new IllegalArgumentException("timeout must be positive");
-        }
+        requirePositiveMillisTimeout(timeout);
         throw new UnsupportedOperationException(
                 "This browser backend does not support natively-bounded condition waits");
+    }
+
+    /**
+     * Validates that {@code timeout} is non-null and represents a whole number of milliseconds
+     * greater than zero.
+     *
+     * <p>Every timeout this interface accepts ({@link #navigate(String, Duration)}, {@link
+     * #waitForCondition(String, Duration)}) is ultimately handed to a backend timeout option
+     * resolved in milliseconds (Playwright's own options are millisecond-`double`-valued). A
+     * positive but sub-millisecond {@code Duration} - {@code Duration.ofNanos(500_000)}, for
+     * example - cannot be honestly represented at that resolution: silently flooring it to one
+     * millisecond would let a caller believe a sub-millisecond bound was honored when a materially
+     * longer one was actually applied. Rejecting it explicitly here, in one shared place, means
+     * every implementation can convert an already-validated {@code timeout} to milliseconds
+     * directly, never needing its own {@code Math.max(1, ...)}-style silent floor.
+     *
+     * @throws IllegalArgumentException if {@code timeout} is {@code null}, zero, negative, or
+     *     positive but under one millisecond
+     */
+    static void requirePositiveMillisTimeout(Duration timeout) {
+        if (timeout == null) {
+            throw new IllegalArgumentException("timeout must not be null");
+        }
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive, was " + timeout);
+        }
+        if (timeout.toMillis() < 1) {
+            throw new IllegalArgumentException(
+                    "timeout must be at least 1 millisecond, was " + timeout.toNanos() + "ns");
+        }
     }
 
     /** Builds an immutable semantic snapshot of meaningful page content. */
