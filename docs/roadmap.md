@@ -29,7 +29,15 @@ Javadoc, user documentation, and a green `clean verify` build.
   single-use preparation factories (no `IActionPlan` ever cached in a definition); fail-fast-only
   execution with structured per-step and overall results; no hidden retries, no workflow-wide
   timeout, no cancellation. See [docs/workflow.md](workflow.md).
-- **0.9 Recording and plugins:** record/replay foundation and small `ServiceLoader` extension points.
+- **0.9-A Recording foundation:** a deterministic, versioned, secret-safe recording of one workflow
+  execution (`WorkflowRecorder`), canonical JSON encoding/decoding (`IWorkflowRecordingCodec`), and
+  a pure, offline structured comparison between a recording and a new execution's `WorkflowResult`
+  (`WorkflowReplayVerifier`). A recording is data, not a program: it has no `execute()` method and
+  cannot replay itself - there is deliberately no automatic live replay of browser actions in this
+  phase. See [docs/recording.md](recording.md).
+- **0.9-B Replay execution and plugins:** deferred - automatic re-execution from a recording (if
+  ever added, as an explicit, clearly-labeled opt-in capability, not a default), persistence, and
+  small `ServiceLoader` extension points.
 - **1.0 Stable non-AI API:** compatibility policy and production hardening.
 
 Post-1.0 candidates include MCP and agent adapters, distributed crawling, more browser backends,

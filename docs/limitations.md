@@ -124,3 +124,20 @@ backend-neutral abstraction is deliberately designed rather than duplicated ad h
 crawler's crawl-specific `CancellationToken`. Secret masking is a rendering guarantee for
 framework-owned representations, not encryption or a vault - see
 [workflow.md#secret-masking](workflow.md#secret-masking) for the exact contract and its limits.
+
+## Recording (Phase 0.9-A)
+
+The recording module (see [docs/recording.md](recording.md)) is implemented, but is deliberately
+not a browser automation replay engine. It does **not** implement: automatic live replay of
+recorded browser actions (there is no `WorkflowRecording.execute()` and no code path that
+deserializes a recording and re-drives a browser); action recreation from a recording; automatic
+retries derived from a recording; persistence to a database or filesystem; a plugin SPI or
+`ServiceLoader` discovery mechanism for recordings; screenshot, DOM, observation, HAR, or video
+capture; any AI/MCP/agent integration; or any serialized format other than the one canonical JSON
+schema (`RecordingSchemaVersion.V1`) - there is no YAML, XML, or protobuf encoding. Replay
+verification (`WorkflowReplayVerifier`) is a pure, synchronous, offline structured comparison
+between a recording and a caller-supplied `WorkflowResult` from the caller's own new execution -
+never a re-execution the module performs itself. Recreating browser actions from a recording, if it
+is ever added, is explicitly deferred to a later phase (see
+[recording.md#future-live-replay-boundary](recording.md#future-live-replay-boundary)) as an
+opt-in capability, not a default.

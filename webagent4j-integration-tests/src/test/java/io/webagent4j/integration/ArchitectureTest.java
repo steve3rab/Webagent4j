@@ -344,6 +344,55 @@ class ArchitectureTest {
     }
 
     @Test
+    void recordingRemainsIndependentFromPlaywright() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.recording..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "com.microsoft.playwright..", "io.webagent4j.browser.playwright..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void recordingRemainsIndependentFromBrowserAndCrawlerModules() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.recording..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "io.webagent4j.browser..",
+                        "io.webagent4j.crawler..",
+                        "io.webagent4j.crawler.api..",
+                        "io.webagent4j.browsercrawler..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void recordingRemainsIndependentFromPluginApi() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.recording..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("io.webagent4j.plugin..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void recordingRemainsIndependentFromAiLibraries() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.recording..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("com.openai..", "dev.langchain4j..", "org.springframework.ai..")
+                .check(projectClasses);
+    }
+
+    @Test
     void interfacesUseTheProjectPrefix() {
         // package-info.java compiles to a synthetic interface at the bytecode level, so
         // areInterfaces() matches it too; it is excluded explicitly rather than renamed, since

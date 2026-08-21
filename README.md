@@ -117,7 +117,7 @@ browser-specific implementations.
 | Area | Modules | Purpose |
 | --- | --- | --- |
 | Public contracts | `browser-api`, `dom`, `locator-api`, `observation-api` | Stable application-facing types |
-| Engines | `locator`, `observation`, `verification`, `action`, `workflow` | Deterministic semantic behavior |
+| Engines | `locator`, `observation`, `verification`, `action`, `workflow`, `recording` | Deterministic semantic behavior |
 | Browser adapters | `browser-playwright` | Playwright-backed execution |
 | Entry points | `core`, `cli`, `examples` | Configuration and usage |
 | Quality | `testing`, `integration-tests`, `robustness-tests` | Fixtures, architecture rules, browser coverage, and adversarial validation |
@@ -136,6 +136,7 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 - [HTTP crawler](docs/http-crawler.md)
 - [Browser crawler](docs/browser-crawler.md)
 - [Workflows](docs/workflow.md)
+- [Recording](docs/recording.md)
 - [Testing](docs/testing.md)
 - [Robustness benchmark](docs/robustness.md)
 - [Known limitations](docs/limitations.md)

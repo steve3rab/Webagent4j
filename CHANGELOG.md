@@ -6,6 +6,63 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Recording — Phase 0.9-A)
+
+- New `webagent4j-recording` module: a deterministic, versioned, secret-safe recording of one
+  `WorkflowResult`, plus a safe offline replay-verification mechanism. A recording is data, not a
+  program - `WorkflowRecording` has no `execute()` method and cannot replay itself; there is
+  deliberately **no automatic live replay of browser actions** in this phase. Depends only on
+  `webagent4j-workflow` and, internally, `jackson-databind` (never exposed in a public signature).
+- Recording model: `RecordingId` (caller-supplied, never randomly generated - mirrors `WorkflowId`),
+  `RecordingSchemaVersion` (closed, numbered enum, `V1` only), `WorkflowRecording`,
+  `RecordedWorkflowStep` (mirrors `WorkflowStepResult`'s FAILED/SKIPPED/NOT_RUN invariants, plus an
+  `ASSIGN`-step-never-carries-an-action check and a general false-condition-outcome-requires-SKIPPED
+  check), `RecordedCondition`, `RecordedAction`, `RecordedFailure`.
+- `WorkflowRecorder`: stateless capture, `WorkflowResult -> WorkflowRecording`. Secret safety is
+  structural, not a redaction pass - it only ever reads already-safe fields
+  (`WorkflowStepResult#condition`/`#outputVariableName`/`#failure`/`#actionSummary`) and never calls
+  `WorkflowResult#output(WorkflowVariable)`, so a secret cannot appear in a recording because the
+  code path that could observe one is never exercised. Never records `WorkflowInputs`, a raw output
+  value, `ActionResult#value()`, a raw `Throwable`, or the secret registry.
+- Canonical JSON encoding/decoding: `IWorkflowRecordingCodec`, `JsonWorkflowRecordingCodec`,
+  `RecordingFormatException`. Encoding is deterministic (fixed field order via manual
+  `JsonGenerator` writes, never default POJO ordering), never pretty-printed, never trailing a
+  newline; every optional field is always emitted (`null` when absent, never omitted); every enum
+  is written by name, never ordinal. Decoding is strict: rejects malformed JSON, a duplicate JSON
+  object key at any nesting level (`JsonParser.Feature.STRICT_DUPLICATE_DETECTION`), a missing or
+  unknown field, an unsupported `schemaVersion` (no fallback), an invalid enum value, a malformed
+  `Instant`, a value of the wrong JSON type, an invariant violation, and trailing content after the
+  document - every `RecordingFormatException` message references only a fixed schema field path,
+  never the offending raw value. No polymorphic/annotation-driven deserialization anywhere.
+- Replay verification: `WorkflowReplayVerifier#verify(WorkflowRecording, WorkflowResult)` is pure
+  and synchronous - never re-execution, never a browser/backend call. Never fails fast: every
+  mismatch is collected in one deterministic traversal (workflow identity/status, step count, each
+  common step in order, missing/extra trailing steps, then the top-level failure).
+  `WorkflowReplayResult#matches()` is derived from `mismatches().isEmpty()`, never an independently
+  settable field. `RecordingId`, `capturedAt`, `ActionId` (a fresh random correlation ID per
+  execution), a condition's description text, and a failure's `safeMessage`/underlying exception
+  type name are deliberately never compared - see [docs/recording.md](docs/recording.md) for the
+  full rationale per field. `WorkflowReplayMismatchType`, `WorkflowReplayMismatch`,
+  `WorkflowReplayResult`.
+- New unit test suites (`webagent4j-recording`): `RecordingIdTest`, `RecordingSchemaVersionTest`,
+  `RecordingModelInvariantsTest`, `WorkflowRecorderTest` (REC-001..003, REC-SAFE-001),
+  `RecordingSecretSafetyTest` (SEC-REC-001..004), `JsonWorkflowRecordingCodecTest`
+  (JSON-001..009 plus additional strictness cases), `WorkflowReplayVerifierTest`
+  (REPLAY-001..011).
+- New real-Playwright integration test `WorkflowRecordingIT` (`webagent4j-integration-tests`):
+  records a real login execution with a secret sentinel, encodes it, asserts the sentinel is
+  absent from the JSON, decodes it, executes a second independent real login, and verifies a
+  MATCH despite the two executions producing different `ActionId`s.
+- New ArchUnit rules in `ArchitectureTest`: `recordingRemainsIndependentFromPlaywright`,
+  `recordingRemainsIndependentFromBrowserAndCrawlerModules`, `recordingRemainsIndependentFromPluginApi`,
+  `recordingRemainsIndependentFromAiLibraries`.
+- New example `WorkflowRecordingExample` (`webagent4j-examples`): records a real login, round-trips
+  it through JSON, and verifies a second real login against the decoded recording.
+- New `docs/recording.md`; `docs/roadmap.md` splits Phase 0.9 into 0.9-A (this phase) and 0.9-B
+  (deferred: persistence, plugin `ServiceLoader` extension points, and any future live replay);
+  `docs/modules.md`, `docs/public-api.md`, `docs/limitations.md`, and `README.md` updated -
+  `webagent4j-recording` graduates from the reserved-module list.
+
 ### Added (Workflows — Phase 0.8)
 
 - New `webagent4j-workflow` module: a deterministic, sequential orchestration layer over

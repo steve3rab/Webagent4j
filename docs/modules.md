@@ -25,7 +25,7 @@ Arrows below mean "depends on."
 | `webagent4j-crawler` | common, crawler-api, wait | Deterministic, sequential HTTP crawler engine: `java.net.http.HttpClient` fetcher, jsoup link extraction, BFS frontier, URL normalization/deduplication/scope policy, redirect and retry handling. No browser. See [http-crawler.md](http-crawler.md) |
 | `webagent4j-browser-crawler` | common, crawler-api, browser-api, wait | Deterministic, single-lane browser crawler engine: JavaScript-rendered link discovery via `IPage.observe()`, one `IBrowser` session per crawl, page stability reused from `webagent4j-wait`, top-level frame scope, cancellation. No Playwright import. See [browser-crawler.md](browser-crawler.md) |
 | `webagent4j-workflow` | action | Deterministic, sequential orchestration engine over the action pipeline: immutable workflow definitions, typed write-once variables, masked secrets, fail-closed conditions, single-use action preparation factories, fail-fast structured results. See [workflow.md](workflow.md) |
-| `webagent4j-recording` | workflow | Reserved record/replay boundary |
+| `webagent4j-recording` | workflow | Deterministic, versioned, secret-safe recording of one workflow execution (`WorkflowRecorder`), canonical JSON encoding/decoding (`IWorkflowRecordingCodec`), and pure offline structured replay comparison (`WorkflowReplayVerifier`) - no live browser replay. See [recording.md](recording.md) |
 | `webagent4j-plugin-api` | locator | Reserved plugin boundary |
 | `webagent4j-testing` | none | Reserved shared test-fixture boundary - currently has no source code |
 | `webagent4j-cli` | core; Playwright at runtime | Public-API CLI |
@@ -42,16 +42,20 @@ Browser API exposes only immutable observation contracts and the snapshot SPI; t
 orchestrates semantic policies; the backend implements bounded capture. No public observation type
 exposes Playwright.
 
-Reserved modules (`http`, `storage`, `recording`, `plugin-api`) are intentionally empty until a
-tested vertical needs their public API. This prevents placeholder types from becoming accidental
-compatibility commitments. No Maven dependency cycle exists.
+Reserved modules (`http`, `storage`, `plugin-api`) are intentionally empty until a tested vertical
+needs their public API. This prevents placeholder types from becoming accidental compatibility
+commitments. No Maven dependency cycle exists.
 
 `webagent4j-crawler` graduated from a reserved module to a real implementation in Phase 0.6 (see
 [http-crawler.md](http-crawler.md)); its dependency set changed entirely in the process (it no
 longer depends on the still-reserved `http`/`storage` modules - the HTTP fetcher lives directly in
 `webagent4j-crawler`, since nothing else currently needs a standalone transport module).
 `webagent4j-workflow` graduated the same way in Phase 0.8, keeping its existing single dependency
-on `webagent4j-action` (see [workflow.md](workflow.md)).
+on `webagent4j-action` (see [workflow.md](workflow.md)). `webagent4j-recording` graduated the same
+way in Phase 0.9-A, keeping its existing single WebAgent4J dependency on `webagent4j-workflow` and
+adding one external, non-public-API dependency: `jackson-databind`, used only inside
+`JsonWorkflowRecordingCodec` - no Jackson type appears in any public method signature (see
+[recording.md](recording.md)).
 
 `webagent4j-extraction-api` depends only on `locator-api`, never on `dom`: an `ExtractionRequest`
 describes where to search (a `LocatorDefinition`) and how to read/convert/validate what is found,
