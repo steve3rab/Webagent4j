@@ -179,8 +179,8 @@ class WorkflowLoginIT {
             WorkflowResult result = engine.execute(workflow, inputs);
 
             assertThat(result.completed()).isTrue();
-            assertThat(inputs.toString()).doesNotContain(sentinel);
-            assertThat(result.toString()).doesNotContain(sentinel).contains("***");
+            assertThat(inputs.toString()).doesNotContain(sentinel).contains("***");
+            assertThat(result.toString()).doesNotContain(sentinel);
             assertThat(result.steps())
                     .allSatisfy(step -> assertThat(step.toString()).doesNotContain(sentinel));
         }
