@@ -62,8 +62,11 @@ WebAgent4J does not bypass CAPTCHA, authentication, anti-bot systems, access con
 does not rotate proxies or disguise browser fingerprints. Public-site tests, transactions, purchases,
 bookings, comments, messages, or destructive forms are not part of the deterministic regression suite.
 
-There is no AI, workflow engine, OCR, or visual recognition implementation in this phase. Future
-optional fallbacks must preserve explicit uncertainty and action safety.
+There is no AI, OCR, or visual recognition implementation in this phase. Future optional fallbacks
+must preserve explicit uncertainty and action safety. Phase 0.8 (see
+[docs/workflow.md](workflow.md)) adds a deterministic, sequential *orchestration* layer over
+`webagent4j-action` - typed variables, masked secrets, and fail-closed conditions - not a general
+programming language, an expression/DSL engine, or any form of AI.
 
 The deterministic extraction engine (see [docs/extraction.md](extraction.md)) does not yet implement
 crawling, pagination, distributed/scraping-at-scale scenarios, AI-based schema inference, OCR,
@@ -104,3 +107,20 @@ includes a dedicated real-Playwright adversarial suite, `BrowserCrawlerRobustnes
 (BC-ROB-001..014), covering cyclic graphs, duplicate fan-out, normalization dedup, exact `maxPages`/
 `maxDepth` bounds, cancellation/failFast resource cleanup, backend failures, stability timeouts,
 dynamic-DOM discovery boundaries, out-of-scope links/redirects, and deterministic repeated runs.
+
+## Workflows (Phase 0.8)
+
+The workflow module (see [docs/workflow.md](workflow.md)) is implemented, but is deliberately not a
+general programming language. It does not implement: loops, `while`, `forEach`, recursion,
+arbitrary graph execution or DAG scheduling, parallel branches, fork/join, an `if`/`else` branching
+step (guarded sequential steps cover the supported cases), workflow-level or automatic action
+retries beyond the action layer's own, compensation/sagas, transactions, persistence, resumable
+workflows, checkpoints, distributed execution, scheduling, cron, timers, external event triggers, a
+YAML/JSON workflow DSL, a visual editor, dynamic plugin discovery or `ServiceLoader` step
+registration, recording/replay, or any AI/MCP/agent integration. There is also no workflow-wide hard
+timeout and no workflow cancellation in this phase: a Java-side deadline wrapped around an
+otherwise-unbounded step can be false safety, and general cancellation is deferred until a
+backend-neutral abstraction is deliberately designed rather than duplicated ad hoc from the browser
+crawler's crawl-specific `CancellationToken`. Secret masking is a rendering guarantee for
+framework-owned representations, not encryption or a vault - see
+[workflow.md#secret-masking](workflow.md#secret-masking) for the exact contract and its limits.

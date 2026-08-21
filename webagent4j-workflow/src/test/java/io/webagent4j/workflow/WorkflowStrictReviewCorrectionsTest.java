@@ -1,0 +1,1549 @@
+package io.webagent4j.workflow;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import io.webagent4j.action.ActionFailureType;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Regression suite for the strict correction round of Phase 0.8: the closed step contract,
+ * fail-closed optional-input mismatch, write-once inputs, unique input declarations, undeclared
+ * inputs, deterministic ordering, defensive custom-condition handling, and cross-field secret
+ * redaction.
+ */
+class WorkflowStrictReviewCorrectionsTest {
+
+    private static final String SECRET_SENTINEL = "WA4J_SUPER_SECRET_982734";
+    private static final WorkflowVariable<String> USERNAME =
+            WorkflowVariable.publicValue("username", String.class);
+    private static final WorkflowVariable<Boolean> FLAG =
+            WorkflowVariable.publicValue("flag", Boolean.class);
+    private static final WorkflowVariable<String> TOKEN = WorkflowVariable.secret("token");
+
+    private final WorkflowEngine engine = new WorkflowEngine();
+
+    // ---- STEP-API: the sealed step contract -------------------------------------------------
+
+    @Test
+    void stepApi001IWorkflowStepIsSealedAndPermitsOnlyAWorkflowStep() {
+        // No runtime "external step causes ClassCastException" test is needed or even possible:
+        // IWorkflowStep is sealed and permits only the package-private AWorkflowStep, so a class
+        // implementing IWorkflowStep anywhere outside that exact permitted type - even in this
+        // same package, even in this same file - is a compile-time error, not a runtime one. This
+        // test documents that closure precisely via reflection.
+        assertThat(IWorkflowStep.class.isSealed()).isTrue();
+        Class<?>[] permitted = IWorkflowStep.class.getPermittedSubclasses();
+        assertThat(permitted).extracting(Class::getSimpleName).containsExactly("AWorkflowStep");
+    }
+
+    // ---- INPUT-OPT: optional input fail-closed mismatch handling ----------------------------
+
+    @Test
+    void inputOpt001OptionalAbsentContinuesExecution() {
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .optionalInput(FLAG)
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice"))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+    }
+
+    @Test
+    void inputOpt002OptionalPresentWithCorrectDeclarationIsSeeded() {
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .optionalInput(FLAG)
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.isTrue(FLAG)))
+                        .build();
+
+        WorkflowResult result =
+                engine.execute(workflow, WorkflowInputs.builder().put(FLAG, true).build());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.steps().get(0).status()).isEqualTo(WorkflowStepStatus.SUCCEEDED);
+    }
+
+    @Test
+    void inputOpt003OptionalWrongTypeDeclarationFailsBeforeStepZero() {
+        AtomicInteger factoryCalls = new AtomicInteger();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .optionalInput(FLAG)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars -> {
+                                            factoryCalls.incrementAndGet();
+                                            return new FakePreparedAction<>(
+                                                    ActionResults.success("ok"),
+                                                    new AtomicInteger());
+                                        }))
+                        .build();
+        WorkflowVariable<Integer> wrongType = WorkflowVariable.publicValue("flag", Integer.class);
+        WorkflowInputs inputs = WorkflowInputs.builder().put(wrongType, 1).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.INPUT_TYPE_MISMATCH);
+        assertThat(result.steps())
+                .allSatisfy(
+                        step -> assertThat(step.status()).isEqualTo(WorkflowStepStatus.NOT_RUN));
+        assertThat(factoryCalls).hasValue(0);
+    }
+
+    @Test
+    void inputOpt004OptionalSecretVsPublicMismatchFailsBeforeStepZero() {
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .optionalInput(TOKEN)
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice"))
+                        .build();
+        WorkflowVariable<String> publicToken = WorkflowVariable.publicValue("token", String.class);
+        WorkflowInputs inputs = WorkflowInputs.builder().put(publicToken, "abc").build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.INPUT_TYPE_MISMATCH);
+    }
+
+    @Test
+    void inputOpt004bOptionalPublicVsSecretMismatchFailsBeforeStepZero() {
+        WorkflowVariable<String> publicName = WorkflowVariable.publicValue("name", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .optionalInput(publicName)
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice"))
+                        .build();
+        WorkflowVariable<String> secretName = WorkflowVariable.secret("name");
+        WorkflowInputs inputs = WorkflowInputs.builder().put(secretName, "abc").build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.INPUT_TYPE_MISMATCH);
+    }
+
+    // ---- INPUT-DUP: write-once inputs and unique declarations --------------------------------
+
+    @Test
+    void inputDup001SameWorkflowInputsVariableSuppliedTwiceIsRejected() {
+        WorkflowInputs.Builder builder = WorkflowInputs.builder().put(USERNAME, "alice");
+
+        assertThatThrownBy(() -> builder.put(USERNAME, "bob"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("username");
+    }
+
+    @Test
+    void inputDup002SameWorkflowInputsVariableSuppliedTwiceWithSameValueIsRejected() {
+        WorkflowInputs.Builder builder = WorkflowInputs.builder().put(USERNAME, "alice");
+
+        assertThatThrownBy(() -> builder.put(USERNAME, "alice"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void inputDup003DuplicateRequiredInputDeclarationRejected() {
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .requiredInput(USERNAME)
+                        .requiredInput(USERNAME)
+                        .step(WorkflowSteps.assign("s1", FLAG, true));
+
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("username");
+    }
+
+    @Test
+    void inputDup004DuplicateOptionalInputDeclarationRejected() {
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .optionalInput(FLAG)
+                        .optionalInput(FLAG)
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice"));
+
+        assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void inputDup005RequiredAndOptionalDuplicateRejected() {
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .requiredInput(USERNAME)
+                        .optionalInput(USERNAME)
+                        .step(WorkflowSteps.assign("s1", FLAG, true));
+
+        assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void inputDup006RequiredAndConflictingOptionalDuplicateRejected() {
+        WorkflowVariable<Integer> conflicting =
+                WorkflowVariable.publicValue("username", Integer.class);
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .requiredInput(USERNAME)
+                        .optionalInput(conflicting)
+                        .step(WorkflowSteps.assign("s1", FLAG, true));
+
+        assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ---- INPUT-EXTRA: undeclared inputs -------------------------------------------------------
+
+    @Test
+    void inputExtra001UndeclaredPublicInputFailsBeforeStepZero() {
+        AtomicInteger factoryCalls = new AtomicInteger();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars -> {
+                                            factoryCalls.incrementAndGet();
+                                            return new FakePreparedAction<>(
+                                                    ActionResults.success("ok"),
+                                                    new AtomicInteger());
+                                        }))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(USERNAME, "alice").build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.UNDECLARED_INPUT);
+        assertThat(factoryCalls).hasValue(0);
+    }
+
+    @Test
+    void inputExtra002UndeclaredSecretInputFailsWithoutLeakingValue() {
+        Workflow workflow =
+                Workflow.builder("wf").step(WorkflowSteps.assign("s1", USERNAME, "alice")).build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(TOKEN, SECRET_SENTINEL).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.UNDECLARED_INPUT);
+        assertThat(result.failure().orElseThrow().safeMessage())
+                .doesNotContain(SECRET_SENTINEL)
+                .contains("token");
+        assertThat(result.toString()).doesNotContain(SECRET_SENTINEL);
+    }
+
+    @Test
+    void inputExtra003AllDeclaredInputsSucceed() {
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(USERNAME)
+                        .step(WorkflowSteps.assign("s1", FLAG, true))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(USERNAME, "alice").build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+    }
+
+    // ---- ORDER: deterministic insertion/publication order -------------------------------------
+
+    @Test
+    void order001WorkflowInputsRenderingPreservesInsertionOrder() {
+        WorkflowVariable<String> a = WorkflowVariable.publicValue("a", String.class);
+        WorkflowVariable<String> b = WorkflowVariable.publicValue("b", String.class);
+        WorkflowVariable<String> c = WorkflowVariable.publicValue("c", String.class);
+
+        WorkflowInputs inputs =
+                WorkflowInputs.builder().put(b, "1").put(a, "2").put(c, "3").build();
+
+        String rendered = inputs.toString();
+        assertThat(rendered.indexOf("b=")).isLessThan(rendered.indexOf("a="));
+        assertThat(rendered.indexOf("a=")).isLessThan(rendered.indexOf("c="));
+    }
+
+    @Test
+    void order002WorkflowOutputsRenderingPreservesPublicationOrder() {
+        WorkflowVariable<String> out2 = WorkflowVariable.publicValue("out-2", String.class);
+        WorkflowVariable<String> out1 = WorkflowVariable.publicValue("out-1", String.class);
+        WorkflowVariable<String> out3 = WorkflowVariable.publicValue("out-3", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("step-out-2", out2, "b"))
+                        .step(WorkflowSteps.assign("step-out-1", out1, "a"))
+                        .step(WorkflowSteps.assign("step-out-3", out3, "c"))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        String rendered = result.toString();
+        assertThat(rendered.indexOf("out-2=")).isLessThan(rendered.indexOf("out-1="));
+        assertThat(rendered.indexOf("out-1=")).isLessThan(rendered.indexOf("out-3="));
+    }
+
+    // ---- COND-CUSTOM: defensive handling of trusted custom conditions -------------------------
+
+    private static IWorkflowCondition throwingEvaluateCondition() {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                throw new IllegalStateException("boom");
+            }
+
+            @Override
+            public String describe() {
+                return "throwingEvaluate";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of();
+            }
+        };
+    }
+
+    @Test
+    void condCustom001EvaluateThrowsBecomesStructuredFailure() {
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(throwingEvaluateCondition()))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+    }
+
+    @Test
+    void condCustom002DescribeThrowsAfterSuccessfulEvaluateBecomesStructuredFailure() {
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        throw new IllegalStateException("describe boom");
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(result.failure().orElseThrow().underlyingTypeName())
+                .contains(IllegalStateException.class.getName());
+    }
+
+    @Test
+    void condCustom003NullDescriptionBecomesStructuredFailure() {
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return null;
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+    }
+
+    @Test
+    void condCustom004DescriptionContainingKnownSecretIsRedacted() {
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "token == " + SECRET_SENTINEL;
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(TOKEN)
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(TOKEN, SECRET_SENTINEL).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(SECRET_SENTINEL).contains("***");
+    }
+
+    @Test
+    void condCustom005LongDescriptionIsBounded() {
+        String hugeText = "x".repeat(10_000);
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return hugeText;
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description.length()).isLessThan(hugeText.length());
+    }
+
+    @Test
+    void condCustom006NullReferencedVariablesRejectedAtBuild() {
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "custom";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return null;
+                    }
+                };
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition));
+
+        assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void condCustom007ReferencedVariablesContainingNullRejectedAtBuild() {
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "custom";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        java.util.Set<WorkflowVariable<?>> set = new java.util.HashSet<>();
+                        set.add(null);
+                        return set;
+                    }
+                };
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition));
+
+        assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void condCustom008ReferencedVariablesThrowingRejectedAtBuild() {
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "custom";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        throw new IllegalStateException("boom");
+                    }
+                };
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition));
+
+        assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void condCustom009EvaluateCalledExactlyOnce() {
+        AtomicInteger evaluateCount = new AtomicInteger();
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        evaluateCount.incrementAndGet();
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "custom";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition))
+                        .build();
+
+        engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(evaluateCount).hasValue(1);
+    }
+
+    // ---- SEC-CROSS: cross-field secret redaction ----------------------------------------------
+
+    @Test
+    void secCross001PublicInputContainingSecretTextIsRedacted() {
+        String secretValue = "hunter2";
+        WorkflowVariable<String> comment = WorkflowVariable.publicValue("comment", String.class);
+        WorkflowInputs inputs =
+                WorkflowInputs.builder()
+                        .put(TOKEN, secretValue)
+                        .put(comment, "contains hunter2 inside")
+                        .build();
+
+        String rendered = inputs.toString();
+
+        assertThat(rendered).doesNotContain(secretValue).contains("***");
+    }
+
+    @Test
+    void secCross002PublicOutputContainingSecretTextIsRedacted() {
+        String secretValue = "token123";
+        WorkflowVariable<String> secretOut = WorkflowVariable.secret("secretOut");
+        WorkflowVariable<String> publicOut =
+                WorkflowVariable.publicValue("publicOut", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "produce-secret",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(secretValue),
+                                                        new AtomicInteger()),
+                                        secretOut))
+                        .step(
+                                WorkflowSteps.action(
+                                        "produce-public",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                secretValue + "-suffix"),
+                                                        new AtomicInteger()),
+                                        publicOut))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.toString()).doesNotContain(secretValue).contains("***");
+    }
+
+    @Test
+    void secCross003OverlappingSecretsInPublicFieldFullyRedacted() {
+        WorkflowVariable<String> secretB = WorkflowVariable.secret("secretB");
+        WorkflowVariable<String> comment = WorkflowVariable.publicValue("comment", String.class);
+        WorkflowInputs inputs =
+                WorkflowInputs.builder()
+                        .put(TOKEN, "abc")
+                        .put(secretB, "abcdef")
+                        .put(comment, "abcdef and abc")
+                        .build();
+
+        String rendered = inputs.toString();
+
+        assertThat(rendered).doesNotContain("abcdef").doesNotContain("***def");
+    }
+
+    // ---- SEC-OUTPUT / SEC-ACTION: secret participation in later diagnostics -------------------
+
+    @Test
+    void secOutput001SecretOutputProtectsLaterFailureRedaction() {
+        String secretValue = "producedSecret987";
+        WorkflowVariable<String> secretOut = WorkflowVariable.secret("secretOut");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "produce",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(secretValue),
+                                                        new AtomicInteger()),
+                                        secretOut))
+                        .step(
+                                WorkflowSteps.action(
+                                        "leaky",
+                                        vars -> {
+                                            throw new RuntimeException(
+                                                    "unexpected " + vars.require(secretOut));
+                                        }))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().safeMessage())
+                .doesNotContain(secretValue)
+                .contains("***");
+    }
+
+    @Test
+    void secAction001ActionFailureMessageSecretIsRedacted() {
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(TOKEN)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.<String>failure(
+                                                                ActionFailureType.BACKEND_FAILURE,
+                                                                "credential "
+                                                                        + vars.require(TOKEN)
+                                                                        + " rejected"),
+                                                        new AtomicInteger())))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(TOKEN, SECRET_SENTINEL).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().safeMessage())
+                .doesNotContain(SECRET_SENTINEL)
+                .contains("***");
+    }
+
+    // ---- SEC-MSG: bounding and null-safety -----------------------------------------------------
+
+    @Test
+    void secMsg001HugeFactoryExceptionMessageIsBounded() {
+        String hugeMessage = "y".repeat(5_000);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars -> {
+                                            throw new IllegalStateException(hugeMessage);
+                                        }))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.failure().orElseThrow().safeMessage().length())
+                .isLessThan(hugeMessage.length());
+    }
+
+    @Test
+    void secMsg002HugeActionFailureMessageIsBounded() {
+        String hugeMessage = "z".repeat(5_000);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.<String>failure(
+                                                                ActionFailureType.BACKEND_FAILURE,
+                                                                hugeMessage),
+                                                        new AtomicInteger())))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.failure().orElseThrow().safeMessage().length())
+                .isLessThan(hugeMessage.length());
+    }
+
+    @Test
+    void secMsg003SecretNearTruncationBoundaryIsFullyRedacted() {
+        String prefix = "p".repeat(190);
+        String message = prefix + SECRET_SENTINEL;
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(TOKEN)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars -> {
+                                            throw new RuntimeException(message);
+                                        }))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(TOKEN, SECRET_SENTINEL).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.failure().orElseThrow().safeMessage()).doesNotContain(SECRET_SENTINEL);
+    }
+
+    @Test
+    void secMsg004NullExceptionMessageGetsSafeDeterministicFallback() {
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars -> {
+                                            throw new IllegalStateException((String) null);
+                                        }))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().safeMessage()).isNotBlank();
+    }
+
+    // ---- THREAD / ACTION-EX: execution guarantees ----------------------------------------------
+
+    @Test
+    void thread001ConditionFactoryAndPreparedExecuteAllRunOnCallingThread() {
+        long callingThreadId = Thread.currentThread().threadId();
+        java.util.concurrent.atomic.AtomicLong conditionThread =
+                new java.util.concurrent.atomic.AtomicLong(-1);
+        java.util.concurrent.atomic.AtomicLong factoryThread =
+                new java.util.concurrent.atomic.AtomicLong(-1);
+        java.util.concurrent.atomic.AtomicLong executeThread =
+                new java.util.concurrent.atomic.AtomicLong(-1);
+
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        conditionThread.set(Thread.currentThread().threadId());
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "threadCapture";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                                "s1",
+                                                vars -> {
+                                                    factoryThread.set(
+                                                            Thread.currentThread().threadId());
+                                                    return new RecordingPreparedAction<>(
+                                                            () -> ActionResults.success("ok"),
+                                                            executeThread);
+                                                })
+                                        .when(condition))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(conditionThread).hasValue(callingThreadId);
+        assertThat(factoryThread).hasValue(callingThreadId);
+        assertThat(executeThread).hasValue(callingThreadId);
+    }
+
+    // ---- SEC-OUT-IN: secret inputs leaking into public outputs -------------------------------
+
+    @Test
+    void secOutIn001RequiredSecretInputLeakingIntoPublicOutputIsMasked() {
+        String secretValue = "WA4J_SECRET_INPUT_76123";
+        WorkflowVariable<String> password = WorkflowVariable.secret("password");
+        WorkflowVariable<String> message = WorkflowVariable.publicValue("message", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(password)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                "used " + vars.require(password)),
+                                                        new AtomicInteger()),
+                                        message))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(password, secretValue).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.output(message)).contains("used " + secretValue);
+        assertThat(result.toString()).doesNotContain(secretValue).contains("***");
+    }
+
+    @Test
+    void secOutIn002FailedResultStillMasksPriorPublicOutputContainingSecretInput() {
+        String secretValue = "WA4J_SECRET_INPUT_55210";
+        WorkflowVariable<String> password = WorkflowVariable.secret("password");
+        WorkflowVariable<String> message = WorkflowVariable.publicValue("message", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(password)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                "used " + vars.require(password)),
+                                                        new AtomicInteger()),
+                                        message))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars -> {
+                                            throw new RuntimeException("boom");
+                                        }))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(password, secretValue).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.toString()).doesNotContain(secretValue);
+    }
+
+    @Test
+    void secOutIn003OptionalSecretInputLeakingIntoPublicOutputIsMasked() {
+        String secretValue = "WA4J_SECRET_OPTIONAL_31890";
+        WorkflowVariable<String> apiKey = WorkflowVariable.secret("apiKey");
+        WorkflowVariable<String> message = WorkflowVariable.publicValue("message", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .optionalInput(apiKey)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                "key " + vars.require(apiKey)),
+                                                        new AtomicInteger()),
+                                        message))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(apiKey, secretValue).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.toString()).doesNotContain(secretValue).contains("***");
+    }
+
+    // ---- SEC-LATE: a secret revealed later still protects an earlier public output -----------
+
+    @Test
+    void secLate001PublicOutputProducedBeforeLaterSecretOutputIsMaskedInFinalResult() {
+        String value = "WA4J_LATE_SECRET_46213";
+        WorkflowVariable<String> publicFirst =
+                WorkflowVariable.publicValue("publicFirst", String.class);
+        WorkflowVariable<String> secretLater = WorkflowVariable.secret("secretLater");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        publicFirst))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        secretLater))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.output(publicFirst)).contains(value);
+        assertThat(result.toString()).doesNotContain(value).contains("***");
+    }
+
+    // ---- SEC-BOUND: redaction happens before bounding/truncation, never after -----------------
+
+    @Test
+    void secBoundIn001SecretStraddlingBoundInPublicInputIsFullyRedacted() {
+        String secretValue = "WA4J_BOUNDARY_SECRET_928374";
+        String prefix = "p".repeat(190);
+        String publicValue = prefix + secretValue;
+        WorkflowVariable<String> boundaryToken = WorkflowVariable.secret("boundaryToken");
+        WorkflowVariable<String> note = WorkflowVariable.publicValue("note", String.class);
+        WorkflowInputs inputs =
+                WorkflowInputs.builder()
+                        .put(boundaryToken, secretValue)
+                        .put(note, publicValue)
+                        .build();
+
+        String rendered = inputs.toString();
+
+        assertThat(rendered).doesNotContain(secretValue).doesNotContain("WA4J_BOUNDARY_SECRET");
+    }
+
+    @Test
+    void secBoundOut001SecretInputStraddlingBoundInPublicOutputIsFullyRedacted() {
+        String secretValue = "WA4J_BOUNDARY_SECRET_928374";
+        String prefix = "q".repeat(190);
+        WorkflowVariable<String> boundaryToken = WorkflowVariable.secret("boundaryToken");
+        WorkflowVariable<String> note = WorkflowVariable.publicValue("note", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(boundaryToken)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                prefix
+                                                                        + vars.require(
+                                                                                boundaryToken)),
+                                                        new AtomicInteger()),
+                                        note))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(boundaryToken, secretValue).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.toString())
+                .doesNotContain(secretValue)
+                .doesNotContain("WA4J_BOUNDARY_SECRET");
+    }
+
+    @Test
+    void secBoundOut002SecretOutputStraddlingBoundInPublicOutputIsFullyRedacted() {
+        String secretValue = "WA4J_BOUNDARY_SECRET_928374";
+        String prefix = "r".repeat(190);
+        WorkflowVariable<String> boundarySecretOut = WorkflowVariable.secret("boundarySecretOut");
+        WorkflowVariable<String> note2 = WorkflowVariable.publicValue("note2", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "produce-secret",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(secretValue),
+                                                        new AtomicInteger()),
+                                        boundarySecretOut))
+                        .step(
+                                WorkflowSteps.action(
+                                        "produce-public",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(prefix + secretValue),
+                                                        new AtomicInteger()),
+                                        note2))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.toString())
+                .doesNotContain(secretValue)
+                .doesNotContain("WA4J_BOUNDARY_SECRET");
+    }
+
+    @Test
+    void secBoundCond001BuiltInConditionLiteralStraddlingBoundIsFullyRedacted() {
+        String secretValue = "WA4J_BOUNDARY_SECRET_928374";
+        String prefix = "s".repeat(190);
+        String publicLiteral = prefix + secretValue;
+        WorkflowVariable<String> boundaryGuard = WorkflowVariable.secret("boundaryGuard");
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(boundaryGuard)
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.equals(status, publicLiteral)))
+                        .build();
+        WorkflowInputs inputs =
+                WorkflowInputs.builder()
+                        .put(boundaryGuard, secretValue)
+                        .put(status, publicLiteral)
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(secretValue).doesNotContain("WA4J_BOUNDARY_SECRET");
+    }
+
+    // ---- SEC-LATE-COND: a condition description recorded for an earlier step is finalized at
+    // workflow termination, not at evaluation time - so a secret revealed by a later successful
+    // step still masks it, whether the condition was TRUE, FALSE, or the workflow later failed ----
+
+    @Test
+    void secLateCond001TrueConditionDescriptionMaskedByLaterSecretOutput() {
+        String value = "WA4J_LATE_CONDITION_SECRET_12345";
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateSecret");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", FLAG, true)
+                                        .when(WorkflowConditions.equals(status, value)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(status, value).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.steps().get(0).condition().orElseThrow().outcome()).isTrue();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(value).contains("***");
+        assertThat(result.steps().get(0).toString()).doesNotContain(value);
+        assertThat(result.toString()).doesNotContain(value);
+    }
+
+    @Test
+    void secLateCond002SkippedConditionDescriptionMaskedByLaterSecretOutput() {
+        String value = "WA4J_LATE_CONDITION_SKIPPED_98765";
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateSecretSkipped");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", FLAG, true)
+                                        .when(WorkflowConditions.equals(status, value)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(status, "not-" + value).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.steps().get(0).status()).isEqualTo(WorkflowStepStatus.SKIPPED);
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(value).contains("***");
+    }
+
+    @Test
+    void secLateCond003BoundaryStraddlingFutureSecretIsFullyRedacted() {
+        String secretValue = "WA4J_LATE_BOUNDARY_SECRET_928374";
+        String prefix = "p".repeat(190);
+        String publicLiteral = prefix + secretValue;
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateBoundarySecret");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", FLAG, true)
+                                        .when(WorkflowConditions.equals(status, publicLiteral)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(secretValue),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(status, publicLiteral).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description)
+                .doesNotContain(secretValue)
+                .doesNotContain("WA4J_LATE_BOUNDARY_SECRET");
+    }
+
+    @Test
+    void secLateCond004FailedWorkflowStillMasksEarlierConditionDescriptionAfterLateSecret() {
+        String value = "WA4J_LATE_CONDITION_FAILED_45612";
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateSecretFailed");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", FLAG, true)
+                                        .when(WorkflowConditions.equals(status, value)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s3",
+                                        vars -> {
+                                            throw new RuntimeException("boom");
+                                        }))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(status, value).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(value).contains("***");
+        assertThat(result.toString()).doesNotContain(value);
+    }
+
+    @Test
+    void condCallOnce001EvaluateAndDescribeEachCalledExactlyOnceDespiteLateFinalization() {
+        AtomicInteger evaluateCount = new AtomicInteger();
+        AtomicInteger describeCount = new AtomicInteger();
+        String value = "WA4J_CALL_ONCE_SECRET_5544";
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        evaluateCount.incrementAndGet();
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        describeCount.incrementAndGet();
+                        return "custom(" + value + ")";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        WorkflowVariable<String> lateSecret = WorkflowVariable.secret("callOnceLateSecret");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(WorkflowSteps.assign("s1", USERNAME, "alice").when(condition))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        lateSecret))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(evaluateCount).hasValue(1);
+        assertThat(describeCount).hasValue(1);
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(value).contains("***");
+    }
+
+    // ---- COND-COMPOSE: not/allOf/anyOf preserve a malformed child condition's describe() ------
+    // metadata rather than normalizing a null description into the literal text "null" ----------
+
+    private static IWorkflowCondition trueConditionWithDescribe(
+            String description, AtomicInteger describeCount) {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return true;
+            }
+
+            @Override
+            public String describe() {
+                describeCount.incrementAndGet();
+                return description;
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of();
+            }
+        };
+    }
+
+    private static IWorkflowCondition trueConditionWithNullDescribe(AtomicInteger describeCount) {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return true;
+            }
+
+            @Override
+            public String describe() {
+                describeCount.incrementAndGet();
+                return null;
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of();
+            }
+        };
+    }
+
+    private static IWorkflowCondition trueConditionWithThrowingDescribe() {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return true;
+            }
+
+            @Override
+            public String describe() {
+                throw new IllegalStateException("describe boom");
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of();
+            }
+        };
+    }
+
+    @Test
+    void condComposeNull001NotPreservesNullChildDescription() {
+        AtomicInteger describeCount = new AtomicInteger();
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(describeCount);
+        AtomicInteger stepRuns = new AtomicInteger();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                                "s1",
+                                                vars -> {
+                                                    stepRuns.incrementAndGet();
+                                                    return new FakePreparedAction<>(
+                                                            ActionResults.success("ok"),
+                                                            new AtomicInteger());
+                                                })
+                                        .when(WorkflowConditions.not(malformed)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(result.steps().get(0).status()).isEqualTo(WorkflowStepStatus.FAILED);
+        assertThat(stepRuns).hasValue(0);
+    }
+
+    @Test
+    void condComposeNull001bNotDescribeReturnsNullDirectly() {
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(new AtomicInteger());
+
+        assertThat(WorkflowConditions.not(malformed).describe()).isNull();
+    }
+
+    @Test
+    void condComposeNull002AllOfStopsAtFirstNullChildDescription() {
+        AtomicInteger firstDescribeCount = new AtomicInteger();
+        AtomicInteger malformedDescribeCount = new AtomicInteger();
+        AtomicInteger thirdDescribeCount = new AtomicInteger();
+        IWorkflowCondition first = trueConditionWithDescribe("first", firstDescribeCount);
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(malformedDescribeCount);
+        IWorkflowCondition third = trueConditionWithDescribe("third", thirdDescribeCount);
+        AtomicInteger stepRuns = new AtomicInteger();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                                "s1",
+                                                vars -> {
+                                                    stepRuns.incrementAndGet();
+                                                    return new FakePreparedAction<>(
+                                                            ActionResults.success("ok"),
+                                                            new AtomicInteger());
+                                                })
+                                        .when(WorkflowConditions.allOf(first, malformed, third)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(firstDescribeCount).hasValue(1);
+        assertThat(malformedDescribeCount).hasValue(1);
+        assertThat(thirdDescribeCount).hasValue(0);
+        assertThat(stepRuns).hasValue(0);
+    }
+
+    @Test
+    void condComposeNull002bAllOfDescribeReturnsNullDirectly() {
+        IWorkflowCondition valid = trueConditionWithDescribe("valid", new AtomicInteger());
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(new AtomicInteger());
+
+        assertThat(WorkflowConditions.allOf(valid, malformed).describe()).isNull();
+    }
+
+    @Test
+    void condComposeNull003AnyOfPreservesNullChildDescription() {
+        AtomicInteger describeCount = new AtomicInteger();
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(describeCount);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.anyOf(malformed)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+    }
+
+    @Test
+    void condComposeNull003bAnyOfDescribeReturnsNullDirectly() {
+        IWorkflowCondition malformed = trueConditionWithNullDescribe(new AtomicInteger());
+
+        assertThat(WorkflowConditions.anyOf(malformed).describe()).isNull();
+    }
+
+    @Test
+    void condComposeEx001NotPropagatesChildDescribeException() {
+        IWorkflowCondition throwing = trueConditionWithThrowingDescribe();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.not(throwing)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(result.failure().orElseThrow().underlyingTypeName())
+                .contains(IllegalStateException.class.getName());
+    }
+
+    @Test
+    void condComposeEx002AllOfPropagatesChildDescribeException() {
+        IWorkflowCondition valid = trueConditionWithDescribe("ok", new AtomicInteger());
+        IWorkflowCondition throwing = trueConditionWithThrowingDescribe();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.allOf(valid, throwing)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        assertThat(result.failure().orElseThrow().underlyingTypeName())
+                .contains(IllegalStateException.class.getName());
+    }
+
+    @Test
+    void condComposeCall001NotCallsChildDescribeExactlyOnce() {
+        AtomicInteger evaluateCount = new AtomicInteger();
+        AtomicInteger describeCount = new AtomicInteger();
+        IWorkflowCondition child =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        evaluateCount.incrementAndGet();
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        describeCount.incrementAndGet();
+                        return "child";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.not(child)))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(evaluateCount).hasValue(1);
+        assertThat(describeCount).hasValue(1);
+    }
+
+    // ---- STEP-RESULT: WorkflowStepResult invariants --------------------------------------------
+
+    @Test
+    void stepResult001SkippedStepResultRequiresConditionOutcome() {
+        assertThatThrownBy(
+                        () ->
+                                new WorkflowStepResult(
+                                        new WorkflowStepId("s1"),
+                                        WorkflowStepType.ASSIGN,
+                                        WorkflowStepStatus.SKIPPED,
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void actionEx001PreparedExecuteRuntimeExceptionBecomesStructuredStepException() {
+        AtomicInteger step1Calls = new AtomicInteger();
+        AtomicInteger step2Calls = new AtomicInteger();
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars -> {
+                                            step1Calls.incrementAndGet();
+                                            return new RecordingPreparedAction<String>(
+                                                    () -> {
+                                                        throw new RuntimeException(
+                                                                "backend exploded");
+                                                    },
+                                                    null);
+                                        }))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars -> {
+                                            step2Calls.incrementAndGet();
+                                            return new FakePreparedAction<>(
+                                                    ActionResults.success("ok"),
+                                                    new AtomicInteger());
+                                        }))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.STEP_EXCEPTION);
+        assertThat(result.steps().get(0).status()).isEqualTo(WorkflowStepStatus.FAILED);
+        assertThat(result.steps().get(1).status()).isEqualTo(WorkflowStepStatus.NOT_RUN);
+        assertThat(step1Calls).hasValue(1);
+        assertThat(step2Calls).hasValue(0);
+    }
+}

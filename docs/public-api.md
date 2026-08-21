@@ -40,6 +40,7 @@ can actually use today - reserved/placeholder modules are listed separately in
 | Deterministic data extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | `IPage#extract(...)`/`extractList(...)`/`extractTable(...)`, `ExtractionRequest<T>` |
 | HTTP crawling (no browser) | `webagent4j-crawler-api`, `webagent4j-crawler` | `ICrawler`, `HttpCrawler`, `CrawlRequest`, `CrawlResult` |
 | Browser crawling (JS-rendered, sessions) | `webagent4j-browser-crawler` (+ `webagent4j-browser-playwright` at runtime) | `IBrowserCrawler`, `BrowserCrawler`, `BrowserCrawlRequest`, `BrowserCrawlResult` |
+| Deterministic action orchestration (typed variables, masked secrets, conditions) | `webagent4j-workflow` | `Workflow`, `WorkflowEngine`, `WorkflowSteps`, `WorkflowVariable`, `WorkflowResult` |
 | Playwright browser adapter | `webagent4j-browser-playwright` (runtime only) | `PlaywrightBrowserProvider` (discovered via `ServiceLoader`, never referenced directly) |
 | CLI usage without writing Java | `webagent4j-cli` | `java -jar webagent4j-cli-*.jar ...` (see [Getting started](getting-started.md)) |
 
@@ -537,6 +538,77 @@ automatic browser fallback.
 **Related guide:** [http-crawler.md](http-crawler.md) (redirect handling, retry semantics, response-
 size protection, and the precise determinism/`Throwable`-equality contract).
 
+### Workflows
+
+**What it is:** a deterministic, sequential orchestration layer over `webagent4j-action` - an
+immutable, reusable `Workflow` definition of typed-variable, optionally-secret, optionally-guarded
+steps, executed by a stateless `WorkflowEngine` into a structured, secret-masked `WorkflowResult`.
+Not a general programming language: no loops, no branching graph, no hidden retries. **Module:**
+`webagent4j-workflow` (depends only on `webagent4j-action`).
+
+```java
+WorkflowVariable<String> username = WorkflowVariable.publicValue("username", String.class);
+WorkflowVariable<String> password = WorkflowVariable.secret("password");
+
+Workflow login = Workflow.builder("login")
+        .requiredInput(username)
+        .requiredInput(password)
+        .step(WorkflowSteps.action("type-username",
+                vars -> page.action().type(usernameField, vars.require(username))))
+        .step(WorkflowSteps.action("type-password",
+                vars -> page.action().typeSecret(passwordField, Secret.of(vars.require(password)))))
+        .step(WorkflowSteps.action("sign-in",
+                vars -> page.action().click(signInButton).expect(urlContains("/dashboard"))))
+        .build();
+
+WorkflowResult result = new WorkflowEngine().execute(login, WorkflowInputs.builder()
+        .put(username, "alice")
+        .put(password, "hunter2")
+        .build());
+result.throwIfFailed();
+```
+
+**Public types:**
+
+| Type | Purpose |
+| --- | --- |
+| `Workflow`, `Workflow.Builder` | immutable, reusable workflow definition; structural validation only, no side effects |
+| `WorkflowEngine` | stateless executor; one private, isolated session per `execute()` call |
+| `WorkflowId`, `WorkflowStepId` | stable, caller-chosen identity (never randomly generated) |
+| `WorkflowVariable<T>` | typed, optionally-secret variable key; `publicValue`/`secret` factories |
+| `IWorkflowVariables` | read-only variable view handed to conditions and action factories |
+| `WorkflowVariableMissingException` | thrown by `IWorkflowVariables#require` for a missing variable |
+| `WorkflowInputs`, `WorkflowInputs.Builder` | immutable, explicit execution inputs; secret-masked `toString()` |
+| `WorkflowOutputs` | immutable produced-variable set backing `WorkflowResult#output` |
+| `IWorkflowCondition`, `WorkflowConditions` | built-in conditions (`exists`, `notExists`, `equals`, `notEquals`, `isTrue`, `isFalse`, `not`, `allOf`, `anyOf`); `IWorkflowCondition` is also a trusted Java extension point, handled defensively by the engine (see [workflow.md#conditions](workflow.md#conditions)) |
+| `WorkflowConditionResult` | safe, structured outcome of one condition evaluation |
+| `IWorkflowStep`, `WorkflowSteps` | `sealed` step contract with no custom-implementation extension point; `action`/`assign` factories (no public constructor) |
+| `IWorkflowActionFactory<R>` | single-use-per-execution preparation factory: `IWorkflowVariables -> IPreparedAction<R>` |
+| `WorkflowStatus`, `WorkflowStepStatus`, `WorkflowStepType` | terminal-outcome and category enums |
+| `WorkflowFailureType`, `WorkflowFailure` | stable failure taxonomy and safe, redacted failure detail (never a raw `Throwable`) |
+| `WorkflowActionSummary` | safe projection of an `ActionResult` (`ActionId`/`ActionType`/`ActionStatus`/`ActionExecutionMode` only) |
+| `WorkflowStepResult`, `WorkflowResult` | structured per-step and overall execution outcome |
+| `WorkflowFailedException` | optional `throwIfFailed()` projection, mirroring `ActionFailedException` |
+
+**Secret masking:** explicit typed retrieval (`IWorkflowVariables#require`/`#find`,
+`WorkflowResult#output`) always returns the real value; every incidental, framework-owned
+rendering (every `toString()`, every condition `describe()`) masks a secret as `***`, centrally,
+with longest-first redaction for overlapping secret values, always applied before any
+bounding/truncation. `WorkflowInputs`/`WorkflowOutputs` rendering is cross-field: a known secret's
+raw text is redacted everywhere it appears, even inside a value from a field declared public. See
+[workflow.md#secret-masking](workflow.md#secret-masking) for the full contract and its limits.
+
+**Execution semantics:** strictly sequential, single-threaded, fail-fast only - the first failed
+step stops the workflow and marks every later step `NOT_RUN`. No workflow-level retry (a failed
+action may already have a real side effect), no workflow-wide timeout, no cancellation in this
+phase.
+
+**Explicitly not implemented in this phase:** loops, branching graphs, parallel execution,
+persistence, scheduling, an expression/DSL language, and recording/replay or AI/MCP integration.
+
+**Related guide:** [workflow.md](workflow.md) (full architecture, the complete secret-masking
+contract, condition semantics, and determinism guarantee).
+
 ## Error and result semantics
 
 WebAgent4J distinguishes several situations that a less explicit API might collapse into one
@@ -719,13 +791,14 @@ public API. Do not add a dependency on them expecting functionality:
 | --- | --- |
 | `webagent4j-http` | A future standalone non-browser HTTP transport boundary (the HTTP crawler currently has its own fetcher and does not need this) |
 | `webagent4j-storage` | A future persistence boundary |
-| `webagent4j-workflow` | Phase 0.8 workflow engine |
 | `webagent4j-recording` | Phase 0.9 record/replay |
 | `webagent4j-plugin-api` | Phase 0.9 `ServiceLoader`-based extension points |
 
-`webagent4j-crawler` graduated from this list to a real implementation in Phase 0.6; nothing else on
-this list has graduated yet. See [modules.md](modules.md) for the full dependency graph and
-[roadmap.md](roadmap.md) for what each future phase is expected to deliver.
+`webagent4j-crawler` graduated from this list to a real implementation in Phase 0.6, and
+`webagent4j-workflow` graduated in Phase 0.8 (see [Workflows](#workflows) and
+[workflow.md](workflow.md)); nothing else on this list has graduated yet. See
+[modules.md](modules.md) for the full dependency graph and [roadmap.md](roadmap.md) for what each
+future phase is expected to deliver.
 
 `webagent4j-testing` also currently has **no source code at all** (only its `pom.xml` exists) - it is
 not yet a usable shared test-fixture library, despite appearing in the module graph as a

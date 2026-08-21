@@ -6,6 +6,89 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Workflows — Phase 0.8)
+
+- New `webagent4j-workflow` module: a deterministic, sequential orchestration layer over
+  `webagent4j-action`. `Workflow`/`Workflow.Builder` (immutable, reusable definitions; building
+  performs structural validation only, never a side effect), `WorkflowEngine` (stateless; one
+  private, isolated session per `execute()` call), `WorkflowId`/`WorkflowStepId`.
+- Typed, write-once variables: `WorkflowVariable<T>` (`publicValue`/`secret` factories - no
+  `Map<String, Object>` anywhere in the public API), `IWorkflowVariables`,
+  `WorkflowVariableMissingException`, `WorkflowInputs`/`WorkflowInputs.Builder`, `WorkflowOutputs`.
+  Required inputs are validated before step 0 runs; optional inputs have no implicit default.
+- Masked secret variables with a centralized, single-point redaction contract
+  (`SecretRedactor`, internal): explicit typed retrieval always returns the real value; every
+  incidental framework-owned rendering (`toString()` on every public workflow type, every condition
+  `describe()`) masks a secret as `***`, longest-first for overlapping secret values. No public
+  result type exposes an arbitrary raw `Throwable`.
+- A small, fixed set of fail-closed declarative conditions: `IWorkflowCondition`,
+  `WorkflowConditions` (`exists`, `notExists`, `equals`, `notEquals`, `isTrue`, `isFalse`, `not`,
+  `allOf`, `anyOf`) - never an arbitrary `Predicate` or an expression language.
+- Real action-pipeline integration through single-use preparation factories:
+  `IWorkflowActionFactory<R>` is invoked at most once per execution, only when a step actually
+  runs, and only ever calls `IPreparedAction#execute()` once - no `IActionPlan` is ever cached
+  inside a workflow definition. `WorkflowSteps.action`/`WorkflowSteps.assign` are the only ways to
+  create a step; `WorkflowActionSummary` safely projects an `ActionResult` without leaking its raw
+  value, observations, or cause.
+- Fail-fast-only sequential execution: `WorkflowStatus`/`WorkflowStepStatus`
+  (`SUCCEEDED`/`SKIPPED`/`FAILED`/`NOT_RUN`), `WorkflowFailureType`/`WorkflowFailure`,
+  `WorkflowStepResult`/`WorkflowResult`, `WorkflowFailedException`. The first failed step stops
+  execution immediately; no workflow-level retry, no workflow-wide timeout, no cancellation in this
+  phase.
+- Everything runs synchronously on the calling thread - no `ExecutorService`, no
+  `CompletableFuture`, no parallelism anywhere in the engine.
+- New unit test suite (`webagent4j-workflow`: structural validation, condition semantics, secret
+  masking/redaction, and action-factory integration using fakes), real-Playwright
+  `WorkflowLoginIT` and `WorkflowRobustnessIT` suites (`webagent4j-integration-tests`, reusing the
+  existing `/login` -> `/dashboard` fixture), three new ArchUnit rules
+  (`workflowRemainsIndependentFromPlaywright`, `workflowRemainsIndependentFromAiLibraries`,
+  `workflowRemainsIndependentFromBrowserAndCrawlerModules`), and a new `WorkflowLoginExample`.
+- Depends only on `webagent4j-action` - never Playwright, the browser crawler, or the HTTP crawler
+  directly. See [docs/workflow.md](docs/workflow.md) for the full architecture, the complete
+  secret-masking contract, and this phase's documented limitations.
+- Updated `docs/roadmap.md`, `docs/modules.md`, `docs/public-api.md`, and `README.md` to reflect
+  Phase 0.8.
+- Hardened after strict review: `IWorkflowStep` is now `sealed` with no custom-implementation
+  extension point, eliminating a latent `ClassCastException` risk from the prior open-interface
+  design; `IWorkflowCondition` remains a trusted Java extension point but is now handled fully
+  defensively by `WorkflowEngine` (a throwing/null `describe()` or `referencedVariables()` never
+  escapes as a raw exception, and `referencedVariables()` null/throwing/containing-null is rejected
+  at build time). `WorkflowInputs.Builder#put` now rejects re-supplying an already-provided input
+  name (write-once is fully enforced, not just documented); `Workflow.Builder#build()` rejects a
+  duplicate required/optional input declaration and a `WorkflowInputs` entry naming an undeclared
+  input (`WorkflowFailureType.UNDECLARED_INPUT`) fails before step 0. `WorkflowInputs`/
+  `WorkflowOutputs#toString()` now redact a known secret's raw text everywhere it appears, including
+  inside an unrelated public field's value, not just the field declared secret; redaction always
+  happens before message bounding/truncation.
+- Second strict-review pass fixed two further secret-safety gaps: `WorkflowOutputs`' safe rendering
+  is now computed once, when `WorkflowEngine` assembles the final `WorkflowResult`, against every
+  secret known to that execution up to that point - including secret **inputs**, not only this
+  container's own secret outputs, and including a secret revealed by a *later* step, so an earlier
+  public output containing that same text is still masked. `WorkflowInputs`/`WorkflowOutputs`
+  rendering, and a built-in condition's own literal comparison text, are now redacted *before*
+  bounding rather than after in every case, closing a boundary case where a secret straddling the
+  200-character truncation limit could leak a partial fragment. Added a `WorkflowStepResult`
+  invariant requiring a `SKIPPED` result to carry its condition outcome, and 9 new regression tests
+  covering both fixes.
+- Third strict-review pass fixed a remaining condition-result leak: a `SKIPPED`/`SUCCEEDED` step's
+  `WorkflowConditionResult` used to be redacted and bounded immediately when its condition was
+  evaluated, so a secret a *later* step went on to reveal could never retroactively mask an
+  *earlier* condition's already-recorded description. `WorkflowEngine` now captures a condition's
+  description once, at evaluation time, but keeps it as unredacted, unbounded internal state until
+  the workflow terminates (`COMPLETED` or `FAILED`), then redacts it against every secret known by
+  then and bounds it - mirroring the fix already applied to `WorkflowOutputs`. `condition.describe()`
+  is still called at most once per evaluated condition either way. Added 5 new regression tests.
+- Fourth strict-review pass fixed a fail-closed contract bug in the built-in condition combinators:
+  `WorkflowConditions.not`/`allOf`/`anyOf` converted a wrapped custom condition's malformed `null`
+  `describe()` result into the literal text `"null"` through ordinary Java string concatenation and
+  `StringBuilder` appending, bypassing `WorkflowEngine`'s documented null-description fail-closed
+  path. Composite descriptions now propagate a `null` child description unchanged (never as literal
+  text), stop composing further children as soon as one is malformed, invoke each child's
+  `describe()` at most once, and let a wrapped child's thrown `RuntimeException` propagate to
+  `WorkflowEngine`'s existing defensive boundary unchanged. Added 9 new regression tests covering
+  `not`/`allOf`/`anyOf` with a null or throwing child description, both directly and through a full
+  workflow execution.
+
 ### Added (Browser Crawler — Phase 0.7)
 
 - New `webagent4j-browser-crawler` module: a deterministic, single-lane browser crawler.
