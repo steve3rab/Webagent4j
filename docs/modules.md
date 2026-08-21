@@ -26,11 +26,11 @@ Arrows below mean "depends on."
 | `webagent4j-browser-crawler` | common, crawler-api, browser-api, wait | Deterministic, single-lane browser crawler engine: JavaScript-rendered link discovery via `IPage.observe()`, one `IBrowser` session per crawl, page stability reused from `webagent4j-wait`, top-level frame scope, cancellation. No Playwright import. See [browser-crawler.md](browser-crawler.md) |
 | `webagent4j-workflow` | action | Deterministic, sequential orchestration engine over the action pipeline: immutable workflow definitions, typed write-once variables, masked secrets, fail-closed conditions, single-use action preparation factories, fail-fast structured results. See [workflow.md](workflow.md) |
 | `webagent4j-recording` | workflow | Deterministic, versioned recording that excludes raw workflow values, preserves engine-redacted diagnostics, and documents verbatim metadata identifiers (`WorkflowRecorder`); canonical JSON encoding/decoding (`IWorkflowRecordingCodec`); pure offline structured replay comparison (`WorkflowReplayVerifier`) - no live browser replay. See [recording.md](recording.md) |
-| `webagent4j-plugin-api` | locator | Reserved plugin boundary |
+| `webagent4j-plugin-api` | locator | Explicit, deterministic `ServiceLoader` discovery for trusted custom locator strategies; immutable fail-closed registry. See [plugins.md](plugins.md) |
 | `webagent4j-testing` | none | Reserved shared test-fixture boundary - currently has no source code |
 | `webagent4j-cli` | core; Playwright at runtime | Public-API CLI |
 | `webagent4j-examples` | core, crawler, crawler-api, workflow; Playwright at runtime | Executable public-API examples |
-| `webagent4j-integration-tests` | core, Playwright, testing, workflow | Architecture and browser integration tests |
+| `webagent4j-integration-tests` | core, Playwright, plugin-api, testing, workflow | Architecture and browser integration tests |
 | `webagent4j-robustness-tests` | core, Playwright | Profile-gated deterministic adversarial corpus and cross-phase journeys |
 
 The separate locator API module allows `IElement.find()` without a Maven dependency cycle. The DOM
@@ -42,9 +42,9 @@ Browser API exposes only immutable observation contracts and the snapshot SPI; t
 orchestrates semantic policies; the backend implements bounded capture. No public observation type
 exposes Playwright.
 
-Reserved modules (`http`, `storage`, `plugin-api`) are intentionally empty until a tested vertical
-needs their public API. This prevents placeholder types from becoming accidental compatibility
-commitments. No Maven dependency cycle exists.
+Reserved modules (`http`, `storage`) are intentionally empty until a tested vertical needs their
+public API. This prevents placeholder types from becoming accidental compatibility commitments. No
+Maven dependency cycle exists.
 
 `webagent4j-crawler` graduated from a reserved module to a real implementation in Phase 0.6 (see
 [http-crawler.md](http-crawler.md)); its dependency set changed entirely in the process (it no
@@ -56,6 +56,10 @@ way in Phase 0.9-A, keeping its existing single WebAgent4J dependency on `webage
 adding one external, non-public-API dependency: `jackson-databind`, used only inside
 `JsonWorkflowRecordingCodec` - no Jackson type appears in any public method signature (see
 [recording.md](recording.md)).
+
+`webagent4j-plugin-api` graduated in Phase 0.9-B while preserving its existing one-way dependency on
+`webagent4j-locator`. It owns explicit `ServiceLoader` discovery and immutable registration only;
+locator, core, workflow, and recording never depend on it. See [plugins.md](plugins.md).
 
 `webagent4j-extraction-api` depends only on `locator-api`, never on `dom`: an `ExtractionRequest`
 describes where to search (a `LocatorDefinition`) and how to read/convert/validate what is found,

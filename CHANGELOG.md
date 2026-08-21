@@ -6,6 +6,27 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added (Plugins — Phase 0.9-B)
+
+- `webagent4j-plugin-api` now provides explicit, deterministic `ServiceLoader` discovery for trusted
+  custom locator strategies. WebAgent4J loads zero locator plugins unless an application calls
+  `PluginLoader`; the default `LocatorEngine` and browser paths never scan for them.
+- Added immutable plugin metadata and registry contracts: `PluginId`, `PluginVersion`,
+  `PluginDescriptor`, `ILocatorStrategyProvider`, `PluginRegistry`, and `PluginLoader`.
+- Added structured fail-closed diagnostics through `PluginLoadFailureType`, `PluginLoadFailure`, and
+  `PluginLoadException`. Raw provider exception messages and causes are not exposed by translated
+  load failures.
+- Provider construction is ordered by fully qualified class name, descriptors are published in
+  plugin-ID order, and custom strategy execution reuses the locator registry's phase, descending
+  priority, and stable-ID order. Duplicate plugin IDs and strategy IDs are errors; versions never
+  select a winner.
+- Added the generic `LocatorEngine(ILocatorStrategyRegistry)` composition constructor. Locator
+  remains independent of the plugin API and service discovery.
+- Added the `PLUGIN-LOAD-001..026` unit matrix, ArchUnit dependency-direction rules, and a test-only
+  provider exercised through a real Chromium `PluginLocatorIT`.
+- Added [docs/plugins.md](docs/plugins.md) and updated architecture, modules, public API, roadmap,
+  limitations, and README documentation.
+
 ### Added (Recording — Phase 0.9-A)
 
 - New `webagent4j-recording` module: a deterministic, versioned recording that excludes raw

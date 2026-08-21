@@ -147,3 +147,22 @@ are persisted verbatim and may appear in JSON, record `toString()` output, or lo
 custom action implementations must keep them non-sensitive. This is an explicit metadata trust
 boundary, separate from the exclusion of raw workflow inputs, output values, action values, and raw
 exceptions.
+
+## Plugins (Phase 0.9-B)
+
+The plugin API (see [docs/plugins.md](plugins.md)) supports only custom locator strategies discovered
+after an explicit `PluginLoader` call. It does not provide automatic discovery through the default
+locator/browser path, plugin lifecycle callbacks, dependency injection, configuration schemas,
+permissions, sandboxing, process isolation, plugin directories, annotation scanning, network
+downloads, hot reload, unloading, file watching, version/dependency resolution, or extension points
+for actions, workflows, recordings, crawlers, browser providers, or observations.
+
+Providers and their strategies are trusted in-process Java code with normal JVM permissions. A
+provider can block, mutate global state, perform I/O, or fail at runtime; WebAgent4J validates the
+registration shape but cannot make arbitrary extension code safe. Load-time registration is
+fail-closed and does not expose raw provider exception messages. Runtime failures from a custom
+strategy propagate through the locator call rather than being reclassified as an empty result.
+
+`PluginId`, `PluginVersion`, and provider class names are diagnostic metadata, not secret channels.
+Callers and plugin authors must keep them non-sensitive. Version labels are not a compatibility
+promise: WebAgent4J performs no range matching, highest-version selection, or dependency solving.

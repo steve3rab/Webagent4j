@@ -23,6 +23,23 @@ Application / CLI / future optional integration
 Playwright adapter ------> Browser API and domain contracts
 ```
 
+Plugins use a separate, opt-in composition path. The locator engine remains unaware of service
+discovery:
+
+```text
+Application
+    |
+    v
+PluginLoader -> ServiceLoader<ILocatorStrategyProvider>
+    |
+    v
+validated PluginRegistry -> LocatorStrategyRegistry -> LocatorEngine
+```
+
+`webagent4j-plugin-api` depends on `webagent4j-locator`, never the reverse. No default engine,
+browser startup, workflow, recording, crawler, or action path calls `PluginLoader`; without the
+explicit application call, zero locator plugins are loaded. See [plugins.md](plugins.md).
+
 `webagent4j-locator-api` breaks the dependency cycle required by scoped queries: it contains generic
 fluent contracts and immutable definitions, `IElement` exposes `find()`, and the locator engine depends
 on the DOM contract for scoring. It also carries `ILocatorScope<E>`, the typed contract for
@@ -122,6 +139,9 @@ Semantic Model ----> Locator / Action / Extraction
   `webagent4j-crawler-api`, `webagent4j-wait`) and cannot depend on Playwright or an AI/LLM library -
   it navigates through `IPage`/`IBrowser`, never a native browser type. See
   [browser-crawler.md](browser-crawler.md).
+- `webagent4j-plugin-api` depends only on locator and the JDK. Locator, core, workflow, and recording
+  never depend on the plugin API, and no plugin API type depends on Playwright, another browser
+  implementation, or an AI/LLM library.
 - Public action contracts cannot depend on action implementation packages.
 - No module depends on an AI, LLM, MCP, Spring, Jakarta EE, reactive, or dependency-injection framework.
 - Cross-module implementations live in `internal` packages when they are not stable API.
