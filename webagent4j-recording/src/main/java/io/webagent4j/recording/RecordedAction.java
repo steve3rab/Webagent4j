@@ -7,15 +7,16 @@ import io.webagent4j.action.ActionType;
 import java.util.Objects;
 
 /**
- * Safe, recorded projection of one action-backed step's outcome.
+ * Recorded projection of one action-backed step's outcome.
  *
- * <p>Mirrors {@code WorkflowActionSummary} field-for-field: only categorical, non-secret data is
- * retained, never a raw action result value. {@code actionId} is trace metadata only - a fresh
- * random correlation ID assigned per execution - so {@link WorkflowReplayVerifier} never compares
- * it: two otherwise-identical executions of the same workflow would always mismatch on this field
- * alone if it were compared, making it useless as a semantic signal.
+ * <p>Mirrors {@code WorkflowActionSummary} field-for-field. The action type, status, and execution
+ * mode are categorical, and no raw action result value is retained. {@code actionId} is opaque
+ * metadata supplied by the action pipeline: this module persists it verbatim and does not
+ * secret-redact it. {@link WorkflowReplayVerifier} ignores it because correlation identity is not a
+ * semantic workflow outcome.
  *
- * @param actionId the action pipeline's own correlation identifier, for diagnostics only
+ * @param actionId the action pipeline's correlation identifier, persisted verbatim and expected to
+ *     contain non-sensitive metadata
  * @param actionType the executed operation category
  * @param status the action pipeline's terminal status
  * @param executionMode whether the backend was actually invoked, simulated, or never reached

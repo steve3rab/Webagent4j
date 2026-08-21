@@ -11,17 +11,19 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Captures a {@code WorkflowResult} into an immutable, secret-safe {@link WorkflowRecording}.
+ * Captures a {@code WorkflowResult} into an immutable {@link WorkflowRecording}.
  *
- * <p><b>Secret safety is structural, not a redaction pass:</b> this class only ever reads {@code
- * WorkflowResult.workflowId()}, {@code .status()}, {@code .steps()}, and {@code .failure()} - each
- * of which is already restricted to safe, categorical, or previously-redacted data - and the
- * equivalent safe accessors on {@code WorkflowStepResult}, {@code WorkflowConditionResult}, {@code
- * WorkflowActionSummary}, and {@code WorkflowFailure}. It never calls {@link
- * WorkflowResult#output(io.webagent4j.workflow.WorkflowVariable)}, never reads {@code
- * WorkflowResult.outputs()}, and never inspects a raw {@code ActionResult} value or {@code
- * Throwable}: a secret cannot appear in a recording because the code path that could observe one is
- * simply never exercised, not because a value is masked afterward.
+ * <p><b>Secret-safety boundary:</b> raw workflow value channels are excluded structurally. This
+ * recorder never reads {@code WorkflowInputs}, raw {@code WorkflowOutputs}, {@link
+ * WorkflowResult#output(io.webagent4j.workflow.WorkflowVariable)}, {@code ActionResult.value},
+ * action observations or diagnostics, raw {@code Throwable} data, or the workflow secret registry.
+ * Condition descriptions and failure messages copied from {@code WorkflowResult} have already been
+ * redacted by {@code WorkflowEngine}.
+ *
+ * <p>Identifiers supplied by callers or action implementations, including {@link RecordingId} and
+ * {@code ActionId}, are metadata and are persisted as supplied. This module performs no heuristic
+ * classification or redaction of metadata, so callers and action implementations must keep those
+ * identifiers non-sensitive.
  */
 public final class WorkflowRecorder {
 
@@ -31,7 +33,7 @@ public final class WorkflowRecorder {
     /**
      * Records {@code result} as an immutable {@link WorkflowRecording}.
      *
-     * @param recordingId the caller-supplied identifier for the new recording
+     * @param recordingId the non-sensitive caller-supplied identifier, persisted verbatim
      * @param capturedAt the caller-supplied capture time
      * @param result the workflow execution outcome to record
      */

@@ -306,11 +306,13 @@ On success, if the step declared an output variable, the action's result value i
 that variable's type and published; a `null` value or a type mismatch becomes a structured failure
 (`NULL_OUTPUT`/`OUTPUT_TYPE_MISMATCH`) rather than corrupting workflow state. On failure -
 `ActionResult#success() == false` - the workflow step fails and no later step runs. The engine
-projects only safe fields from the `ActionResult`: `ActionId`, `ActionType`, `ActionStatus`,
-`ActionExecutionMode`, and (for a failure) the `ActionFailureType` and a safe message - never the
-action's raw value, its observations, or its underlying cause. `ActionResult#executed()` semantics
-are preserved end to end, but the engine never retries: a failed action may already have performed
-a real side effect, and an automatic replay could resubmit, delete, pay, or confirm twice.
+projects only the action's correlation metadata (`ActionId`), categorical outcome fields
+(`ActionType`, `ActionStatus`, `ActionExecutionMode`), and (for a failure) the
+`ActionFailureType` and a safe message - never the action's raw value, observations, diagnostics,
+or underlying cause. `ActionId` is supplied by the action pipeline and is not secret-redacted by
+the workflow layer; it must contain non-sensitive correlation metadata. `ActionResult#executed()`
+semantics are preserved end to end, but the engine never retries: a failed action may already have
+performed a real side effect, and an automatic replay could resubmit, delete, pay, or confirm twice.
 
 ## Structured results
 

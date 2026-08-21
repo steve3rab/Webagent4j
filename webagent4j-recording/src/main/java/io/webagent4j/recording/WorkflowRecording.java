@@ -8,7 +8,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * An immutable, versioned, secret-safe recording of one workflow execution.
+ * An immutable, versioned recording that excludes raw workflow values and preserves engine-redacted
+ * diagnostics.
  *
  * <p>A recording is data, not a program: it has no {@code execute()} method, retains no action
  * factory, prepared action plan, page, or browser reference, and cannot replay itself. Replaying a
@@ -20,10 +21,13 @@ import java.util.Optional;
  * <p>{@code recordingId} and {@code capturedAt} are always caller-supplied, exactly like {@code
  * WorkflowId}: neither is generated inside this module, so the same recording data always produces
  * the same identity and timestamp regardless of how many times it is captured or re-encoded.
+ * Identifiers such as {@code recordingId} and an action's {@code actionId} are persisted verbatim,
+ * are visible through record {@code toString()} output, and must contain only non-sensitive
+ * metadata.
  *
  * @param schemaVersion the canonical JSON schema version this recording conforms to
- * @param recordingId the caller-supplied recording identifier, ignored by {@link
- *     WorkflowReplayVerifier}
+ * @param recordingId the non-sensitive caller-supplied recording identifier, persisted verbatim and
+ *     ignored by {@link WorkflowReplayVerifier}
  * @param capturedAt the caller-supplied capture time, ignored by {@link WorkflowReplayVerifier}
  * @param workflowId the recorded execution's workflow identifier
  * @param status the recorded execution's overall terminal outcome

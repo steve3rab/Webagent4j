@@ -8,8 +8,9 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added (Recording — Phase 0.9-A)
 
-- New `webagent4j-recording` module: a deterministic, versioned, secret-safe recording of one
-  `WorkflowResult`, plus a safe offline replay-verification mechanism. A recording is data, not a
+- New `webagent4j-recording` module: a deterministic, versioned recording that excludes raw
+  workflow values, preserves engine-redacted diagnostics, and documents its verbatim metadata
+  trust boundary, plus a safe offline replay-verification mechanism. A recording is data, not a
   program - `WorkflowRecording` has no `execute()` method and cannot replay itself; there is
   deliberately **no automatic live replay of browser actions** in this phase. Depends only on
   `webagent4j-workflow` and, internally, `jackson-databind` (never exposed in a public signature).
@@ -18,12 +19,11 @@ All notable changes to this project will be documented in this file. The format 
   `RecordedWorkflowStep` (mirrors `WorkflowStepResult`'s FAILED/SKIPPED/NOT_RUN invariants, plus an
   `ASSIGN`-step-never-carries-an-action check and a general false-condition-outcome-requires-SKIPPED
   check), `RecordedCondition`, `RecordedAction`, `RecordedFailure`.
-- `WorkflowRecorder`: stateless capture, `WorkflowResult -> WorkflowRecording`. Secret safety is
-  structural, not a redaction pass - it only ever reads already-safe fields
-  (`WorkflowStepResult#condition`/`#outputVariableName`/`#failure`/`#actionSummary`) and never calls
-  `WorkflowResult#output(WorkflowVariable)`, so a secret cannot appear in a recording because the
-  code path that could observe one is never exercised. Never records `WorkflowInputs`, a raw output
-  value, `ActionResult#value()`, a raw `Throwable`, or the secret registry.
+- `WorkflowRecorder`: stateless capture, `WorkflowResult -> WorkflowRecording`. Raw workflow value
+  channels are excluded structurally: it never records `WorkflowInputs`, raw output values,
+  `ActionResult#value()`, raw `Throwable` data, or the secret registry, and it preserves diagnostic
+  text already redacted by `WorkflowEngine`. Caller/action-supplied identifiers are a separate
+  metadata trust boundary and are persisted verbatim.
 - Canonical JSON encoding/decoding: `IWorkflowRecordingCodec`, `JsonWorkflowRecordingCodec`,
   `RecordingFormatException`. Encoding is deterministic (fixed field order via manual
   `JsonGenerator` writes, never default POJO ordering), never pretty-printed, never trailing a
@@ -39,8 +39,8 @@ All notable changes to this project will be documented in this file. The format 
   mismatch is collected in one deterministic traversal (workflow identity/status, step count, each
   common step in order, missing/extra trailing steps, then the top-level failure).
   `WorkflowReplayResult#matches()` is derived from `mismatches().isEmpty()`, never an independently
-  settable field. `RecordingId`, `capturedAt`, `ActionId` (a fresh random correlation ID per
-  execution), a condition's description text, and a failure's `safeMessage`/underlying exception
+  settable field. `RecordingId`, `capturedAt`, `ActionId` (non-semantic correlation metadata), a
+  condition's description text, and a failure's `safeMessage`/underlying exception
   type name are deliberately never compared - see [docs/recording.md](docs/recording.md) for the
   full rationale per field. `WorkflowReplayMismatchType`, `WorkflowReplayMismatch`,
   `WorkflowReplayResult`.
@@ -63,6 +63,17 @@ All notable changes to this project will be documented in this file. The format 
   unscoped future candidates, not a promise of 0.9-B); `docs/modules.md`, `docs/public-api.md`,
   `docs/limitations.md`, and `README.md` updated - `webagent4j-recording` graduates from the
   reserved-module list.
+
+### Fixed (Recording — metadata trust boundary)
+
+- Clarified the Phase 0.9-A recording security boundary: raw workflow inputs/outputs, action values,
+  observations, diagnostics, and raw exceptions remain excluded, while caller/action-supplied
+  metadata identifiers such as `RecordingId` and `ActionId` are explicitly documented as persisted
+  verbatim and required to be non-sensitive.
+- Added `RecordingMetadataTrustBoundaryTest` (`META-TRUST-001..004`) covering a custom ordinary
+  `ActionId`, sensitive-looking `ActionId` text, intentional workflow-secret propagation through a
+  custom action's metadata, and caller-supplied `RecordingId` persistence. JSON schema V1 and replay
+  semantics are unchanged.
 
 ### Fixed (Recording — Phase 0.9-A strict review, round 1)
 
