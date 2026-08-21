@@ -61,7 +61,7 @@ class JsonWorkflowRecordingCodecTest {
         return RecordingFixtures.minimalFailed(
                 "wf",
                 List.of(RecordingFixtures.notRunStep("s1")),
-                RecordingFixtures.failure(WorkflowFailureType.MISSING_REQUIRED_INPUT, null));
+                RecordingFixtures.preflightFailure(WorkflowFailureType.MISSING_REQUIRED_INPUT));
     }
 
     /** Every optional field is always emitted, as null when absent - never omitted. */

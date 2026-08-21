@@ -45,13 +45,18 @@ class WorkflowReplayVerifierTest {
     }
 
     private WorkflowResult failingExecution() {
+        return failingExecutionWithMessage("boom");
+    }
+
+    /** Same workflow shape as {@link #failingExecution()}, with a caller-chosen factory message. */
+    private WorkflowResult failingExecutionWithMessage(String message) {
         Workflow workflow =
                 Workflow.builder("wf-replay-fail")
                         .step(
                                 WorkflowSteps.action(
                                         "s1",
                                         vars -> {
-                                            throw new RuntimeException("boom");
+                                            throw new RuntimeException(message);
                                         }))
                         .build();
         return engine.execute(workflow, WorkflowInputs.empty());
@@ -136,17 +141,6 @@ class WorkflowReplayVerifierTest {
                 base.status(),
                 steps,
                 base.failure());
-    }
-
-    private static WorkflowRecording withFailure(WorkflowRecording base, RecordedFailure failure) {
-        return new WorkflowRecording(
-                base.schemaVersion(),
-                base.recordingId(),
-                base.capturedAt(),
-                base.workflowId(),
-                base.status(),
-                base.steps(),
-                Optional.of(failure));
     }
 
     /**
@@ -310,22 +304,24 @@ class WorkflowReplayVerifierTest {
                 .contains(WorkflowReplayMismatchType.CONDITION_OUTCOME_MISMATCH);
     }
 
-    /** REPLAY-008: a changed failure message is never reported as a mismatch. */
+    /**
+     * REPLAY-008: a changed failure message is never reported as a mismatch. Uses two independently
+     * valid executions of the same workflow shape and failure type (ACTION_FACTORY_FAILED at "s1")
+     * that differ only in the factory exception's message, rather than mutating a single
+     * recording's top-level failure - {@link RecordingInvariants} now requires the overall failure
+     * to be fully identical to the FAILED step's own failure within one recording (see {@code
+     * RecordingInvariants} Javadoc), so {@code safeMessage} can no longer be mutated in isolation.
+     */
     @Test
     void replay008FailureMessageIgnored() {
-        WorkflowResult failed = failingExecution();
-        WorkflowRecording recording = recorder.record(new RecordingId("r"), Instant.now(), failed);
-        RecordedFailure original = recording.failure().orElseThrow();
-        RecordedFailure mutated =
-                new RecordedFailure(
-                        original.type(),
-                        "a completely different safe message",
-                        original.stepId(),
-                        original.underlyingTypeName(),
-                        original.actionFailureType());
-        WorkflowRecording mutatedRecording = withFailure(recording, mutated);
+        WorkflowResult recorded = failingExecutionWithMessage("boom");
+        WorkflowResult actual = failingExecutionWithMessage("a completely different message");
+        assertThat(recorded.failure().orElseThrow().safeMessage())
+                .isNotEqualTo(actual.failure().orElseThrow().safeMessage());
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("r"), Instant.now(), recorded);
 
-        WorkflowReplayResult replay = verifier.verify(mutatedRecording, failed);
+        WorkflowReplayResult replay = verifier.verify(recording, actual);
 
         assertThat(replay.matches()).isTrue();
     }

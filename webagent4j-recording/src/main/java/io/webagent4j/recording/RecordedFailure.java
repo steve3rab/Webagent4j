@@ -32,12 +32,26 @@ public record RecordedFailure(
         Optional<String> underlyingTypeName,
         Optional<ActionFailureType> actionFailureType) {
 
-    /** Validates failure data. */
+    /**
+     * Validates failure data, including the {@code ActionFailureType} taxonomy: {@code
+     * ActionWorkflowStep} only ever projects an {@code ActionFailureType} for {@code ACTION_FAILED}
+     * (from a non-success {@code ActionResult}, which always carries one), and never for any other
+     * {@code WorkflowFailureType}.
+     */
     public RecordedFailure {
         Objects.requireNonNull(type, "type");
         safeMessage = Objects.requireNonNull(safeMessage, "safeMessage");
         stepId = Objects.requireNonNull(stepId, "stepId");
         underlyingTypeName = Objects.requireNonNull(underlyingTypeName, "underlyingTypeName");
         actionFailureType = Objects.requireNonNull(actionFailureType, "actionFailureType");
+        if (type == WorkflowFailureType.ACTION_FAILED) {
+            if (actionFailureType.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "an ACTION_FAILED failure must carry an ActionFailureType");
+            }
+        } else if (actionFailureType.isPresent()) {
+            throw new IllegalArgumentException(
+                    "only an ACTION_FAILED failure may carry an ActionFailureType");
+        }
     }
 }

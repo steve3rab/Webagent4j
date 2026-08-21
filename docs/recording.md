@@ -94,25 +94,82 @@ by `JsonWorkflowRecordingCodec`:
 
 - Every `stepId` in `steps()` is unique.
 - **`COMPLETED`**: every step is `SUCCEEDED` or `SKIPPED` - never `FAILED`, never `NOT_RUN`.
-- **`FAILED` before execution** (a declared-input validation failure - `MISSING_REQUIRED_INPUT`,
-  `INPUT_TYPE_MISMATCH`, or `UNDECLARED_INPUT` in the current engine): the overall failure carries
-  no `stepId`, and every step is `NOT_RUN`. There may be zero steps.
-- **`FAILED` during execution**: zero or more `SUCCEEDED`/`SKIPPED` steps, then exactly one
+- **`FAILED` before execution (preflight)**: raised by `WorkflowEngine.Session#validateAndSeedInputs`
+  before step 0 ever runs, so it can *only* be one of the three preflight failure types -
+  `MISSING_REQUIRED_INPUT`, `INPUT_TYPE_MISMATCH`, `UNDECLARED_INPUT` - and *only* one of those three
+  may ever omit a `stepId`. Concretely: the overall failure carries no `stepId`, no
+  `underlyingTypeName`, and no `actionFailureType`, and every step is `NOT_RUN` (there may be zero
+  steps). Every other failure type is a **runtime** failure and is rejected unless it carries the
+  failing step's `stepId` - a runtime failure type with no `stepId` is invalid even if every step
+  happens to be `NOT_RUN`, since the *type* alone determines which shape is legal, not how the steps
+  happen to look.
+- **`FAILED` during execution (runtime)**: zero or more `SUCCEEDED`/`SKIPPED` steps, then exactly one
   `FAILED` step, then zero or more `NOT_RUN` steps. The overall failure's `stepId` matches that
-  step's `stepId`, and the overall failure's `type` and `actionFailureType` match that step's own
-  `failure` - `safeMessage` and `underlyingTypeName` are deliberately *not* required to match, since
-  `WorkflowReplayVerifier` (below) already treats those two fields as diagnostic, not semantic.
+  step's `stepId`, and - because `WorkflowEngine.Session#run` assigns the exact same `WorkflowFailure`
+  instance to both the terminal `WorkflowResult` and the failing step's own `WorkflowStepResult` (see
+  `Session#failedResult`), and `WorkflowRecorder` projects both from that one source - the overall
+  failure and the FAILED step's own failure must be **fully identical**: `type`, `safeMessage`,
+  `stepId`, `underlyingTypeName`, and `actionFailureType` all match, not merely `type` and
+  `actionFailureType`. See [Full equality vs. replay semantics](#full-equality-vs-replay-semantics)
+  below for why this is a different, non-contradictory rule from what `WorkflowReplayVerifier`
+  compares across two separate executions.
 
-Two additional per-step shapes are enforced for the same reason: a `SKIPPED` step's condition
-outcome is always `false` (never `true` - a `true` outcome always proceeds to execution), and a
-`SUCCEEDED` `ACTION` step always carries an `action` summary reporting `ActionStatus.SUCCESS` (the
-action pipeline's only path to a successful step outcome). A `FAILED` `ACTION` step's `action` may
-legitimately be present or absent depending on where execution failed (an `ACTION_FACTORY_FAILED`
-step never reached the backend and has no summary; an `ACTION_FAILED` step's summary reports a
-non-success status; a step that failed on output publication *after* a successful action - `NULL_OUTPUT`
-or `OUTPUT_TYPE_MISMATCH` - carries a summary reporting `ActionStatus.SUCCESS` even though the step
-itself is `FAILED`) - so this module never assumes a `FAILED` `ACTION` step's action summary status
-correlates with the step's own outcome.
+A FAILED step's own `failure.stepId` always equals that step's own `stepId` - `RecordedWorkflowStep`
+rejects a `FAILED` step whose failure names a different (or absent) step. A `SKIPPED` step's
+condition outcome is always `false` (never `true` - a `true` outcome always proceeds to execution). A
+`SUCCEEDED` `ASSIGN` step always carries a published `outputVariableName` (`AssignWorkflowStep`
+always declares and successfully publishes one), and a `SUCCEEDED` `ACTION` step always carries an
+`action` summary reporting `ActionStatus.SUCCESS` (the action pipeline's only path to a successful
+step outcome).
+
+### The failure-type / step-type / action-summary matrix
+
+Which step type a runtime failure type can occur on, and what action-summary shape it carries, is
+fixed by exactly one path through `ActionWorkflowStep#run` and `WorkflowEngine.Session#executeStep`
+per type - not by convention. `RecordedWorkflowStep` enforces exactly this table, derived from that
+source, for every `FAILED` step:
+
+| Failure type | Step type | Action summary | Summary's `ActionStatus` |
+|---|---|---|---|
+| `CONDITION_EVALUATION_FAILED` | `ACTION` or `ASSIGN` | absent | n/a |
+| `MISSING_VARIABLE` | `ACTION` only | absent | n/a |
+| `ACTION_FACTORY_FAILED` | `ACTION` only | absent | n/a |
+| `STEP_EXCEPTION` | `ACTION` only | absent | n/a |
+| `ACTION_FAILED` | `ACTION` only | present | != `SUCCESS` |
+| `NULL_OUTPUT` | `ACTION` only | present | `SUCCESS` |
+| `OUTPUT_TYPE_MISMATCH` | `ACTION` only | present | `SUCCESS` |
+
+`CONDITION_EVALUATION_FAILED` is the *only* runtime failure type an `ASSIGN` step can carry -
+`AssignWorkflowStep#run` is an unconditional `StepRunOutcome.success(...)` with no failure path of
+its own, so every other runtime type is impossible on `ASSIGN` today (a structural fact today's
+`sealed IWorkflowStep permits AWorkflowStep` / `sealed AWorkflowStep permits ActionWorkflowStep,
+AssignWorkflowStep` closed hierarchy makes provable, not merely conventional). `NULL_OUTPUT` and
+`OUTPUT_TYPE_MISMATCH` report `ActionStatus.SUCCESS` because both are raised only *after* the action
+itself already succeeded, while validating the declared output; `ACTION_FAILED`'s summary is built
+from the same non-success `ActionResult` that caused the failure, so it always carries a present
+`ActionFailureType` and a non-success status (`ActionResult`'s own invariant guarantees `status ==
+SUCCESS` if and only if its `failure` is absent). This module never assumes a `FAILED` `ACTION`
+step's action-summary status correlates with the step's own terminal status beyond this table - it
+enforces the table directly instead.
+
+### Full equality vs. replay semantics
+
+Two rules about `safeMessage` and `underlyingTypeName` sound alike but are not the same axis, and are
+not in tension:
+
+- **Within one recording**, the overall failure and the FAILED step's own failure must be fully
+  identical, `safeMessage` and `underlyingTypeName` included - because they are, in a genuine
+  recording, projections of the literal same `WorkflowFailure` object from one execution. A
+  difference in either field within a single recording is not a legitimate variation; it is a sign
+  the recording could not have come from a real execution.
+- **Across two different recordings/executions**, `WorkflowReplayVerifier` deliberately ignores those
+  same two fields (see [Ignored fields, and why](#ignored-fields-and-why) below) - a diagnostic
+  message can legitimately differ in incidental detail (an embedded timestamp, a byte offset) between
+  two semantically identical executions, and the underlying exception's class name is an
+  implementation detail, not part of a workflow's documented failure contract.
+
+The first rule is about internal consistency of one recorded fact; the second is about which parts of
+that fact are semantically significant when comparing two independent facts.
 
 ## Secret-safety boundary
 

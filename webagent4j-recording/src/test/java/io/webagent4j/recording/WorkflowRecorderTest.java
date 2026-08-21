@@ -3,9 +3,14 @@ package io.webagent4j.recording;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.webagent4j.action.ActionExecutionMode;
+import io.webagent4j.action.ActionFailureType;
+import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.ActionStatus;
 import io.webagent4j.action.ActionType;
+import io.webagent4j.workflow.IWorkflowCondition;
+import io.webagent4j.workflow.IWorkflowVariables;
 import io.webagent4j.workflow.Workflow;
+import io.webagent4j.workflow.WorkflowConditions;
 import io.webagent4j.workflow.WorkflowEngine;
 import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowInputs;
@@ -17,6 +22,7 @@ import io.webagent4j.workflow.WorkflowStepType;
 import io.webagent4j.workflow.WorkflowSteps;
 import io.webagent4j.workflow.WorkflowVariable;
 import java.time.Instant;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class WorkflowRecorderTest {
@@ -174,5 +180,320 @@ class WorkflowRecorderTest {
         for (RecordedWorkflowStep step : recording.steps()) {
             assertThat(step.toString()).doesNotContain(sentinel);
         }
+    }
+
+    // ==================== REC-FAIL ====================
+    // For every WorkflowFailureType, a genuine WorkflowEngine execution records successfully -
+    // proving RecordingInvariants/RecordedFailure/RecordedWorkflowStep are not over-tight for any
+    // state the current engine can actually produce.
+
+    /** REC-FAIL-001: MISSING_REQUIRED_INPUT (preflight) records successfully. */
+    @Test
+    void recFail001MissingRequiredInputRecordsSuccessfully() {
+        WorkflowVariable<String> required = WorkflowVariable.publicValue("required", String.class);
+        Workflow workflow =
+                Workflow.builder("wf-rf-001")
+                        .requiredInput(required)
+                        .step(
+                                WorkflowSteps.assign(
+                                        "s1",
+                                        WorkflowVariable.publicValue("v1", String.class),
+                                        "x"))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.MISSING_REQUIRED_INPUT);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-001"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.MISSING_REQUIRED_INPUT);
+    }
+
+    /** REC-FAIL-002: INPUT_TYPE_MISMATCH (preflight) records successfully. */
+    @Test
+    void recFail002InputTypeMismatchRecordsSuccessfully() {
+        WorkflowVariable<String> secretInput = WorkflowVariable.secret("s");
+        Workflow workflow =
+                Workflow.builder("wf-rf-002")
+                        .requiredInput(secretInput)
+                        .step(
+                                WorkflowSteps.assign(
+                                        "s1",
+                                        WorkflowVariable.publicValue("v1", String.class),
+                                        "x"))
+                        .build();
+        WorkflowInputs inputs =
+                WorkflowInputs.builder()
+                        .put(WorkflowVariable.publicValue("s", String.class), "not-secret-typed")
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.INPUT_TYPE_MISMATCH);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-002"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.INPUT_TYPE_MISMATCH);
+    }
+
+    /** REC-FAIL-003: UNDECLARED_INPUT (preflight) records successfully. */
+    @Test
+    void recFail003UndeclaredInputRecordsSuccessfully() {
+        WorkflowVariable<String> undeclared =
+                WorkflowVariable.publicValue("undeclared", String.class);
+        Workflow workflow =
+                Workflow.builder("wf-rf-003")
+                        .step(
+                                WorkflowSteps.assign(
+                                        "s1",
+                                        WorkflowVariable.publicValue("v1", String.class),
+                                        "x"))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(undeclared, "value").build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.UNDECLARED_INPUT);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-003"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.UNDECLARED_INPUT);
+    }
+
+    /** REC-FAIL-004: MISSING_VARIABLE records successfully. */
+    @Test
+    void recFail004MissingVariableRecordsSuccessfully() {
+        WorkflowVariable<Boolean> flag = WorkflowVariable.publicValue("flag", Boolean.class);
+        WorkflowVariable<String> produced = WorkflowVariable.publicValue("produced", String.class);
+        Workflow workflow =
+                Workflow.builder("wf-rf-004")
+                        .requiredInput(flag)
+                        .step(
+                                WorkflowSteps.assign("producer", produced, "value")
+                                        .when(WorkflowConditions.isTrue(flag)))
+                        .step(
+                                WorkflowSteps.action(
+                                        "consumer",
+                                        vars -> {
+                                            vars.require(produced);
+                                            return new FakePreparedAction<>(
+                                                    ActionResults.success("ignored"));
+                                        }))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(flag, false).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.MISSING_VARIABLE);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-004"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.MISSING_VARIABLE);
+    }
+
+    /** REC-FAIL-005: ACTION_FACTORY_FAILED records successfully. */
+    @Test
+    void recFail005ActionFactoryFailedRecordsSuccessfully() {
+        Workflow workflow =
+                Workflow.builder("wf-rf-005")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars -> {
+                                            throw new RuntimeException("boom");
+                                        }))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.ACTION_FACTORY_FAILED);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-005"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.ACTION_FACTORY_FAILED);
+    }
+
+    /** REC-FAIL-006: STEP_EXCEPTION records successfully. */
+    @Test
+    void recFail006StepExceptionRecordsSuccessfully() {
+        Workflow workflow =
+                Workflow.builder("wf-rf-006")
+                        .step(WorkflowSteps.action("s1", vars -> new ThrowingPreparedAction<>()))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.STEP_EXCEPTION);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-006"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.STEP_EXCEPTION);
+    }
+
+    /**
+     * REC-FAIL-007: ACTION_FAILED records successfully, with a present ActionFailureType and a
+     * non-success action summary.
+     */
+    @Test
+    void recFail007ActionFailedRecordsSuccessfully() {
+        Workflow workflow =
+                Workflow.builder("wf-rf-007")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.failure(
+                                                                ActionFailureType.TARGET_NOT_FOUND,
+                                                                "not found"))))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.ACTION_FAILED);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-007"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.ACTION_FAILED);
+        assertThat(recording.failure().orElseThrow().actionFailureType())
+                .contains(ActionFailureType.TARGET_NOT_FOUND);
+        RecordedWorkflowStep step = recording.steps().get(0);
+        assertThat(step.action()).isPresent();
+        assertThat(step.action().orElseThrow().status()).isNotEqualTo(ActionStatus.SUCCESS);
+    }
+
+    /** REC-FAIL-008: NULL_OUTPUT records successfully, with a SUCCESS-status action summary. */
+    @Test
+    void recFail008NullOutputRecordsSuccessfully() {
+        WorkflowVariable<String> output = WorkflowVariable.publicValue("out", String.class);
+        Workflow workflow =
+                Workflow.builder("wf-rf-008")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(null)),
+                                        output))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.NULL_OUTPUT);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-008"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.NULL_OUTPUT);
+        RecordedWorkflowStep step = recording.steps().get(0);
+        assertThat(step.action().orElseThrow().status()).isEqualTo(ActionStatus.SUCCESS);
+    }
+
+    /**
+     * REC-FAIL-009: OUTPUT_TYPE_MISMATCH records successfully, with a SUCCESS-status action
+     * summary.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void recFail009OutputTypeMismatchRecordsSuccessfully() {
+        WorkflowVariable<Integer> intOutput = WorkflowVariable.publicValue("intOut", Integer.class);
+        ActionResult<Integer> mismatched =
+                (ActionResult<Integer>) (ActionResult<?>) ActionResults.success("not-an-int");
+        Workflow workflow =
+                Workflow.builder("wf-rf-009")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars -> new FakePreparedAction<>(mismatched),
+                                        intOutput))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.OUTPUT_TYPE_MISMATCH);
+
+        WorkflowRecording recording =
+                recorder.record(new RecordingId("rf-009"), Instant.now(), result);
+
+        assertThat(recording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.OUTPUT_TYPE_MISMATCH);
+        RecordedWorkflowStep step = recording.steps().get(0);
+        assertThat(step.action().orElseThrow().status()).isEqualTo(ActionStatus.SUCCESS);
+    }
+
+    /**
+     * REC-FAIL-010: CONDITION_EVALUATION_FAILED records successfully, on both an ACTION and an
+     * ASSIGN step - the one runtime failure type an ASSIGN step can carry.
+     */
+    @Test
+    void recFail010ConditionEvaluationFailedRecordsSuccessfullyOnBothStepTypes() {
+        IWorkflowCondition throwing =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        throw new RuntimeException("condition boom");
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "throwing condition";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+
+        Workflow actionWorkflow =
+                Workflow.builder("wf-rf-010-action")
+                        .step(
+                                WorkflowSteps.action(
+                                                "s1",
+                                                vars ->
+                                                        new FakePreparedAction<>(
+                                                                ActionResults.success("ignored")))
+                                        .when(throwing))
+                        .build();
+        WorkflowResult actionResult = engine.execute(actionWorkflow, WorkflowInputs.empty());
+        assertThat(actionResult.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        WorkflowRecording actionRecording =
+                recorder.record(new RecordingId("rf-010-action"), Instant.now(), actionResult);
+        assertThat(actionRecording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+
+        Workflow assignWorkflow =
+                Workflow.builder("wf-rf-010-assign")
+                        .step(
+                                WorkflowSteps.assign(
+                                                "s1",
+                                                WorkflowVariable.publicValue("v1", String.class),
+                                                "x")
+                                        .when(throwing))
+                        .build();
+        WorkflowResult assignResult = engine.execute(assignWorkflow, WorkflowInputs.empty());
+        assertThat(assignResult.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
+        WorkflowRecording assignRecording =
+                recorder.record(new RecordingId("rf-010-assign"), Instant.now(), assignResult);
+        assertThat(assignRecording.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.CONDITION_EVALUATION_FAILED);
     }
 }

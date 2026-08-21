@@ -3,6 +3,7 @@ package io.webagent4j.recording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowId;
 import io.webagent4j.workflow.WorkflowStatus;
@@ -42,8 +43,8 @@ class RecordingModelInvariantsTest {
                                         Optional.empty(),
                                         Optional.empty(),
                                         Optional.of(
-                                                RecordingFixtures.failure(
-                                                        WorkflowFailureType.ACTION_FAILED, "s1")),
+                                                RecordingFixtures.actionFailedFailure(
+                                                        "s1", ActionFailureType.TARGET_NOT_FOUND)),
                                         Optional.empty()))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -155,8 +156,9 @@ class RecordingModelInvariantsTest {
                                         WorkflowStatus.COMPLETED,
                                         List.of(),
                                         Optional.of(
-                                                RecordingFixtures.failure(
-                                                        WorkflowFailureType.ACTION_FAILED, null))))
+                                                RecordingFixtures.preflightFailure(
+                                                        WorkflowFailureType
+                                                                .MISSING_REQUIRED_INPUT))))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -205,8 +207,8 @@ class RecordingModelInvariantsTest {
                                         Optional.empty(),
                                         Optional.of("out"),
                                         Optional.of(
-                                                RecordingFixtures.failure(
-                                                        WorkflowFailureType.ACTION_FAILED, "s1")),
+                                                RecordingFixtures.actionFailedFailure(
+                                                        "s1", ActionFailureType.TARGET_NOT_FOUND)),
                                         Optional.empty()))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -240,9 +242,7 @@ class RecordingModelInvariantsTest {
                         WorkflowStepStatus.FAILED,
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(
-                                RecordingFixtures.failure(
-                                        WorkflowFailureType.ACTION_FACTORY_FAILED, "s1")),
+                        Optional.of(RecordingFixtures.actionFactoryFailedFailure("s1")),
                         Optional.empty());
         assertThat(step.action()).isEmpty();
     }
@@ -261,7 +261,8 @@ class RecordingModelInvariantsTest {
                         Optional.empty(),
                         Optional.empty(),
                         Optional.of(
-                                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1")),
+                                RecordingFixtures.actionFailedFailure(
+                                        "s1", ActionFailureType.TARGET_NOT_FOUND)),
                         Optional.of(
                                 RecordingFixtures.action(
                                         io.webagent4j.action.ActionType.CLICK,
@@ -290,8 +291,11 @@ class RecordingModelInvariantsTest {
     @Test
     void invGlobal001CompletedWithFailedStepIsRejected() {
         RecordedWorkflowStep failed =
-                RecordingFixtures.failedStep(
-                        "s1", RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1"));
+                RecordingFixtures.actionStepFailedWithSummary(
+                        "s1",
+                        RecordingFixtures.actionFailedFailure(
+                                "s1", ActionFailureType.TARGET_NOT_FOUND),
+                        io.webagent4j.action.ActionStatus.EXECUTION_FAILED);
 
         assertThatThrownBy(
                         () ->
@@ -318,11 +322,12 @@ class RecordingModelInvariantsTest {
     @Test
     void invGlobal003SuccessAfterFailedStepIsRejected() {
         RecordedFailure failure =
-                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s2");
+                RecordingFixtures.actionFailedFailure("s2", ActionFailureType.TARGET_NOT_FOUND);
         List<RecordedWorkflowStep> steps =
                 List.of(
                         RecordingFixtures.succeededAssignStep("s1", "o1"),
-                        RecordingFixtures.failedStep("s2", failure),
+                        RecordingFixtures.actionStepFailedWithSummary(
+                                "s2", failure, io.webagent4j.action.ActionStatus.EXECUTION_FAILED),
                         RecordingFixtures.succeededAssignStep("s3", "o3"));
 
         assertThatThrownBy(() -> recordingWith(WorkflowStatus.FAILED, steps, Optional.of(failure)))
@@ -333,13 +338,17 @@ class RecordingModelInvariantsTest {
     @Test
     void invGlobal004MultipleFailedStepsAreRejected() {
         RecordedFailure failure1 =
-                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1");
+                RecordingFixtures.actionFailedFailure("s1", ActionFailureType.TARGET_NOT_FOUND);
         RecordedFailure failure2 =
-                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s2");
+                RecordingFixtures.actionFailedFailure("s2", ActionFailureType.TARGET_NOT_FOUND);
         List<RecordedWorkflowStep> steps =
                 List.of(
-                        RecordingFixtures.failedStep("s1", failure1),
-                        RecordingFixtures.failedStep("s2", failure2));
+                        RecordingFixtures.actionStepFailedWithSummary(
+                                "s1", failure1, io.webagent4j.action.ActionStatus.EXECUTION_FAILED),
+                        RecordingFixtures.actionStepFailedWithSummary(
+                                "s2",
+                                failure2,
+                                io.webagent4j.action.ActionStatus.EXECUTION_FAILED));
 
         assertThatThrownBy(() -> recordingWith(WorkflowStatus.FAILED, steps, Optional.of(failure1)))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -363,7 +372,7 @@ class RecordingModelInvariantsTest {
     @Test
     void invGlobal006ValidPreflightFailureIsAccepted() {
         RecordedFailure failure =
-                RecordingFixtures.failure(WorkflowFailureType.MISSING_REQUIRED_INPUT, null);
+                RecordingFixtures.preflightFailure(WorkflowFailureType.MISSING_REQUIRED_INPUT);
         List<RecordedWorkflowStep> steps =
                 List.of(RecordingFixtures.notRunStep("s1"), RecordingFixtures.notRunStep("s2"));
 
@@ -380,12 +389,13 @@ class RecordingModelInvariantsTest {
     @Test
     void invGlobal007ValidRuntimeFailFastSequenceIsAccepted() {
         RecordedFailure failure =
-                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s3");
+                RecordingFixtures.actionFailedFailure("s3", ActionFailureType.TARGET_NOT_FOUND);
         List<RecordedWorkflowStep> steps =
                 List.of(
                         RecordingFixtures.succeededAssignStep("s1", "o1"),
                         RecordingFixtures.skippedStep("s2", false, "d"),
-                        RecordingFixtures.failedStep("s3", failure),
+                        RecordingFixtures.actionStepFailedWithSummary(
+                                "s3", failure, io.webagent4j.action.ActionStatus.EXECUTION_FAILED),
                         RecordingFixtures.notRunStep("s4"));
 
         WorkflowRecording recording =
@@ -400,10 +410,16 @@ class RecordingModelInvariantsTest {
     @Test
     void invGlobal008OverallFailureStepIdMismatchIsRejected() {
         RecordedFailure stepFailure =
-                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1");
+                RecordingFixtures.actionFailedFailure("s1", ActionFailureType.TARGET_NOT_FOUND);
         RecordedFailure overallFailure =
-                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "wrong-step");
-        List<RecordedWorkflowStep> steps = List.of(RecordingFixtures.failedStep("s1", stepFailure));
+                RecordingFixtures.actionFailedFailure(
+                        "wrong-step", ActionFailureType.TARGET_NOT_FOUND);
+        List<RecordedWorkflowStep> steps =
+                List.of(
+                        RecordingFixtures.actionStepFailedWithSummary(
+                                "s1",
+                                stepFailure,
+                                io.webagent4j.action.ActionStatus.EXECUTION_FAILED));
 
         assertThatThrownBy(
                         () ->
@@ -419,10 +435,14 @@ class RecordingModelInvariantsTest {
     @Test
     void invGlobal009OverallFailureTypeMismatchIsRejected() {
         RecordedFailure stepFailure =
-                RecordingFixtures.failure(WorkflowFailureType.ACTION_FAILED, "s1");
-        RecordedFailure overallFailure =
-                RecordingFixtures.failure(WorkflowFailureType.STEP_EXCEPTION, "s1");
-        List<RecordedWorkflowStep> steps = List.of(RecordingFixtures.failedStep("s1", stepFailure));
+                RecordingFixtures.actionFailedFailure("s1", ActionFailureType.TARGET_NOT_FOUND);
+        RecordedFailure overallFailure = RecordingFixtures.stepExceptionFailure("s1");
+        List<RecordedWorkflowStep> steps =
+                List.of(
+                        RecordingFixtures.actionStepFailedWithSummary(
+                                "s1",
+                                stepFailure,
+                                io.webagent4j.action.ActionStatus.EXECUTION_FAILED));
 
         assertThatThrownBy(
                         () ->

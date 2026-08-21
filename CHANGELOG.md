@@ -101,6 +101,60 @@ All notable changes to this project will be documented in this file. The format 
   (`INV-GLOBAL-001..009`, `INV-STEP-001..007`), and `JsonRecordingInvariantTest`
   (`JSON-INV-001..009`).
 
+### Fixed (Recording — Phase 0.9-A strict review, round 2)
+
+- **Preflight/runtime failure classification was one-directional:** a recording was accepted as
+  valid whenever every step happened to be `NOT_RUN`, regardless of whether the overall failure's
+  *type* was actually one of the three preflight types - so a runtime type (e.g. `ACTION_FAILED`)
+  with no `stepId` was wrongly accepted as if it were preflight-shaped. Fixed: `RecordingInvariants`
+  now classifies by `failure.type()` first, then enforces the matching shape in both directions -
+  only `MISSING_REQUIRED_INPUT`/`INPUT_TYPE_MISMATCH`/`UNDECLARED_INPUT` may omit a `stepId`, and
+  every other type must carry one.
+- **A `FAILED` step's own `failure.stepId` could disagree with the step's own `stepId`:** nothing
+  previously checked this. Fixed: `RecordedWorkflowStep`'s constructor now rejects a `FAILED` step
+  whose `failure.stepId()` is absent or names a different step.
+- **The overall failure vs. the FAILED step's own failure was only compared on `type` and
+  `actionFailureType`:** since `WorkflowEngine.Session#run` reuses the exact same `WorkflowFailure`
+  object for both, they can never legitimately differ in any field within one recording. Fixed:
+  `RecordingInvariants` now requires full `RecordedFailure` equality (`type`, `safeMessage`,
+  `stepId`, `underlyingTypeName`, `actionFailureType`) between the two - distinct from, and not in
+  tension with, `WorkflowReplayVerifier` still ignoring `safeMessage`/`underlyingTypeName` when
+  comparing two *separate* executions (see
+  [docs/recording.md#full-equality-vs-replay-semantics](docs/recording.md)).
+- **`RecordedFailure` did not enforce the `ActionFailureType` taxonomy:** any failure type could
+  carry, or omit, an `ActionFailureType`, even though only `ACTION_FAILED` ever can (`ActionResult`'s
+  own invariant guarantees one is present exactly when `status != SUCCESS`). Fixed: `RecordedFailure`'s
+  compact constructor now requires `ACTION_FAILED` to carry one and forbids every other type from
+  carrying one.
+- **`ACTION_FAILED` could be recorded with no action summary, or one reporting `SUCCESS`:**
+  `RecordedWorkflowStep` did not check that an `ACTION_FAILED` step's action summary is present and
+  reports a non-success status. Fixed, alongside enforcing the complete failure-type/step-type/
+  action-summary matrix derived from `ActionWorkflowStep#run` (see
+  [docs/recording.md#the-failure-type--step-type--action-summary-matrix](docs/recording.md)):
+  `MISSING_VARIABLE`/`ACTION_FACTORY_FAILED`/`STEP_EXCEPTION`/`CONDITION_EVALUATION_FAILED` never
+  carry a summary; `ACTION_FAILED` always carries one reporting a non-success status; `NULL_OUTPUT`/
+  `OUTPUT_TYPE_MISMATCH` always carry one reporting `SUCCESS`; and every failure type except
+  `CONDITION_EVALUATION_FAILED` can only occur on an `ACTION` step, never `ASSIGN` (provable today
+  from the closed `sealed IWorkflowStep`/`AWorkflowStep` hierarchy, since `AssignWorkflowStep#run`
+  never fails on its own).
+- **A `SUCCEEDED` `ASSIGN` step could omit its published output variable name:** `AssignWorkflowStep`
+  always declares and publishes one. Fixed: `RecordedWorkflowStep` now requires it.
+- **`RecordingFixtures.failure(type, stepId)` fabricated an `ActionFailureType` for every failure
+  type**, regardless of whether that type could legitimately carry one - masking exactly the missing
+  validation above. Removed, and replaced with explicit, per-failure-type, engine-reachable builders
+  (`preflightFailure`, `conditionEvaluationFailedFailure`, `missingVariableFailure`,
+  `actionFactoryFailedFailure`, `stepExceptionFailure`, `actionFailedFailure`, `nullOutputFailure`,
+  `outputTypeMismatchFailure`, plus matching step-shape builders).
+- Rewrote `WorkflowReplayVerifierTest`'s `REPLAY-008` to compare two genuine engine executions that
+  differ only in an incidental factory-exception message, since mutating a single recording's
+  top-level `safeMessage` alone is no longer a constructible (valid) recording under full equality.
+- Added `RecordingFailureTaxonomyTest` (`INV-FAIL-PREFLIGHT-001..008`, `INV-FAIL-COHERENCE-001..006`,
+  `INV-FAIL-ACTION-001..006`, `INV-TAX-001..009`, `INV-ACTION-001..011`, `INV-ASSIGN-001..006`),
+  `JSON-TAX-001..006`/`JSON-ACTION-001..003`/`JSON-ASSIGN-001` in `JsonRecordingInvariantTest`, and
+  engine-backed `REC-FAIL-001..010` in `WorkflowRecorderTest` - one real `WorkflowEngine.execute()`
+  per `WorkflowFailureType`, recorded via `WorkflowRecorder`, proving the strengthened model is not
+  over-tight for any state the current engine can actually produce.
+
 ### Added (Workflows — Phase 0.8)
 
 - New `webagent4j-workflow` module: a deterministic, sequential orchestration layer over
