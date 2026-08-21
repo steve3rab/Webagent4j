@@ -103,7 +103,12 @@ public final class Workflow {
         return text.append("]]").toString();
     }
 
-    /** Mutable builder for {@link Workflow}. Building never performs a side effect. */
+    /**
+     * Mutable builder for {@link Workflow}. {@link #build()} never performs a backend or
+     * action-factory side effect; it does invoke an attached custom {@link IWorkflowCondition}'s
+     * metadata methods for structural validation, which are required to be side-effect-free
+     * themselves (see {@code docs/workflow.md#conditions}).
+     */
     public static final class Builder {
 
         private final WorkflowId id;

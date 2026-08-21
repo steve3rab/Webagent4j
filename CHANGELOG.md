@@ -60,6 +60,16 @@ All notable changes to this project will be documented in this file. The format 
   `WorkflowOutputs#toString()` now redact a known secret's raw text everywhere it appears, including
   inside an unrelated public field's value, not just the field declared secret; redaction always
   happens before message bounding/truncation.
+- Second strict-review pass fixed two further secret-safety gaps: `WorkflowOutputs`' safe rendering
+  is now computed once, when `WorkflowEngine` assembles the final `WorkflowResult`, against every
+  secret known to that execution up to that point - including secret **inputs**, not only this
+  container's own secret outputs, and including a secret revealed by a *later* step, so an earlier
+  public output containing that same text is still masked. `WorkflowInputs`/`WorkflowOutputs`
+  rendering, and a built-in condition's own literal comparison text, are now redacted *before*
+  bounding rather than after in every case, closing a boundary case where a secret straddling the
+  200-character truncation limit could leak a partial fragment. Added a `WorkflowStepResult`
+  invariant requiring a `SKIPPED` result to carry its condition outcome, and 9 new regression tests
+  covering both fixes.
 
 ### Added (Browser Crawler — Phase 0.7)
 

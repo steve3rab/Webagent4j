@@ -85,7 +85,9 @@ public final class WorkflowInputs {
             String rendered =
                     entry.variable.secret()
                             ? "***"
-                            : redactor.redact(SafeRendering.renderPublicValue(entry.value));
+                            : SafeRendering.bounded(
+                                    redactor.redact(
+                                            SafeRendering.renderPublicValueUnbounded(entry.value)));
             text.append(entry.variable.name()).append('=').append(rendered);
         }
         return text.append(']').toString();

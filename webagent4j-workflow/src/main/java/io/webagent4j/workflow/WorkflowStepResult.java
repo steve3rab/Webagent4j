@@ -41,6 +41,10 @@ public record WorkflowStepResult(
             throw new IllegalArgumentException("only a FAILED step result may carry a failure");
         }
         if (status == WorkflowStepStatus.SKIPPED) {
+            if (condition.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a SKIPPED step result must carry a condition outcome");
+            }
             if (outputVariableName.isPresent()) {
                 throw new IllegalArgumentException(
                         "a SKIPPED step result cannot carry an output variable name");

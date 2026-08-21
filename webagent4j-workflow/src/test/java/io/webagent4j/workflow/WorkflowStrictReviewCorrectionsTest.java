@@ -834,6 +834,256 @@ class WorkflowStrictReviewCorrectionsTest {
         assertThat(executeThread).hasValue(callingThreadId);
     }
 
+    // ---- SEC-OUT-IN: secret inputs leaking into public outputs -------------------------------
+
+    @Test
+    void secOutIn001RequiredSecretInputLeakingIntoPublicOutputIsMasked() {
+        String secretValue = "WA4J_SECRET_INPUT_76123";
+        WorkflowVariable<String> password = WorkflowVariable.secret("password");
+        WorkflowVariable<String> message = WorkflowVariable.publicValue("message", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(password)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                "used " + vars.require(password)),
+                                                        new AtomicInteger()),
+                                        message))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(password, secretValue).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.output(message)).contains("used " + secretValue);
+        assertThat(result.toString()).doesNotContain(secretValue).contains("***");
+    }
+
+    @Test
+    void secOutIn002FailedResultStillMasksPriorPublicOutputContainingSecretInput() {
+        String secretValue = "WA4J_SECRET_INPUT_55210";
+        WorkflowVariable<String> password = WorkflowVariable.secret("password");
+        WorkflowVariable<String> message = WorkflowVariable.publicValue("message", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(password)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                "used " + vars.require(password)),
+                                                        new AtomicInteger()),
+                                        message))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars -> {
+                                            throw new RuntimeException("boom");
+                                        }))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(password, secretValue).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isFalse();
+        assertThat(result.toString()).doesNotContain(secretValue);
+    }
+
+    @Test
+    void secOutIn003OptionalSecretInputLeakingIntoPublicOutputIsMasked() {
+        String secretValue = "WA4J_SECRET_OPTIONAL_31890";
+        WorkflowVariable<String> apiKey = WorkflowVariable.secret("apiKey");
+        WorkflowVariable<String> message = WorkflowVariable.publicValue("message", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .optionalInput(apiKey)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                "key " + vars.require(apiKey)),
+                                                        new AtomicInteger()),
+                                        message))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(apiKey, secretValue).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.toString()).doesNotContain(secretValue).contains("***");
+    }
+
+    // ---- SEC-LATE: a secret revealed later still protects an earlier public output -----------
+
+    @Test
+    void secLate001PublicOutputProducedBeforeLaterSecretOutputIsMaskedInFinalResult() {
+        String value = "WA4J_LATE_SECRET_46213";
+        WorkflowVariable<String> publicFirst =
+                WorkflowVariable.publicValue("publicFirst", String.class);
+        WorkflowVariable<String> secretLater = WorkflowVariable.secret("secretLater");
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        publicFirst))
+                        .step(
+                                WorkflowSteps.action(
+                                        "s2",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(value),
+                                                        new AtomicInteger()),
+                                        secretLater))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isTrue();
+        assertThat(result.output(publicFirst)).contains(value);
+        assertThat(result.toString()).doesNotContain(value).contains("***");
+    }
+
+    // ---- SEC-BOUND: redaction happens before bounding/truncation, never after -----------------
+
+    @Test
+    void secBoundIn001SecretStraddlingBoundInPublicInputIsFullyRedacted() {
+        String secretValue = "WA4J_BOUNDARY_SECRET_928374";
+        String prefix = "p".repeat(190);
+        String publicValue = prefix + secretValue;
+        WorkflowVariable<String> boundaryToken = WorkflowVariable.secret("boundaryToken");
+        WorkflowVariable<String> note = WorkflowVariable.publicValue("note", String.class);
+        WorkflowInputs inputs =
+                WorkflowInputs.builder()
+                        .put(boundaryToken, secretValue)
+                        .put(note, publicValue)
+                        .build();
+
+        String rendered = inputs.toString();
+
+        assertThat(rendered).doesNotContain(secretValue).doesNotContain("WA4J_BOUNDARY_SECRET");
+    }
+
+    @Test
+    void secBoundOut001SecretInputStraddlingBoundInPublicOutputIsFullyRedacted() {
+        String secretValue = "WA4J_BOUNDARY_SECRET_928374";
+        String prefix = "q".repeat(190);
+        WorkflowVariable<String> boundaryToken = WorkflowVariable.secret("boundaryToken");
+        WorkflowVariable<String> note = WorkflowVariable.publicValue("note", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(boundaryToken)
+                        .step(
+                                WorkflowSteps.action(
+                                        "s1",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(
+                                                                prefix
+                                                                        + vars.require(
+                                                                                boundaryToken)),
+                                                        new AtomicInteger()),
+                                        note))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(boundaryToken, secretValue).build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.toString())
+                .doesNotContain(secretValue)
+                .doesNotContain("WA4J_BOUNDARY_SECRET");
+    }
+
+    @Test
+    void secBoundOut002SecretOutputStraddlingBoundInPublicOutputIsFullyRedacted() {
+        String secretValue = "WA4J_BOUNDARY_SECRET_928374";
+        String prefix = "r".repeat(190);
+        WorkflowVariable<String> boundarySecretOut = WorkflowVariable.secret("boundarySecretOut");
+        WorkflowVariable<String> note2 = WorkflowVariable.publicValue("note2", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "produce-secret",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(secretValue),
+                                                        new AtomicInteger()),
+                                        boundarySecretOut))
+                        .step(
+                                WorkflowSteps.action(
+                                        "produce-public",
+                                        vars ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(prefix + secretValue),
+                                                        new AtomicInteger()),
+                                        note2))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.toString())
+                .doesNotContain(secretValue)
+                .doesNotContain("WA4J_BOUNDARY_SECRET");
+    }
+
+    @Test
+    void secBoundCond001BuiltInConditionLiteralStraddlingBoundIsFullyRedacted() {
+        String secretValue = "WA4J_BOUNDARY_SECRET_928374";
+        String prefix = "s".repeat(190);
+        String publicLiteral = prefix + secretValue;
+        WorkflowVariable<String> boundaryGuard = WorkflowVariable.secret("boundaryGuard");
+        WorkflowVariable<String> status = WorkflowVariable.publicValue("status", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .requiredInput(boundaryGuard)
+                        .requiredInput(status)
+                        .step(
+                                WorkflowSteps.assign("s1", USERNAME, "alice")
+                                        .when(WorkflowConditions.equals(status, publicLiteral)))
+                        .build();
+        WorkflowInputs inputs =
+                WorkflowInputs.builder()
+                        .put(boundaryGuard, secretValue)
+                        .put(status, publicLiteral)
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, inputs);
+
+        assertThat(result.completed()).isTrue();
+        String description = result.steps().get(0).condition().orElseThrow().description();
+        assertThat(description).doesNotContain(secretValue).doesNotContain("WA4J_BOUNDARY_SECRET");
+    }
+
+    // ---- STEP-RESULT: WorkflowStepResult invariants --------------------------------------------
+
+    @Test
+    void stepResult001SkippedStepResultRequiresConditionOutcome() {
+        assertThatThrownBy(
+                        () ->
+                                new WorkflowStepResult(
+                                        new WorkflowStepId("s1"),
+                                        WorkflowStepType.ASSIGN,
+                                        WorkflowStepStatus.SKIPPED,
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty(),
+                                        java.util.Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     void actionEx001PreparedExecuteRuntimeExceptionBecomesStructuredStepException() {
         AtomicInteger step1Calls = new AtomicInteger();

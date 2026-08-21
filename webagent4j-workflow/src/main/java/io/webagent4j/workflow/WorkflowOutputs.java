@@ -1,9 +1,8 @@
 package io.webagent4j.workflow;
 
-import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -13,9 +12,14 @@ import java.util.Optional;
  * WorkflowResult#output(WorkflowVariable)}. Rendering preserves the order values were published in.
  *
  * <p><b>Secret safety:</b> {@link #toString()} always masks every output declared {@link
- * WorkflowVariable#secret()} as {@code ***}, and also redacts every currently-known secret value
+ * WorkflowVariable#secret()} as {@code ***}, and also redacts every secret value known to the
+ * execution that produced this result - including secret <em>inputs</em>, not only secret outputs -
  * out of every <em>public</em> output's rendering, so a secret cannot leak simply because its raw
- * text happens to also appear inside an unrelated public output - see {@code
+ * text happens to also appear inside an unrelated public output. This applies equally to a {@link
+ * WorkflowStatus#FAILED} result's already-produced outputs, and to a public output that was
+ * published before a later step revealed that same text as a secret: the safe rendering below is
+ * computed once, at final result construction, from every secret known to the execution up to that
+ * point - not permanently at the moment each output was published. See {@code
  * docs/workflow.md#secret-masking}.
  */
 public final class WorkflowOutputs {
@@ -40,16 +44,16 @@ public final class WorkflowOutputs {
         if (entry == null || !entry.variable.equals(variable)) {
             return Optional.empty();
         }
-        return Optional.of(variable.type().cast(entry.value));
+        return Optional.of(variable.type().cast(entry.rawValue));
     }
 
     /**
-     * Renders every output's name and a bounded value preview, masking every secret value -
-     * including a secret's raw text if it happens to appear inside an unrelated public value.
+     * Renders every output's name and its precomputed safe preview - see the class-level secret
+     * safety note. Rendering is deterministic and does not re-invoke any output value's own {@code
+     * toString()}.
      */
     @Override
     public String toString() {
-        SecretRedactor redactor = SecretRedactor.of(activeSecretValues());
         StringBuilder text = new StringBuilder("WorkflowOutputs[");
         boolean first = true;
         for (Entry entry : values.values()) {
@@ -57,38 +61,46 @@ public final class WorkflowOutputs {
                 text.append(", ");
             }
             first = false;
-            String rendered =
-                    entry.variable.secret()
-                            ? "***"
-                            : redactor.redact(SafeRendering.renderPublicValue(entry.value));
-            text.append(entry.variable.name()).append('=').append(rendered);
+            text.append(entry.variable.name()).append('=').append(entry.safePreview);
         }
         return text.append(']').toString();
     }
 
-    private List<String> activeSecretValues() {
-        List<String> secretValues = new ArrayList<>();
-        for (Entry entry : values.values()) {
-            if (entry.variable.secret() && entry.value instanceof String secretValue) {
-                secretValues.add(secretValue);
-            }
-        }
-        return secretValues;
-    }
-
-    private record Entry(WorkflowVariable<?> variable, Object value) {}
+    private record Entry(WorkflowVariable<?> variable, Object rawValue, String safePreview) {}
 
     /** Package-private mutable accumulator used only by {@link WorkflowEngine}. */
     static final class Builder {
 
-        private final Map<String, Entry> values = new LinkedHashMap<>();
+        private record RawEntry(WorkflowVariable<?> variable, Object value) {}
+
+        private final Map<String, RawEntry> values = new LinkedHashMap<>();
 
         <T> void put(WorkflowVariable<T> variable, T value) {
-            values.put(variable.name(), new Entry(variable, value));
+            values.put(variable.name(), new RawEntry(variable, value));
         }
 
-        WorkflowOutputs build() {
-            return new WorkflowOutputs(Collections.unmodifiableMap(new LinkedHashMap<>(values)));
+        /**
+         * Builds an immutable, insertion-order-preserving {@link WorkflowOutputs}, computing each
+         * public output's safe preview by redacting every value in {@code activeSecrets} - every
+         * secret known to the execution up to this point, not only this container's own secret
+         * outputs - before bounding it, never the other order. {@code activeSecrets} is used only
+         * transiently to compute previews here; no reference to it, or to any value it contains, is
+         * retained by the returned {@link WorkflowOutputs}.
+         */
+        WorkflowOutputs build(Collection<String> activeSecrets) {
+            SecretRedactor redactor = SecretRedactor.of(activeSecrets);
+            Map<String, Entry> built = new LinkedHashMap<>();
+            for (RawEntry raw : values.values()) {
+                String preview =
+                        raw.variable.secret()
+                                ? "***"
+                                : SafeRendering.bounded(
+                                        redactor.redact(
+                                                SafeRendering.renderPublicValueUnbounded(
+                                                        raw.value)));
+                built.put(raw.variable.name(), new Entry(raw.variable, raw.value, preview));
+            }
+            return new WorkflowOutputs(Collections.unmodifiableMap(built));
         }
     }
 }

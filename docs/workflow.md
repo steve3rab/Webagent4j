@@ -158,15 +158,33 @@ run after the value was typed somewhere. Redaction always happens before boundin
 after - truncating first could cut a secret's raw text in half and leak a partial, still-identifying
 fragment through the "public" remainder. If two known secrets overlap as substrings (for example
 `"abc"` and `"abcdef"`), the longer one is matched first, so a shorter secret's redaction can never
-leave a partial fragment of a longer one behind.
+leave a partial fragment of a longer one behind. This is also why a built-in condition's own
+`describe()` (see [Conditions](#conditions)) renders its public literal comparison value without
+bounding it: bounding happens only once, in `WorkflowEngine`, after that text has already been
+redacted against every secret known at evaluation time - a condition literal that is pre-truncated
+before redaction could otherwise split a secret across the truncation boundary and leak a fragment
+of it.
 
 **Redaction is cross-field, not per-field.** `WorkflowInputs#toString()` and
 `WorkflowOutputs#toString()` do not decide masking per value based only on that value's own
-declared secrecy: each first collects every secret value the container itself holds, builds a
-redactor over all of them, and applies that redactor to *every* rendered value - including public
-ones. A public field whose value happens to textually contain a known secret's raw text (for
-example a "notes" field that was accidentally given the password string) is redacted too, not just
-the field declared secret.
+declared secrecy: each redacts every rendered value - including public ones - against every secret
+value known at the point rendering is computed. A public field whose value happens to textually
+contain a known secret's raw text (for example a "notes" field that was accidentally given the
+password string, or a public action output whose text happens to embed a secret input's value) is
+redacted too, not just the field declared secret. For example, given a secret input `PASSWORD =
+"hunter2"` and a public action output `MESSAGE = "used hunter2"`, incidental rendering shows
+`message=used ***`, while `result.output(MESSAGE)` (explicit typed retrieval) still returns the raw
+`"used hunter2"` string.
+
+`WorkflowInputs` is self-contained: it redacts against the secret values among its own supplied
+entries, which already include every required and optional secret input the caller provided.
+`WorkflowOutputs`, however, cannot see a workflow's inputs on its own - its safe rendering is
+computed once, when `WorkflowEngine` assembles the final `WorkflowResult` (for both a `COMPLETED`
+and a `FAILED` outcome), from *every* secret value known to that execution at that point: every
+secret input, and every secret output any step successfully published before termination. This
+also means a public output published early is still masked in the final result if a *later* step
+reveals that same text as a secret before the workflow ends - the safe preview is not permanently
+fixed at the moment each output is published.
 
 **No arbitrary raw `Throwable` is ever exposed** through `WorkflowFailure`/`WorkflowResult`: a
 step's own thrown exception could carry a secret in its message (`new RuntimeException("bad
@@ -190,9 +208,14 @@ this guarantee entirely.
 `IWorkflowCondition` is also a trusted Java extension point: nothing prevents implementing it
 directly. A custom condition must be deterministic, side-effect-free, accurately report every
 variable it reads from `referencedVariables()`, and must not intentionally expose a secret from
-`describe()`. `WorkflowEngine` treats every method on a condition it did not create as
-caller-supplied code and handles it defensively: an `evaluate()`/`describe()` that throws becomes a
-structured `CONDITION_EVALUATION_FAILED` rather than propagating; a `describe()` returning `null` is
+`describe()`. A description stored in a `WorkflowConditionResult` is always redacted against every
+currently-known secret and length-bounded by `WorkflowEngine` before it is stored; calling
+`describe()` directly, outside `WorkflowEngine`, returns the condition's own text as-is - for a
+built-in condition, that is a crash-safe rendering of its public literal, deliberately not yet
+bounded (see the note in [Secret masking](#secret-masking) above). `WorkflowEngine` treats every
+method on a condition it did not create as caller-supplied code and handles it defensively: an
+`evaluate()`/`describe()` that throws becomes a structured `CONDITION_EVALUATION_FAILED` rather than
+propagating; a `describe()` returning `null` is
 treated the same way; a `describe()`'s text is still redacted against every currently-known secret
 as defense-in-depth, even though a well-behaved condition should never have put one there; and a
 `referencedVariables()` that is null, contains a null, or throws is rejected at

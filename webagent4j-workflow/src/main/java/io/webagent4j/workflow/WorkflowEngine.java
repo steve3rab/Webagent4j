@@ -146,14 +146,14 @@ public final class WorkflowEngine {
                         workflow.id(),
                         WorkflowStatus.FAILED,
                         stepResults,
-                        outputs.build(),
+                        outputs.build(activeSecrets),
                         Optional.of(overallFailure));
             }
             return new WorkflowResult(
                     workflow.id(),
                     WorkflowStatus.COMPLETED,
                     stepResults,
-                    outputs.build(),
+                    outputs.build(activeSecrets),
                     Optional.empty());
         }
 

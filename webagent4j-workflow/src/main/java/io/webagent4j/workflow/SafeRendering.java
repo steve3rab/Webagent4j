@@ -9,35 +9,37 @@ final class SafeRendering {
 
     /**
      * Renders {@code value} for {@code variable}: masked as {@code ***} if the variable is secret,
-     * otherwise a bounded, crash-safe rendering of the value itself. Suitable for a single value
-     * where no other field's secret could appear inside it (a condition's literal comparison value,
-     * fixed at definition time). A container holding multiple fields must instead redact every
-     * rendered value against every other field's secret; see {@code WorkflowInputs}/{@code
-     * WorkflowOutputs}, which use {@link #renderPublicValue(Object)} directly for that.
+     * otherwise a crash-safe rendering of the value itself. Deliberately <b>not bounded</b>: a
+     * built-in condition (see {@code WorkflowConditions}) uses this for its literal comparison
+     * value at definition time, before any execution-time secret is known. A caller that redacts
+     * against known secrets - {@code WorkflowEngine} for a stored condition description, {@link
+     * WorkflowInputs}, {@link WorkflowOutputs} - must redact this unbounded text first and only
+     * then call {@link #bounded(String)}; bounding before redaction can truncate a secret mid-value
+     * and leak a partial, still-identifying fragment.
      */
     static String render(WorkflowVariable<?> variable, Object value) {
         if (variable.secret()) {
             return "***";
         }
-        return renderPublicValue(value);
+        return renderPublicValueUnbounded(value);
     }
 
     /**
-     * Renders an arbitrary public value defensively: a caller-supplied object's {@code toString()}
-     * may throw, return an enormous string, or be nondeterministic, and none of that may crash or
-     * inflate framework-owned rendering.
+     * Renders an arbitrary public value defensively and without bounding: a caller-supplied
+     * object's {@code toString()} may throw, return an enormous string, or be nondeterministic, and
+     * none of that may crash framework-owned rendering. Callers must redact the result against
+     * known secrets before calling {@link #bounded(String)} - never the other order.
      */
-    static String renderPublicValue(Object value) {
-        String rendered;
+    static String renderPublicValueUnbounded(Object value) {
         try {
-            rendered = String.valueOf(value);
+            String rendered = String.valueOf(value);
+            return rendered == null ? "null" : rendered;
         } catch (RuntimeException e) {
             return "<rendering-failed:" + e.getClass().getSimpleName() + ">";
         }
-        return bounded(rendered);
     }
 
-    /** Bounds an already-safe rendered value to a deterministic maximum length. */
+    /** Bounds an already-redacted, safe rendered value to a deterministic maximum length. */
     static String bounded(String rendered) {
         String safe = rendered == null ? "null" : rendered;
         if (safe.length() > MAX_RENDERED_VALUE_LENGTH) {
