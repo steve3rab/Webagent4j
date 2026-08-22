@@ -71,4 +71,27 @@ final class ActionResults {
                 Optional.of(new ActionFailure(type, message, Optional.empty())),
                 ActionExecutionMode.NOT_EXECUTED);
     }
+
+    static <R> ActionResult<R> interrupted(ActionExecutionMode executionMode) {
+        return new ActionResult<>(
+                ActionId.create(),
+                ActionType.CLICK,
+                executionMode,
+                ActionStatus.CANCELLED,
+                null,
+                Duration.ZERO,
+                ActionTimings.empty(Duration.ZERO),
+                List.of(),
+                List.of(),
+                null,
+                null,
+                null,
+                List.of(),
+                Optional.of(
+                        new ActionFailure(
+                                ActionFailureType.INTERRUPTED,
+                                "action interrupted",
+                                Optional.empty())),
+                ActionDiagnostics.empty());
+    }
 }
