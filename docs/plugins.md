@@ -124,7 +124,8 @@ Use the thread context class loader explicitly through `load()`:
 
 ```java
 PluginRegistry plugins = new PluginLoader().load();
-LocatorEngine locator = new LocatorEngine(plugins.locatorStrategyRegistry());
+ILocatorStrategyRegistry strategies = plugins.locatorStrategyRegistry();
+LocatorEngine locator = new LocatorEngine(strategies);
 ```
 
 Or supply exactly one caller-owned class loader:
@@ -168,6 +169,12 @@ partial success, first-wins policy, last-wins policy, automatic renaming, or ver
 `PluginLoadFailure` exposes only a small category, optional non-sensitive identities, and a
 framework-owned safe message. Translated exceptions have no raw provider exception as their public
 cause, and arbitrary provider messages are never copied into the diagnostic.
+
+`PluginLoadException` instances are created only by `PluginLoader`; callers catch the exception and
+inspect `failure()`. Native Java serialization is explicitly unsupported and fails with
+`NotSerializableException`, so deserialization can never manufacture an exception with missing
+structured failure state. Persist an application-owned safe DTO when diagnostics must cross a
+process boundary.
 
 ## Trust and runtime failures
 

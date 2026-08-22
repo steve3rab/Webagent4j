@@ -19,9 +19,9 @@ linked throughout (the narrative "how it works" documents) - it exists to connec
 - Artifacts are **not currently published to Maven Central** (or any other public repository). Build
   and `./mvnw install` locally, then depend on the resulting local artifacts (see
   [API modules vs. implementation modules](#api-modules-vs-implementation-modules)).
-- Phase 0.7 (a browser-based crawler) is implemented - see [Choosing modules](#choosing-modules)
-  below and [docs/browser-crawler.md](browser-crawler.md). See [Roadmap](roadmap.md) for what
-  remains: Phase 0.8 (workflows) and later.
+- Browser and HTTP crawling, workflows, schema-V1 recording, and explicit trusted locator plugins
+  are implemented. Phase 1.0-A is reviewing and documenting their compatibility surface; see the
+  [API stability policy](api-stability.md) and [Roadmap](roadmap.md).
 
 ## Choosing modules
 
@@ -41,6 +41,8 @@ can actually use today - reserved/placeholder modules are listed separately in
 | HTTP crawling (no browser) | `webagent4j-crawler-api`, `webagent4j-crawler` | `ICrawler`, `HttpCrawler`, `CrawlRequest`, `CrawlResult` |
 | Browser crawling (JS-rendered, sessions) | `webagent4j-browser-crawler` (+ `webagent4j-browser-playwright` at runtime) | `IBrowserCrawler`, `BrowserCrawler`, `BrowserCrawlRequest`, `BrowserCrawlResult` |
 | Deterministic action orchestration (typed variables, masked secrets, conditions) | `webagent4j-workflow` | `Workflow`, `WorkflowEngine`, `WorkflowSteps`, `WorkflowVariable`, `WorkflowResult` |
+| Versioned workflow recording and offline comparison | `webagent4j-recording` | `WorkflowRecorder`, `JsonWorkflowRecordingCodec`, `WorkflowReplayVerifier` |
+| Explicit trusted locator plugins | `webagent4j-plugin-api` | `PluginLoader`, `PluginRegistry`, `ILocatorStrategyProvider` |
 | Playwright browser adapter | `webagent4j-browser-playwright` (runtime only) | `PlaywrightBrowserProvider` (discovered via `ServiceLoader`, never referenced directly) |
 | CLI usage without writing Java | `webagent4j-cli` | `java -jar webagent4j-cli-*.jar ...` (see [Getting started](getting-started.md)) |
 
@@ -793,12 +795,17 @@ unwrapped exception.
 
 ## API stability
 
-- WebAgent4J is **pre-1.0**. A type being `public` does not mean it is frozen until `1.0.0` -
-  it means it is part of the API surface the project intends to stabilize, and changes to it will be
-  recorded in the [changelog](../CHANGELOG.md), not silently made.
-- No semantic-versioning guarantee applies before `1.0.0`. After `1.0.0`, the project intends to
-  follow semantic versioning (see [README.md](../README.md#project-status)); this document does not
-  promise that policy is already in force today.
+- WebAgent4J is **pre-1.0**. Necessary breaking cleanups remain possible until `1.0.0` and are
+  recorded in the [changelog](../CHANGELOG.md) and, when migration is non-trivial, the
+  [migration guide](migration-to-1.0.md).
+- Starting with `1.0.0`, supported Java APIs, SPIs, and Maven coordinates follow Semantic
+  Versioning. Patch, minor, and major compatibility rules are defined in the
+  [API stability policy](api-stability.md).
+- Java visibility is not the support boundary. Documented consumer API and the explicit SPI list
+  are supported; `.internal` packages, examples, build/test modules, empty placeholder artifacts,
+  and the runtime-only concrete Playwright provider are not consumer API.
+- Native Java serialization is not a supported persistence or compatibility format. Recording JSON
+  has a separate, explicit `schemaVersion` policy and remains V1.
 - There are currently no formally `@Deprecated` public APIs in the implemented modules; if/when one
   is introduced, it will be documented here and in the changelog rather than silently removed.
 - Prefer the entry points this document lists as "primary API" over reaching into `internal`
@@ -882,7 +889,7 @@ Artifacts are not yet published to a public repository - run `./mvnw install` lo
 ## Reserved and placeholder modules
 
 These modules exist in the reactor but are **intentionally empty** - reserved boundaries, not usable
-public API. Do not add a dependency on them expecting functionality:
+public API and no longer managed by the BOM. Do not add a dependency on them expecting functionality:
 
 | Module | Reserved for |
 | --- | --- |
@@ -899,9 +906,9 @@ above remain reserved. See
 future phase is expected to deliver.
 
 `webagent4j-testing` also currently has **no source code at all** (only its `pom.xml` exists) - it is
-not yet a usable shared test-fixture library, despite appearing in the module graph as a
-non-reserved module. Do not depend on it expecting fixtures today. See [Testing](testing.md) for how
-this project tests itself in the meantime.
+not a supported shared test-fixture library and is not managed by the BOM. Do not depend on it
+expecting fixtures today. See [Testing](testing.md) for how this project tests itself in the
+meantime.
 
 `webagent4j-bom` (dependency-version alignment only), `webagent4j-integration-tests`, and
 `webagent4j-robustness-tests` are build/test infrastructure, not application-facing API either.

@@ -2,36 +2,40 @@
 
 Arrows below mean "depends on."
 
-| Module | Direct WebAgent4J dependencies | Current responsibility |
-|---|---|---|
-| `webagent4j-bom` | none | Consumer version alignment |
-| `webagent4j-common` | none | Exceptions, timeouts, retry policy |
-| `webagent4j-wait` | common | Deterministic wait/stability primitive: monotonic deadlines, polling, stability windows |
-| `webagent4j-locator-api` | none | Immutable locator definitions and generic fluent contracts |
-| `webagent4j-dom` | common, extraction-api, locator-api | Backend-neutral live element and scoped query contract |
-| `webagent4j-observation-api` | dom, locator-api | Immutable semantic model, options, renderer, fingerprint, diff, capture SPI |
-| `webagent4j-observation` | browser-api, observation-api | Semantic transformation, policies, observers, diagnostics, events |
-| `webagent4j-locator` | common, dom, locator-api, wait | Planning, discovery ports, filtering, scoring, ambiguity, diagnostics |
-| `webagent4j-verification` | dom, locator-api, observation-api, wait | Deterministic conditions, composition, and bounded polling |
-| `webagent4j-action` | common, dom, locator-api, observation-api, verification, wait | Commands, lifecycle orchestration, safe retries, structured results, and audit events |
-| `webagent4j-browser-api` | action, dom, extraction, extraction-api, locator, locator-api, observation-api | Browser/page lifecycle contracts |
-| `webagent4j-browser-playwright` | action, browser-api, dom, locator, locator-api, observation | Playwright action backend, browser lifecycle, batch observation adapter, and service provider |
-| `webagent4j-core` | browser-api | Public facade and provider discovery |
-| `webagent4j-http` | common | Reserved non-browser transport boundary |
-| `webagent4j-storage` | common | Reserved persistence boundary |
-| `webagent4j-extraction-api` | locator-api | Backend-neutral extraction request/result/provenance, converters, validators, and failure taxonomy |
-| `webagent4j-extraction` | common, dom, extraction-api, locator, locator-api, wait | Deterministic extraction engine reusing the existing locator engine - no second DOM resolution engine |
-| `webagent4j-crawler-api` | common | Backend-neutral HTTP crawler contracts: `CrawlRequest`/`CrawlResult`/`CrawledPage`, failure taxonomy, scope/dedup ports - no HTTP client, no HTML parser, no Playwright |
-| `webagent4j-crawler` | common, crawler-api, wait | Deterministic, sequential HTTP crawler engine: `java.net.http.HttpClient` fetcher, jsoup link extraction, BFS frontier, URL normalization/deduplication/scope policy, redirect and retry handling. No browser. See [http-crawler.md](http-crawler.md) |
-| `webagent4j-browser-crawler` | common, crawler-api, browser-api, wait | Deterministic, single-lane browser crawler engine: JavaScript-rendered link discovery via `IPage.observe()`, one `IBrowser` session per crawl, page stability reused from `webagent4j-wait`, top-level frame scope, cancellation. No Playwright import. See [browser-crawler.md](browser-crawler.md) |
-| `webagent4j-workflow` | action | Deterministic, sequential orchestration engine over the action pipeline: immutable workflow definitions, typed write-once variables, masked secrets, fail-closed conditions, single-use action preparation factories, fail-fast structured results. See [workflow.md](workflow.md) |
-| `webagent4j-recording` | workflow | Deterministic, versioned recording that excludes raw workflow values, preserves engine-redacted diagnostics, and documents verbatim metadata identifiers (`WorkflowRecorder`); canonical JSON encoding/decoding (`IWorkflowRecordingCodec`); pure offline structured replay comparison (`WorkflowReplayVerifier`) - no live browser replay. See [recording.md](recording.md) |
-| `webagent4j-plugin-api` | locator | Explicit, deterministic `ServiceLoader` discovery for trusted custom locator strategies; immutable fail-closed registry. See [plugins.md](plugins.md) |
-| `webagent4j-testing` | none | Reserved shared test-fixture boundary - currently has no source code |
-| `webagent4j-cli` | core; Playwright at runtime | Public-API CLI |
-| `webagent4j-examples` | core, crawler, crawler-api, workflow; Playwright at runtime | Executable public-API examples |
-| `webagent4j-integration-tests` | core, Playwright, plugin-api, testing, workflow | Architecture and browser integration tests |
-| `webagent4j-robustness-tests` | core, Playwright | Profile-gated deterministic adversarial corpus and cross-phase journeys |
+| Module | Direct WebAgent4J dependencies | Responsibility | Intended consumer | Stability classification |
+|---|---|---|---|---|
+| `webagent4j-bom` | none | Consumer version alignment | Maven consumers | Supported Maven metadata |
+| `webagent4j-common` | none | Base exceptions, timeouts, and retry policy | Engines and advanced applications | Supported API/SPI |
+| `webagent4j-wait` | common | Monotonic deadlines, polling, and stability windows | Engine implementors and advanced applications | Supported API/SPI |
+| `webagent4j-locator-api` | none | Immutable locator definitions and fluent contracts | Applications and backend implementors | Supported API |
+| `webagent4j-dom` | common, extraction-api, locator-api | Backend-neutral live element and scoped-query contracts | Applications and backend implementors | Supported API |
+| `webagent4j-observation-api` | dom, locator-api | Semantic values, rendering/diff options, and capture SPI | Applications and backend implementors | Supported API/SPI |
+| `webagent4j-observation` | browser-api, observation-api | Semantic transformation, policies, observers, diagnostics, and events | Applications and policy implementors | Supported API/SPI; `.internal` types unsupported |
+| `webagent4j-locator` | common, dom, locator-api, wait | Planning, discovery ports, filtering, scoring, and ambiguity | Applications and locator strategy implementors | Supported API/SPI; `.internal` types unsupported |
+| `webagent4j-verification` | dom, locator-api, observation-api, wait | Deterministic conditions, composition, and bounded polling | Applications | Supported API |
+| `webagent4j-action` | common, dom, locator-api, observation-api, verification, wait | Action lifecycle, stabilization, results, and audit events | Applications and browser backend implementors | Supported API/SPI; `.internal` types unsupported |
+| `webagent4j-browser-api` | action, dom, extraction, extraction-api, locator, locator-api, observation-api | Browser/page lifecycle contracts and provider SPI | Applications and browser backend implementors | Supported API/SPI |
+| `webagent4j-browser-playwright` | action, browser-api, dom, locator, locator-api, observation | Playwright backend, observation adapter, and provider | Runtime composition | Supported artifact; implementation-public provider only |
+| `webagent4j-core` | browser-api | Browser facade and provider discovery | Applications | Supported API |
+| `webagent4j-http` | common | Empty non-browser transport boundary | Nobody | Reserved and unsupported; not in BOM |
+| `webagent4j-storage` | common | Empty persistence boundary | Nobody | Reserved and unsupported; not in BOM |
+| `webagent4j-extraction-api` | locator-api | Extraction requests, results, provenance, converters, validators, and failures | Applications and conversion/validation implementors | Supported API/SPI |
+| `webagent4j-extraction` | common, dom, extraction-api, locator, locator-api, wait | Extraction engine reusing the locator engine | Applications | Supported API |
+| `webagent4j-crawler-api` | common | Backend-neutral HTTP crawler contracts and policies | Applications and crawler policy implementors | Supported API/SPI |
+| `webagent4j-crawler` | common, crawler-api, wait | Sequential HTTP crawler, HTTP fetcher, parsing, and frontier | Applications and fetch/parser implementors | Supported API/SPI; `.internal` types unsupported |
+| `webagent4j-browser-crawler` | common, crawler-api, browser-api, wait | Single-lane crawler for JavaScript-rendered pages | Applications | Supported API; `.internal` types unsupported |
+| `webagent4j-workflow` | action | Typed variables, conditions, sequential fail-fast orchestration, and results | Applications and workflow extension implementors | Supported API/SPI |
+| `webagent4j-recording` | workflow | Schema-V1 JSON recording and pure offline comparison | Applications | Supported API |
+| `webagent4j-plugin-api` | locator | Explicit trusted locator-provider discovery and immutable registration | Applications and plugin implementors | Supported API/SPI |
+| `webagent4j-testing` | none | Empty shared test-fixture boundary | Nobody yet | Unsupported; zero public types; not in BOM |
+| `webagent4j-cli` | core; Playwright at runtime | Command-line application | CLI users | Separate CLI compatibility surface |
+| `webagent4j-examples` | core, crawler, crawler-api, workflow; Playwright at runtime | Executable examples | Contributors and learners | Documentation/sample code, not API |
+| `webagent4j-integration-tests` | core, Playwright, plugin-api, testing, workflow | Architecture and browser integration tests | Contributors | Build/test infrastructure |
+| `webagent4j-robustness-tests` | core, Playwright | Profile-gated adversarial corpus and cross-phase journeys | Contributors | Build/test infrastructure |
+
+The 28 reactor modules have been classified above. The effective-public production inventory and
+the exact consumer/SPI/runtime/implementation split are defined in
+[API stability policy](api-stability.md#supported-surface-classifications).
 
 The separate locator API module allows `IElement.find()` without a Maven dependency cycle. The DOM
 module depends only on immutable, backend-neutral contracts; the locator engine depends on DOM element
@@ -42,9 +46,9 @@ Browser API exposes only immutable observation contracts and the snapshot SPI; t
 orchestrates semantic policies; the backend implements bounded capture. No public observation type
 exposes Playwright.
 
-Reserved modules (`http`, `storage`) are intentionally empty until a tested vertical needs their
-public API. This prevents placeholder types from becoming accidental compatibility commitments. No
-Maven dependency cycle exists.
+Reserved modules (`http`, `storage`) are intentionally empty and unsupported. They are retained as
+reactor boundaries but no longer appear in the BOM; a future implementation would require its own
+public API review. No Maven dependency cycle exists.
 
 `webagent4j-crawler` graduated from a reserved module to a real implementation in Phase 0.6 (see
 [http-crawler.md](http-crawler.md)); its dependency set changed entirely in the process (it no
