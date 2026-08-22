@@ -213,6 +213,9 @@ unambiguously and every precondition held at that moment; otherwise `BLOCKED`, w
 obtained only through `plan()`: its sole implementation is package-private, so there is no public
 constructor to build a plan by hand or bypass its execution guard.
 
+If target-resolution retry is interrupted while planning, the caller's interrupt flag remains set
+and the plan is `BLOCKED` with `ActionFailureType.INTERRUPTED`; the backend is never invoked.
+
 A plan is a snapshot, not a guarantee. `IActionPlan.execute()` never trusts it: it reruns the entire
 pipeline from scratch, so target resolution, ambiguity detection, and preconditions are all
 revalidated against the live DOM before any backend side effect. Consequences:

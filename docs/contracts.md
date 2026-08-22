@@ -53,6 +53,11 @@ is `NOT_EXECUTED/PRECONDITION_FAILED`; resolution failure is
 `CANCELLED/REAL/INTERRUPTED` after invocation or once a side effect may have started. Cancellation
 is never `DRY_RUN`, and the caller thread's interrupt flag remains set.
 
+Planning has no `ActionStatus` or `ActionExecutionMode`: an interruption during `plan()` target
+resolution instead produces `ActionPlanStatus.BLOCKED` with `ActionFailureType.INTERRUPTED`, invokes
+no backend, and preserves the caller thread's interrupt flag. This plan-time outcome is distinct
+from the two execution-time `CANCELLED` outcomes above.
+
 ### Workflow and recording projection
 
 Every public `WorkflowResult` accepted by its constructors is now representable by the recording

@@ -20,6 +20,8 @@ documented in [docs/contracts.md](docs/contracts.md).
 - Target-resolution retry interruption now preserves the caller's interrupt flag and produces
   `CANCELLED/NOT_EXECUTED/INTERRUPTED` before backend invocation; interruption after invocation
   remains `CANCELLED/REAL/INTERRUPTED`. Recording JSON schema V1 is unchanged.
+- Preserve caller interruption during `plan()` target-resolution retry and classify it as a
+  `BLOCKED` plan with `ActionFailureType.INTERRUPTED` rather than `BACKEND_FAILURE`.
 - Workflow results and recordings now require at least one step, including completed and preflight
   failure traces; recording JSON schema V1 is unchanged and an empty V1 trace is invalid.
 - Action totals, phases, and event elapsed values now use the same monotonic clock as the action
