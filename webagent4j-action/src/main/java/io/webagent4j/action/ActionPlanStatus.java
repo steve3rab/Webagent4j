@@ -4,6 +4,6 @@ package io.webagent4j.action;
 public enum ActionPlanStatus {
     /** Target resolution and every precondition succeeded at the time the plan was built. */
     READY,
-    /** Resolution failed, the target was ambiguous, or a precondition was not satisfied. */
+    /** Resolution failed or was interrupted, the target was ambiguous, or a precondition failed. */
     BLOCKED
 }

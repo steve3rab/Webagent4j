@@ -481,6 +481,25 @@ final class ActionExecutor {
             target =
                     new ActionTargetResolver()
                             .resolve(command, config.options().resolutionRetry(), prepareBudget);
+        } catch (ActionInterruptedException failure) {
+            Thread.currentThread().interrupt();
+            String targetDescription = describe(null);
+            return new DefaultActionPlan<>(
+                    actionId,
+                    command.type(),
+                    command.idempotency(),
+                    command.sideEffect(),
+                    ActionPlanStatus.BLOCKED,
+                    targetDescription,
+                    List.of(),
+                    expectedPostconditions,
+                    Optional.of(
+                            new ActionFailure(
+                                    ActionFailureType.INTERRUPTED,
+                                    "Action target resolution was interrupted",
+                                    config.sensitive() ? Optional.empty() : Optional.of(failure))),
+                    new ActionDiagnostics(targetDescription, "", Map.of("plan", "blocked")),
+                    executor);
         } catch (RuntimeException failure) {
             String targetDescription = describe(null);
             return new DefaultActionPlan<>(
