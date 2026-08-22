@@ -2,6 +2,7 @@ package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.AriaRole;
 import io.webagent4j.common.LocatorException;
@@ -133,17 +134,25 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     /**
-     * Counts the current matches without leaking Playwright's typed timeout when a lazily resolved
-     * frame root disappears between scope resolution and discovery. That race is the count-time
-     * equivalent of a candidate disappearing before {@link #identifyOrNull(Locator)}: this poll
-     * observes no candidates and lets the caller's wait policy decide whether to retry or report a
-     * typed not-found result. Other backend failures still propagate unchanged.
+     * Counts the current matches without leaking a disappearance signal when a lazily resolved
+     * frame root vanishes between scope resolution and discovery. A timeout is absorbed only after
+     * a fresh count proves absence; Playwright's canonical frame-detached protocol failure is
+     * already definitive. A still-present root, a failed recheck, and every other backend failure
+     * propagate unchanged.
      */
     private static int countOrZero(Locator resolved) {
         try {
             return resolved.count();
         } catch (TimeoutError vanishedFrameRoot) {
-            return 0;
+            if (confirmedAbsent(resolved, vanishedFrameRoot)) {
+                return 0;
+            }
+            throw vanishedFrameRoot;
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameDetached(failure)) {
+                return 0;
+            }
+            throw failure;
         }
     }
 
@@ -152,13 +161,10 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * so a candidate that vanishes between {@link Locator#count()} and this call fails fast instead
      * of blocking on Playwright's own multi-second default actionability wait - which would both
      * silently multiply the caller's configured {@link io.webagent4j.wait.WaitEngine} budget and
-     * leak a raw {@link TimeoutError} across the backend-neutral boundary. Returns {@code null},
-     * rather than throwing, only for that one typed "did not resolve within {@link
-     * #EVALUATE_TIMEOUT_MILLIS}" signal - the normal shape of "this candidate vanished between
-     * {@link Locator#count()} and this call". Any other {@link RuntimeException} - a disconnected
-     * browser, a closed context/page, or any other opaque backend or runtime failure - is a genuine
-     * failure, not a vanished candidate, and must propagate unchanged rather than being silently
-     * turned into an absent candidate.
+     * leak a raw {@link TimeoutError} across the backend-neutral boundary. Returns {@code null}
+     * only when a timeout is followed by a fresh absence proof or Playwright explicitly reports
+     * that the owning frame was detached. A still-present candidate, a failed recheck, and every
+     * other runtime failure propagate unchanged.
      */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> identifyOrNull(Locator item) {
@@ -169,7 +175,31 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             null,
                             new Locator.EvaluateOptions().setTimeout(EVALUATE_TIMEOUT_MILLIS));
         } catch (TimeoutError vanished) {
-            return null;
+            if (confirmedAbsent(item, vanished)) {
+                return null;
+            }
+            throw vanished;
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameDetached(failure)) {
+                return null;
+            }
+            throw failure;
+        }
+    }
+
+    /** Returns true only when a fresh synchronous count proves the timed-out locator is gone. */
+    private static boolean confirmedAbsent(Locator locator, TimeoutError original) {
+        try {
+            return locator.count() == 0;
+        } catch (PlaywrightException recheckFailure) {
+            if (PlaywrightFailureClassifier.isFrameDetached(recheckFailure)) {
+                return true;
+            }
+            original.addSuppressed(recheckFailure);
+            throw original;
+        } catch (RuntimeException recheckFailure) {
+            original.addSuppressed(recheckFailure);
+            throw original;
         }
     }
 
