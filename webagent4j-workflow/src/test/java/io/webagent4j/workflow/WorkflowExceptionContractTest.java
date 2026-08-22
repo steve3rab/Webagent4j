@@ -26,7 +26,15 @@ class WorkflowExceptionContractTest {
                 new WorkflowResult(
                         new WorkflowId("contract-test"),
                         WorkflowStatus.FAILED,
-                        List.of(),
+                        List.of(
+                                new WorkflowStepResult(
+                                        new WorkflowStepId("step-1"),
+                                        WorkflowStepType.ASSIGN,
+                                        WorkflowStepStatus.NOT_RUN,
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        Optional.empty())),
                         WorkflowOutputs.empty(),
                         Optional.of(failure));
 
