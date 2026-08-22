@@ -9,6 +9,12 @@ documented in the changelog and, when migration is not obvious, in the migration
 current cleanup is documented in [migration-to-1.0.md](migration-to-1.0.md). Shared behavioral
 rules and intentional domain differences are defined in [contracts.md](contracts.md).
 
+Phase 1.0-C did not add or change a supported production type, method, constructor, field, Maven
+coordinate, dependency, or recording schema V1 field. Its finite-value, monotonic-time, rollover,
+and bounded-adapter changes are behavioral corrections for inputs and environments that could not
+previously satisfy the documented contracts. The evidence is maintained in
+[hardening.md](hardening.md).
+
 ## Starting with 1.0
 
 Starting with `1.0.0`, supported Java APIs, SPIs, and Maven coordinates follow Semantic Versioning:
@@ -141,6 +147,10 @@ Required public arguments reject `null`. Optional values use `Optional` and neve
 collections do not expose mutable internal state. IDs reject null, blank, or otherwise locally
 invalid values at construction. A documented diagnostic payload may retain null when null is the
 value being rejected, as with a directly invoked `IExtractionValidator`.
+
+Floating-point values documented as ratios, weights, scores, confidence, margins, or contributions
+must be finite as well as inside their documented range. `NaN` is never a valid way to bypass a
+range invariant.
 
 `IPage#evaluate(String)` intentionally returns `Object` because JavaScript values are dynamically
 typed. `WaitSample` intentionally carries an opaque `Optional<Object>` stability key. These are

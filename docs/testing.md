@@ -5,6 +5,11 @@ Failsafe. The Playwright integration test starts a local JDK HTTP server on a ra
 does not depend on a public website. It covers browser launch, navigation, observation, semantic
 location, click, URL verification, and cleanup.
 
+The Phase 1.0-C [hardening matrix](hardening.md) maps hostile boundaries to focused regressions and
+the broader module/integration evidence. New timing regressions must use injected monotonic time;
+adapter timeout regressions should capture backend options or use deterministic fixtures rather
+than assert fragile real-time durations.
+
 `webagent4j-wait`'s own tests (`WaitEngineTest`, `WaitBudgetTest`) run entirely on fake time: a
 `FakeMonotonicClock` and `FakeWaitSleeper` advance the clock by exactly the requested sleep
 duration instead of really sleeping, so a test asserting a 60-second timeout completes in

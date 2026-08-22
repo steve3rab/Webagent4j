@@ -80,7 +80,7 @@ is unchanged.
 | Domain | Configured timeout | Clock/deadline | Precision and zero behavior |
 | --- | --- | --- | --- |
 | Wait | `WaitBudget` accepts zero for one immediate probe | Injected monotonic clock | Poll interval and stability window are positive |
-| Locator | Positive definition/config timeout | One shared `WaitBudget` per resolution | Always performs the documented immediate probe; browser adapter precision is whole milliseconds where Playwright requires it |
+| Locator | Positive definition/config timeout | One shared `WaitBudget` per resolution; strategy elapsed time uses the same injected monotonic clock | Always performs the documented immediate probe; Playwright candidate and frame inspection time scales with remaining bounded work |
 | Verification | Positive polling interval; timeout or shared budget supplied by caller | Shared monotonic budget when the budget overload is used | The fixed-duration `awaitAll` overload intentionally gives each verification its own timeout |
 | Action | Positive overall action timeout | One monotonic clock for the shared budget, total/phase/event elapsed timing; wall clock only for absolute audit timestamps | An already-running backend side effect is not forcibly interrupted when the budget expires |
 | HTTP crawler/fetch | Positive request/crawl timeouts | Monotonic elapsed measurement | `HttpFetchRequest` rejects zero; HTTP status responses are not timeout failures |
@@ -90,6 +90,11 @@ is unchanged.
 All public elapsed timing values reject negative durations. This includes wait results, locator
 diagnostics/events, verification results, action results/events/stabilization, observation
 snapshots/statistics/events, and HTTP fetch results.
+
+`WaitBudget` stores a timeout allowance and compares elapsed monotonic deltas. It does not rely on
+an absolute saturated deadline, so `remaining()` and `expired()` stay consistent when the signed
+`nanoTime()` representation rolls over. Wall time remains appropriate only for absolute audit
+timestamps.
 
 ## Resource ownership
 
