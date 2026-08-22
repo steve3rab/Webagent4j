@@ -1,8 +1,19 @@
 package io.webagent4j.locator;
 
 import io.webagent4j.common.LocatorException;
+import java.io.IOException;
+import java.io.NotSerializableException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serial;
+import java.util.Objects;
 
-/** Indicates that no compatible candidate appeared before the locator timeout. */
+/**
+ * Indicates that no compatible candidate appeared before the locator timeout.
+ *
+ * <p>Java native serialization is explicitly unsupported because structured diagnostics must never
+ * silently disappear during deserialization.
+ */
 public final class LocatorNotFoundException extends LocatorException
         implements io.webagent4j.common.ILocatorFailure {
 
@@ -13,7 +24,9 @@ public final class LocatorNotFoundException extends LocatorException
 
     /** Creates an exception containing a rendered locator diagnostic. */
     public LocatorNotFoundException(String message) {
-        this(message, null, LocatorResolutionStatus.UNRESOLVABLE);
+        super(message);
+        this.diagnostics = null;
+        this.status = LocatorResolutionStatus.UNRESOLVABLE;
     }
 
     /** Creates an exception retaining structured locator diagnostics. */
@@ -25,8 +38,8 @@ public final class LocatorNotFoundException extends LocatorException
     public LocatorNotFoundException(
             String message, LocatorDiagnostics diagnostics, LocatorResolutionStatus status) {
         super(message);
-        this.diagnostics = diagnostics;
-        this.status = java.util.Objects.requireNonNull(status, "status");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+        this.status = Objects.requireNonNull(status, "status");
         if (status == LocatorResolutionStatus.RESOLVED
                 || status == LocatorResolutionStatus.AMBIGUOUS) {
             throw new IllegalArgumentException("not-found status must represent a safe failure");
@@ -46,5 +59,15 @@ public final class LocatorNotFoundException extends LocatorException
     @Override
     public boolean isNotFound() {
         return true;
+    }
+
+    @Serial
+    private void writeObject(ObjectOutputStream ignored) throws IOException {
+        throw new NotSerializableException(LocatorNotFoundException.class.getName());
+    }
+
+    @Serial
+    private void readObject(ObjectInputStream ignored) throws IOException, ClassNotFoundException {
+        throw new NotSerializableException(LocatorNotFoundException.class.getName());
     }
 }
