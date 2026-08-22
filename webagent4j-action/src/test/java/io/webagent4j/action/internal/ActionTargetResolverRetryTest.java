@@ -18,6 +18,7 @@ import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.WaitBudget;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -130,8 +131,9 @@ class ActionTargetResolverRetryTest {
                             attempts.incrementAndGet();
                             throw new LocatorNotFoundException("never");
                         });
-        IMonotonicClock alwaysAtTheEndOfTime = () -> Long.MAX_VALUE;
-        WaitBudget alreadyExpired = WaitBudget.start(Duration.ofMillis(100), alwaysAtTheEndOfTime);
+        AtomicLong now = new AtomicLong();
+        WaitBudget alreadyExpired = WaitBudget.start(Duration.ofMillis(100), now::get);
+        now.set(Duration.ofMillis(100).toNanos());
 
         assertThatExceptionOfType(LocatorNotFoundException.class)
                 .isThrownBy(() -> resolver.resolve(command, policy, alreadyExpired));
