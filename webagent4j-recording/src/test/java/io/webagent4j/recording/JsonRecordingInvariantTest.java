@@ -15,7 +15,68 @@ import org.junit.jupiter.api.Test;
  */
 class JsonRecordingInvariantTest {
 
+    private static final String SENTINEL = "WA4J_REJECTED_RECORDING_SENTINEL_741852";
+
     private final JsonWorkflowRecordingCodec codec = new JsonWorkflowRecordingCodec();
+
+    @Test
+    void jsonZeroStepCompletedDocumentIsRejectedSafely() {
+        String json =
+                "{\"schemaVersion\":1,\"recordingId\":\"r1\",\"capturedAt\":\"2026-01-01T00:00:00Z\","
+                        + "\"workflow\":{\"workflowId\":\"wf\",\"status\":\"COMPLETED\",\"steps\":[]},"
+                        + "\"failure\":null}";
+
+        assertThatThrownBy(() -> codec.decode(json))
+                .isInstanceOf(RecordingFormatException.class)
+                .hasMessage("recording invariant violation")
+                .hasNoCause();
+    }
+
+    @Test
+    void jsonZeroStepPreflightFailureDocumentIsRejectedSafely() {
+        String json =
+                "{\"schemaVersion\":1,\"recordingId\":\"r1\",\"capturedAt\":\"2026-01-01T00:00:00Z\","
+                        + "\"workflow\":{\"workflowId\":\"wf\",\"status\":\"FAILED\",\"steps\":[]},"
+                        + "\"failure\":{\"type\":\"MISSING_REQUIRED_INPUT\",\"safeMessage\":\""
+                        + SENTINEL
+                        + "\",\"stepId\":null,\"underlyingTypeName\":null,"
+                        + "\"actionFailureType\":null}}";
+
+        assertThatThrownBy(() -> codec.decode(json))
+                .isInstanceOf(RecordingFormatException.class)
+                .hasMessage("recording invariant violation")
+                .hasMessageNotContaining(SENTINEL)
+                .hasNoCause();
+    }
+
+    @Test
+    void jsonContradictoryActionOutcomeIsRejectedSafely() {
+        String failure =
+                "{\"type\":\"ACTION_FAILED\",\"safeMessage\":\""
+                        + SENTINEL
+                        + "\",\"stepId\":\"s1\",\"underlyingTypeName\":null,"
+                        + "\"actionFailureType\":\"PRECONDITION_FAILED\"}";
+        String action =
+                "{\"actionId\":\"a1\",\"actionType\":\"CLICK\",\"status\":\"CANCELLED\","
+                        + "\"executionMode\":\"REAL\"}";
+        String json =
+                "{\"schemaVersion\":1,\"recordingId\":\"r1\",\"capturedAt\":\"2026-01-01T00:00:00Z\","
+                        + "\"workflow\":{\"workflowId\":\"wf\",\"status\":\"FAILED\",\"steps\":["
+                        + "{\"stepId\":\"s1\",\"stepType\":\"ACTION\",\"status\":\"FAILED\","
+                        + "\"condition\":null,\"outputVariableName\":null,\"failure\":"
+                        + failure
+                        + ",\"action\":"
+                        + action
+                        + "}]},\"failure\":"
+                        + failure
+                        + "}";
+
+        assertThatThrownBy(() -> codec.decode(json))
+                .isInstanceOf(RecordingFormatException.class)
+                .hasMessage("recording invariant violation")
+                .hasMessageNotContaining(SENTINEL)
+                .hasNoCause();
+    }
 
     /** JSON-INV-001: a COMPLETED document containing a FAILED step is rejected. */
     @Test
@@ -154,7 +215,7 @@ class JsonRecordingInvariantTest {
                         + "\"underlyingTypeName\":null,\"actionFailureType\":\"TARGET_NOT_FOUND\"}";
         String action =
                 "{\"actionId\":\"a1\",\"actionType\":\"CLICK\",\"status\":\"EXECUTION_FAILED\","
-                        + "\"executionMode\":\"REAL\"}";
+                        + "\"executionMode\":\"NOT_EXECUTED\"}";
         String json =
                 "{\"schemaVersion\":1,\"recordingId\":\"r1\",\"capturedAt\":\"2026-01-01T00:00:00Z\","
                         + "\"workflow\":{\"workflowId\":\"wf\",\"status\":\"FAILED\",\"steps\":["

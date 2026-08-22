@@ -68,7 +68,7 @@ class RecordingModelInvariantsTest {
                                         Optional.empty(),
                                         Optional.of(
                                                 RecordingFixtures.actionFailedFailure(
-                                                        "s1", ActionFailureType.TARGET_NOT_FOUND)),
+                                                        "s1", ActionFailureType.BACKEND_FAILURE)),
                                         Optional.empty()))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -286,13 +286,30 @@ class RecordingModelInvariantsTest {
                         Optional.empty(),
                         Optional.of(
                                 RecordingFixtures.actionFailedFailure(
-                                        "s1", ActionFailureType.TARGET_NOT_FOUND)),
+                                        "s1", ActionFailureType.BACKEND_FAILURE)),
                         Optional.of(
                                 RecordingFixtures.action(
                                         io.webagent4j.action.ActionType.CLICK,
                                         io.webagent4j.action.ActionStatus.EXECUTION_FAILED,
                                         io.webagent4j.action.ActionExecutionMode.REAL)));
         assertThat(step.action()).isPresent();
+    }
+
+    @Test
+    void zeroStepCompletedAndPreflightFailureRecordingsAreRejected() {
+        assertThatThrownBy(
+                        () -> recordingWith(WorkflowStatus.COMPLETED, List.of(), Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        RecordedFailure preflightFailure =
+                RecordingFixtures.preflightFailure(WorkflowFailureType.MISSING_REQUIRED_INPUT);
+        assertThatThrownBy(
+                        () ->
+                                recordingWith(
+                                        WorkflowStatus.FAILED,
+                                        List.of(),
+                                        Optional.of(preflightFailure)))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     // ---- INV-GLOBAL ----

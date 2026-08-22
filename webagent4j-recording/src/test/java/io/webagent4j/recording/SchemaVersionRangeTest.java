@@ -3,7 +3,6 @@ package io.webagent4j.recording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -19,7 +18,7 @@ class SchemaVersionRangeTest {
     private final JsonWorkflowRecordingCodec codec = new JsonWorkflowRecordingCodec();
 
     private String validWithSchemaVersion(String rawSchemaVersion) {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         return valid.replace("\"schemaVersion\":1", "\"schemaVersion\":" + rawSchemaVersion);
     }
 

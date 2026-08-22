@@ -1,6 +1,7 @@
 package io.webagent4j.recording;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.webagent4j.action.ActionExecutionMode;
@@ -645,27 +646,66 @@ class RecordingFailureTaxonomyTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
-    /**
-     * INV-ACTION-011: ACTION_FAILED's action summary may report any non-SUCCESS ActionStatus - the
-     * invariant uses {@code ActionResult}'s own success criterion, never an enumerated allowlist.
-     */
+    /** INV-ACTION-011: ACTION_FAILED preserves the exact ActionResult outcome matrix. */
     @Test
-    void invAction011ActionFailedAcceptsEveryNonSuccessActionStatus() {
-        for (ActionStatus status :
-                List.of(
-                        ActionStatus.PRECONDITION_FAILED,
-                        ActionStatus.EXECUTION_FAILED,
-                        ActionStatus.VERIFICATION_FAILED,
-                        ActionStatus.TIMEOUT,
-                        ActionStatus.CANCELLED)) {
-            RecordedWorkflowStep step =
-                    RecordingFixtures.actionStepFailedWithSummary(
-                            "s1",
-                            RecordingFixtures.actionFailedFailure(
-                                    "s1", ActionFailureType.TARGET_NOT_FOUND),
-                            status);
-            assertThat(step.action().orElseThrow().status()).isEqualTo(status);
+    void invAction011ActionFailedEnforcesCompleteActionOutcomeMatrix() {
+        for (ActionStatus status : ActionStatus.values()) {
+            for (ActionExecutionMode executionMode : ActionExecutionMode.values()) {
+                for (ActionFailureType failureType : ActionFailureType.values()) {
+                    RecordedFailure failure =
+                            RecordingFixtures.actionFailedFailure("s1", failureType);
+                    Runnable construction =
+                            () ->
+                                    RecordingFixtures.actionStepFailedWithSummary(
+                                            "s1", failure, status, executionMode);
+                    String description = status + "/" + executionMode + "/" + failureType;
+                    if (isValidActionFailureOutcome(status, executionMode, failureType)) {
+                        assertThatCode(construction::run)
+                                .as(description)
+                                .doesNotThrowAnyException();
+                    } else {
+                        assertThatThrownBy(construction::run)
+                                .as(description)
+                                .isInstanceOf(IllegalArgumentException.class);
+                    }
+                }
+            }
         }
+    }
+
+    private static boolean isValidActionFailureOutcome(
+            ActionStatus status, ActionExecutionMode executionMode, ActionFailureType failureType) {
+        return switch (status) {
+            case PRECONDITION_FAILED ->
+                    executionMode == ActionExecutionMode.NOT_EXECUTED
+                            && failureType == ActionFailureType.PRECONDITION_FAILED;
+            case EXECUTION_FAILED ->
+                    switch (executionMode) {
+                        case NOT_EXECUTED ->
+                                failureType == ActionFailureType.TARGET_NOT_FOUND
+                                        || failureType == ActionFailureType.TARGET_AMBIGUOUS
+                                        || failureType == ActionFailureType.BACKEND_FAILURE;
+                        case REAL ->
+                                failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
+                                        || failureType
+                                                == ActionFailureType.ACTION_NOT_SUPPORTED_BY_TARGET
+                                        || failureType == ActionFailureType.BACKEND_FAILURE
+                                        || failureType == ActionFailureType.UPLOAD_FAILURE
+                                        || failureType == ActionFailureType.DOWNLOAD_FAILURE;
+                        case DRY_RUN -> false;
+                    };
+            case VERIFICATION_FAILED ->
+                    executionMode == ActionExecutionMode.REAL
+                            && failureType == ActionFailureType.POSTCONDITION_FAILED;
+            case TIMEOUT ->
+                    (executionMode == ActionExecutionMode.REAL
+                                    || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                            && failureType == ActionFailureType.TIMEOUT;
+            case CANCELLED ->
+                    executionMode == ActionExecutionMode.REAL
+                            && failureType == ActionFailureType.INTERRUPTED;
+            case SUCCESS -> false;
+        };
     }
 
     // ==================== INV-ASSIGN ====================

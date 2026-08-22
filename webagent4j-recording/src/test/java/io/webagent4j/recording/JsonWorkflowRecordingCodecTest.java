@@ -46,7 +46,7 @@ class JsonWorkflowRecordingCodecTest {
     /** Encoding never pretty-prints and never appends a trailing newline. */
     @Test
     void encodingHasNoPrettyPrintingOrTrailingNewline() {
-        String encoded = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String encoded = codec.encode(RecordingFixtures.minimalCompleted("wf"));
 
         assertThat(encoded).doesNotContain("\n").doesNotContain("  ");
         assertThat(encoded).doesNotEndWith("\n");
@@ -90,7 +90,7 @@ class JsonWorkflowRecordingCodecTest {
     /** JSON-004: an unsupported schemaVersion is rejected, with no fallback decoding. */
     @Test
     void jsonUnknownSchemaVersionIsRejected() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid.replace("\"schemaVersion\":1", "\"schemaVersion\":999");
 
         assertThatThrownBy(() -> codec.decode(corrupted))
@@ -100,7 +100,7 @@ class JsonWorkflowRecordingCodecTest {
     /** JSON-005: a duplicate JSON object key is rejected, at any nesting level. */
     @Test
     void jsonDuplicateTopLevelFieldIsRejected() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid.replaceFirst("\\{", "{\"schemaVersion\":1,");
 
         assertThatThrownBy(() -> codec.decode(corrupted))
@@ -159,7 +159,7 @@ class JsonWorkflowRecordingCodecTest {
     /** JSON-009: content after the JSON document is rejected. */
     @Test
     void jsonTrailingDocumentIsRejected() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid + "{}";
 
         assertThatThrownBy(() -> codec.decode(corrupted))
@@ -168,7 +168,7 @@ class JsonWorkflowRecordingCodecTest {
 
     @Test
     void missingRequiredFieldIsRejected() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid.replace("\"recordingId\":\"recording-1\",", "");
 
         assertThatThrownBy(() -> codec.decode(corrupted))
@@ -177,7 +177,7 @@ class JsonWorkflowRecordingCodecTest {
 
     @Test
     void unknownFieldIsRejected() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid.substring(0, valid.length() - 1) + ",\"bogus\":1}";
 
         assertThatThrownBy(() -> codec.decode(corrupted))
@@ -186,7 +186,7 @@ class JsonWorkflowRecordingCodecTest {
 
     @Test
     void wrongJsonTypeIsRejected() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid.replace("\"schemaVersion\":1", "\"schemaVersion\":\"1\"");
 
         assertThatThrownBy(() -> codec.decode(corrupted))
@@ -195,7 +195,7 @@ class JsonWorkflowRecordingCodecTest {
 
     @Test
     void malformedInstantIsRejected() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid.replace("\"2026-01-01T00:00:00Z\"", "\"not-a-timestamp\"");
 
         assertThatThrownBy(() -> codec.decode(corrupted))
