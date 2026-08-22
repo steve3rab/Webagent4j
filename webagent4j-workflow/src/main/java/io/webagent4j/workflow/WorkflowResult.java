@@ -42,6 +42,9 @@ public record WorkflowResult(
         steps = List.copyOf(Objects.requireNonNull(steps, "steps"));
         Objects.requireNonNull(outputs, "outputs");
         failure = Objects.requireNonNull(failure, "failure");
+        if (steps.isEmpty()) {
+            throw new IllegalArgumentException("a workflow result must contain at least one step");
+        }
         if (status == WorkflowStatus.FAILED && failure.isEmpty()) {
             throw new IllegalArgumentException("a FAILED result must carry a failure");
         }

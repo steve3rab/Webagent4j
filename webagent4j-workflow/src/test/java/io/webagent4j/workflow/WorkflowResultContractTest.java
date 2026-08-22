@@ -1,5 +1,6 @@
 package io.webagent4j.workflow;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.webagent4j.action.ActionExecutionMode;
@@ -149,6 +150,62 @@ class WorkflowResultContractTest {
     }
 
     @Test
+    void rejectsZeroStepCompletedAndPreflightFailureResults() {
+        assertThatThrownBy(() -> result(WorkflowStatus.COMPLETED, List.of(), Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        WorkflowFailure preflightFailure =
+                new WorkflowFailure(
+                        WorkflowFailureType.MISSING_REQUIRED_INPUT,
+                        "missing",
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty());
+        assertThatThrownBy(
+                        () ->
+                                result(
+                                        WorkflowStatus.FAILED,
+                                        List.of(),
+                                        Optional.of(preflightFailure)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void actionFailedProjectionEnforcesTheCompleteActionOutcomeMatrix() {
+        for (ActionStatus status : ActionStatus.values()) {
+            for (ActionExecutionMode executionMode : ActionExecutionMode.values()) {
+                for (ActionFailureType failureType : ActionFailureType.values()) {
+                    WorkflowFailure failure =
+                            failure(
+                                    WorkflowFailureType.ACTION_FAILED,
+                                    STEP_ONE,
+                                    Optional.of(failureType));
+                    Runnable construction =
+                            () ->
+                                    step(
+                                            STEP_ONE,
+                                            WorkflowStepType.ACTION,
+                                            WorkflowStepStatus.FAILED,
+                                            Optional.empty(),
+                                            Optional.empty(),
+                                            Optional.of(failure),
+                                            Optional.of(actionSummary(status, executionMode)));
+                    String description = status + "/" + executionMode + "/" + failureType;
+                    if (isValidActionFailureOutcome(status, executionMode, failureType)) {
+                        assertThatCode(construction::run)
+                                .as(description)
+                                .doesNotThrowAnyException();
+                    } else {
+                        assertThatThrownBy(construction::run)
+                                .as(description)
+                                .isInstanceOf(IllegalArgumentException.class);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void preflightFailureRequiresAnAllNotRunTrace() {
         WorkflowFailure failure =
                 new WorkflowFailure(
@@ -209,8 +266,13 @@ class WorkflowResultContractTest {
     }
 
     private static WorkflowActionSummary actionSummary(ActionStatus status) {
+        return actionSummary(status, ActionExecutionMode.REAL);
+    }
+
+    private static WorkflowActionSummary actionSummary(
+            ActionStatus status, ActionExecutionMode executionMode) {
         return new WorkflowActionSummary(
-                new ActionId("action"), ActionType.CLICK, status, ActionExecutionMode.REAL);
+                new ActionId("action"), ActionType.CLICK, status, executionMode);
     }
 
     private static WorkflowStepResult succeededAssign(WorkflowStepId stepId) {
@@ -253,5 +315,40 @@ class WorkflowResultContractTest {
             Optional<WorkflowFailure> failure) {
         return new WorkflowResult(
                 new WorkflowId("workflow"), status, steps, WorkflowOutputs.empty(), failure);
+    }
+
+    private static boolean isValidActionFailureOutcome(
+            ActionStatus status, ActionExecutionMode executionMode, ActionFailureType failureType) {
+        return switch (status) {
+            case PRECONDITION_FAILED ->
+                    executionMode == ActionExecutionMode.NOT_EXECUTED
+                            && failureType == ActionFailureType.PRECONDITION_FAILED;
+            case EXECUTION_FAILED ->
+                    switch (executionMode) {
+                        case NOT_EXECUTED ->
+                                failureType == ActionFailureType.TARGET_NOT_FOUND
+                                        || failureType == ActionFailureType.TARGET_AMBIGUOUS
+                                        || failureType == ActionFailureType.BACKEND_FAILURE;
+                        case REAL ->
+                                failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
+                                        || failureType
+                                                == ActionFailureType.ACTION_NOT_SUPPORTED_BY_TARGET
+                                        || failureType == ActionFailureType.BACKEND_FAILURE
+                                        || failureType == ActionFailureType.UPLOAD_FAILURE
+                                        || failureType == ActionFailureType.DOWNLOAD_FAILURE;
+                        case DRY_RUN -> false;
+                    };
+            case VERIFICATION_FAILED ->
+                    executionMode == ActionExecutionMode.REAL
+                            && failureType == ActionFailureType.POSTCONDITION_FAILED;
+            case TIMEOUT ->
+                    (executionMode == ActionExecutionMode.REAL
+                                    || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                            && failureType == ActionFailureType.TIMEOUT;
+            case CANCELLED ->
+                    executionMode == ActionExecutionMode.REAL
+                            && failureType == ActionFailureType.INTERRUPTED;
+            case SUCCESS -> false;
+        };
     }
 }
