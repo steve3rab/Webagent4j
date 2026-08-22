@@ -156,6 +156,11 @@ itself already succeeded, while validating the declared output; `ACTION_FAILED`'
 from the same non-success `ActionResult` that caused the failure, so its status, execution mode, and
 present `ActionFailureType` must preserve the exact action matrix. A merely non-success status is
 insufficient. The constructor and strict JSON decoder reject contradictory projections directly.
+For interruption, schema V1 records `CANCELLED/NOT_EXECUTED/INTERRUPTED` when cancellation happened
+before backend invocation and `CANCELLED/REAL/INTERRUPTED` after invocation or once a side effect
+may have started. Both shapes preserve the upstream distinction without adding or reordering JSON
+fields; `CANCELLED/DRY_RUN` and every cancellation failure type other than `INTERRUPTED` remain
+invalid.
 
 ### Full equality vs. replay semantics
 

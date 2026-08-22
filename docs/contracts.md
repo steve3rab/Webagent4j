@@ -49,7 +49,9 @@ is `NOT_EXECUTED/PRECONDITION_FAILED`; resolution failure is
 `TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`,
 `UPLOAD_FAILURE`, or `DOWNLOAD_FAILURE`; verification failure is
 `VERIFICATION_FAILED/REAL/POSTCONDITION_FAILED`; timeout is `NOT_EXECUTED` or `REAL` with
-`TIMEOUT`; cancellation is `CANCELLED/REAL/INTERRUPTED`.
+`TIMEOUT`; cancellation is `CANCELLED/NOT_EXECUTED/INTERRUPTED` before backend invocation or
+`CANCELLED/REAL/INTERRUPTED` after invocation or once a side effect may have started. Cancellation
+is never `DRY_RUN`, and the caller thread's interrupt flag remains set.
 
 ### Workflow and recording projection
 

@@ -17,6 +17,9 @@ documented in [docs/contracts.md](docs/contracts.md).
 - Action results and their workflow/recording `ACTION_FAILED` projections now enforce one exact
   status/execution-mode/failure-type matrix; contradictory categories are rejected during direct
   construction and strict recording decode.
+- Target-resolution retry interruption now preserves the caller's interrupt flag and produces
+  `CANCELLED/NOT_EXECUTED/INTERRUPTED` before backend invocation; interruption after invocation
+  remains `CANCELLED/REAL/INTERRUPTED`. Recording JSON schema V1 is unchanged.
 - Workflow results and recordings now require at least one step, including completed and preflight
   failure traces; recording JSON schema V1 is unchanged and an empty V1 trace is invalid.
 - Action totals, phases, and event elapsed values now use the same monotonic clock as the action

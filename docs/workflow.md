@@ -347,6 +347,10 @@ For an `ACTION_FAILED` step, the projected `ActionStatus`, `ActionExecutionMode`
 `ActionFailureType` must form one of the exact combinations documented in
 [Actions](actions.md#execution-mode-and-semantics). A merely non-success action status is not enough;
 contradictory categories such as `CANCELLED/PRECONDITION_FAILED` are rejected at construction.
+An interrupted action projects as `CANCELLED/NOT_EXECUTED/INTERRUPTED` when the backend was not
+invoked, or `CANCELLED/REAL/INTERRUPTED` once it was invoked or a side effect may have started.
+This distinction is retained so callers do not infer that retrying a `REAL` cancellation is safe;
+`CANCELLED/DRY_RUN` is always invalid.
 
 ## Failure semantics
 

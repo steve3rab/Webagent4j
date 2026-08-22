@@ -136,7 +136,7 @@ including a real backend or runtime failure such as a browser crash or a disconn
 - `DRY_RUN` - target resolution and preconditions were validated, but the backend was never invoked.
   `dryRun()` returns `true` only for this mode.
 - `NOT_EXECUTED` - the pipeline stopped before the backend stage: resolution failed, the target was
-  ambiguous, or a precondition failed.
+  ambiguous, a precondition failed, or target-resolution retry was interrupted.
 
 Construction enforces the complete outcome matrix below. Any other
 status/execution-mode/failure-type combination is rejected:
@@ -149,7 +149,12 @@ status/execution-mode/failure-type combination is rejected:
 | `EXECUTION_FAILED` | `REAL` | `TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`, `UPLOAD_FAILURE`, or `DOWNLOAD_FAILURE` |
 | `VERIFICATION_FAILED` | `REAL` | `POSTCONDITION_FAILED` |
 | `TIMEOUT` | `NOT_EXECUTED` or `REAL` | `TIMEOUT` |
-| `CANCELLED` | `REAL` | `INTERRUPTED` |
+| `CANCELLED` | `NOT_EXECUTED` or `REAL` | `INTERRUPTED` |
+
+For cancellation, `NOT_EXECUTED` means interruption was observed before backend invocation, so
+`executed()` is `false`. `REAL` means the backend was already invoked or a side effect may have
+started, so `executed()` is `true`. The caller thread's interrupt flag is preserved in both cases,
+and `CANCELLED` is never a `DRY_RUN` outcome.
 
 `BACKEND_FAILURE` can be `NOT_EXECUTED` when an opaque backend failure occurs during resolution,
 before invocation, or `REAL` when the backend action call itself fails. `TARGET_NOT_INTERACTABLE`
