@@ -26,6 +26,9 @@ public record ActionEvent(
         result = Objects.requireNonNull(result, "result");
         Objects.requireNonNull(duration, "duration");
         metadata = Map.copyOf(Objects.requireNonNull(metadata, "metadata"));
+        if (duration.isNegative()) {
+            throw new IllegalArgumentException("duration cannot be negative");
+        }
     }
 
     /** Compatibility constructor for legacy click audit events. */
@@ -50,5 +53,17 @@ public record ActionEvent(
     /** Returns the lowercase action name retained for source compatibility. */
     public String action() {
         return actionType.name().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /** Renders only structural audit data, never target, result, or caller metadata text. */
+    @Override
+    public String toString() {
+        return "ActionEvent[stage="
+                + stage
+                + ", actionType="
+                + actionType
+                + ", duration="
+                + duration
+                + "]";
     }
 }

@@ -39,11 +39,33 @@ public record ActionResult<T>(
         events = List.copyOf(Objects.requireNonNull(events, "events"));
         failure = Objects.requireNonNull(failure, "failure");
         Objects.requireNonNull(diagnostics, "diagnostics");
+        if (duration.isNegative()) {
+            throw new IllegalArgumentException("duration cannot be negative");
+        }
         if (status == ActionStatus.SUCCESS && failure.isPresent()) {
             throw new IllegalArgumentException("successful actions cannot contain a failure");
         }
         if (status != ActionStatus.SUCCESS && failure.isEmpty()) {
             throw new IllegalArgumentException("failed actions must contain a failure");
+        }
+        requireExecutionShape(status, executionMode);
+    }
+
+    private static void requireExecutionShape(
+            ActionStatus status, ActionExecutionMode executionMode) {
+        if (status == ActionStatus.SUCCESS && executionMode == ActionExecutionMode.NOT_EXECUTED) {
+            throw new IllegalArgumentException("a successful action must be REAL or DRY_RUN");
+        }
+        if (executionMode == ActionExecutionMode.DRY_RUN && status != ActionStatus.SUCCESS) {
+            throw new IllegalArgumentException("only a successful action may be DRY_RUN");
+        }
+        if (status == ActionStatus.PRECONDITION_FAILED
+                && executionMode != ActionExecutionMode.NOT_EXECUTED) {
+            throw new IllegalArgumentException("a precondition failure must be NOT_EXECUTED");
+        }
+        if ((status == ActionStatus.VERIFICATION_FAILED || status == ActionStatus.CANCELLED)
+                && executionMode != ActionExecutionMode.REAL) {
+            throw new IllegalArgumentException(status + " must report REAL execution mode");
         }
     }
 
