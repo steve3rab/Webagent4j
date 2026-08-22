@@ -99,8 +99,11 @@ final class PlaywrightElement implements IElement {
             value =
                     locator.textContent(
                             new Locator.TextContentOptions().setTimeout(INSPECTION_TIMEOUT_MILLIS));
-        } catch (TimeoutError vanished) {
-            return "";
+        } catch (TimeoutError failure) {
+            if (absentAfter(failure)) {
+                return "";
+            }
+            throw failure;
         }
         return value == null ? "" : value.trim().replaceAll("\\s+", " ");
     }
@@ -150,25 +153,33 @@ final class PlaywrightElement implements IElement {
             if (locator.count() == 0) {
                 return detachedState();
             }
-            Map<String, Object> value =
-                    (Map<String, Object>)
-                            locator.evaluate(PlaywrightDomInspectionScripts.STATE_FUNCTION);
-            return new ElementState(
-                    booleanValue(value, "present"),
-                    booleanValue(value, "visible"),
-                    booleanValue(value, "enabled"),
-                    booleanValue(value, "editable"),
-                    booleanValue(value, "readOnly"),
-                    booleanValue(value, "checked"),
-                    booleanValue(value, "selected"),
-                    booleanValue(value, "focused"),
-                    booleanValue(value, "inViewport"),
-                    booleanValue(value, "clickable"),
-                    booleanValue(value, "covered"),
-                    true);
-        } catch (com.microsoft.playwright.PlaywrightException detached) {
-            return detachedState();
+        } catch (TimeoutError failure) {
+            if (absentAfter(failure)) {
+                return detachedState();
+            }
+            throw failure;
         }
+        Object inspected = evaluateOrNull(PlaywrightDomInspectionScripts.STATE_FUNCTION);
+        if (inspected == null) {
+            if (locator.count() == 0) {
+                return detachedState();
+            }
+            throw new IllegalStateException("Element state inspection returned no value");
+        }
+        Map<String, Object> value = (Map<String, Object>) inspected;
+        return new ElementState(
+                booleanValue(value, "present"),
+                booleanValue(value, "visible"),
+                booleanValue(value, "enabled"),
+                booleanValue(value, "editable"),
+                booleanValue(value, "readOnly"),
+                booleanValue(value, "checked"),
+                booleanValue(value, "selected"),
+                booleanValue(value, "focused"),
+                booleanValue(value, "inViewport"),
+                booleanValue(value, "clickable"),
+                booleanValue(value, "covered"),
+                true);
     }
 
     @Override
@@ -200,8 +211,20 @@ final class PlaywrightElement implements IElement {
                     expression,
                     null,
                     new Locator.EvaluateOptions().setTimeout(INSPECTION_TIMEOUT_MILLIS));
-        } catch (TimeoutError vanished) {
-            return null;
+        } catch (TimeoutError failure) {
+            if (absentAfter(failure)) {
+                return null;
+            }
+            throw failure;
+        }
+    }
+
+    private boolean absentAfter(TimeoutError originalFailure) {
+        try {
+            return locator.count() == 0;
+        } catch (RuntimeException recheckFailure) {
+            originalFailure.addSuppressed(recheckFailure);
+            throw originalFailure;
         }
     }
 

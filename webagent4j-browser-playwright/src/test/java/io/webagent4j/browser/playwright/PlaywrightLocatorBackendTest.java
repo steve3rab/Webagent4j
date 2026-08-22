@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.locator.ILocatorBackend;
@@ -25,17 +26,19 @@ import org.junit.jupiter.api.Test;
 /**
  * Proves {@link PlaywrightLocatorBackend#find} distinguishes a candidate that genuinely vanished
  * while counting or between {@link Locator#count()} and its identity-evaluation call - Playwright's
- * typed {@link TimeoutError} for "did not resolve within the bounded inspection timeout" is the
- * only signal absorbed as "this candidate is gone" - from a real backend or runtime failure (a
- * disconnected browser, a closed context, or any other opaque failure), which must always propagate
- * unchanged rather than being silently turned into an absent candidate.
+ * typed {@link TimeoutError} for "did not resolve within the bounded inspection timeout" is
+ * absorbed only after a fresh count confirms that the candidate is gone. A real backend or runtime
+ * failure (a disconnected browser, a closed context, or any other opaque failure) must always
+ * propagate unchanged rather than being silently turned into an absent candidate.
  */
 class PlaywrightLocatorBackendTest {
 
     @Test
     void aFrameRootThatVanishesWhileReadingElementStateIsReportedAsDetached() {
         Locator locator = mock(Locator.class);
-        when(locator.count()).thenThrow(new TimeoutError("Frame root disappeared while counting"));
+        when(locator.count())
+                .thenThrow(new TimeoutError("Frame root disappeared while counting"))
+                .thenReturn(0);
 
         ElementState state =
                 new PlaywrightElement(
@@ -48,6 +51,43 @@ class PlaywrightLocatorBackendTest {
 
         assertThat(state.present()).isFalse();
         assertThat(state.visible()).isFalse();
+    }
+
+    @Test
+    void aStateInspectionTimeoutForAStillPresentElementPropagatesUnchanged() {
+        Locator locator = mock(Locator.class);
+        TimeoutError timeout = new TimeoutError("State inspection exceeded its bound");
+        when(locator.count()).thenReturn(1);
+        when(locator.evaluate(any(), any(), any(Locator.EvaluateOptions.class))).thenThrow(timeout);
+
+        PlaywrightElement element =
+                new PlaywrightElement(
+                        locator,
+                        ElementRole.BUTTON,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.defaults());
+
+        assertThatThrownBy(element::state).isSameAs(timeout);
+    }
+
+    @Test
+    void aGenuineBackendFailureDuringStateInspectionPropagatesUnchanged() {
+        Locator locator = mock(Locator.class);
+        PlaywrightException backendFailure = new PlaywrightException("browser disconnected");
+        when(locator.count()).thenReturn(1);
+        when(locator.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
+                .thenThrow(backendFailure);
+
+        PlaywrightElement element =
+                new PlaywrightElement(
+                        locator,
+                        ElementRole.BUTTON,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.defaults());
+
+        assertThatThrownBy(element::state).isSameAs(backendFailure);
     }
 
     @Test

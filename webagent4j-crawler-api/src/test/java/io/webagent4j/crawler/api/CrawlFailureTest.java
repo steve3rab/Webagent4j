@@ -207,4 +207,27 @@ class CrawlFailureTest {
         assertThatExceptionOfType(UnsupportedOperationException.class)
                 .isThrownBy(() -> failure.redirectChain().add(new RedirectHop(SEED, SEED, 302)));
     }
+
+    @Test
+    void stringRenderingExcludesExternalUrlsMessagesAndCauses() {
+        String sensitive = "credential-value-918273";
+        URI sensitiveUrl = URI.create("https://example.test/?token=" + sensitive);
+        CrawlFailure failure =
+                new CrawlFailure(
+                        sensitiveUrl,
+                        sensitiveUrl,
+                        0,
+                        CrawlFailureType.BACKEND_FAILURE,
+                        "failure " + sensitive,
+                        Optional.empty(),
+                        Optional.of(new IllegalStateException(sensitive)),
+                        1,
+                        Optional.empty(),
+                        List.of());
+
+        assertThat(failure.toString())
+                .contains("type=BACKEND_FAILURE")
+                .doesNotContain(sensitive)
+                .doesNotContain(sensitiveUrl.toString());
+    }
 }

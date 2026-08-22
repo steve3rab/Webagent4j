@@ -1,5 +1,6 @@
 package io.webagent4j.browsercrawler;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.net.URI;
@@ -38,5 +39,25 @@ class BrowserCrawlFailureTest {
                                         Optional.empty(),
                                         0))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void stringRenderingExcludesExternalUrlsMessagesAndCauses() {
+        String sensitive = "credential-value-918273";
+        URI sensitiveUrl = URI.create("https://example.test/?token=" + sensitive);
+        BrowserCrawlFailure failure =
+                new BrowserCrawlFailure(
+                        sensitiveUrl,
+                        0,
+                        BrowserCrawlFailureType.NAVIGATION_FAILED,
+                        "failure " + sensitive,
+                        Optional.of(new IllegalStateException(sensitive)),
+                        Optional.empty(),
+                        0);
+
+        assertThat(failure.toString())
+                .contains("type=NAVIGATION_FAILED")
+                .doesNotContain(sensitive)
+                .doesNotContain(sensitiveUrl.toString());
     }
 }

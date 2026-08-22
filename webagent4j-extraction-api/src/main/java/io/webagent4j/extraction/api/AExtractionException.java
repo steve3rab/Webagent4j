@@ -1,5 +1,7 @@
 package io.webagent4j.extraction.api;
 
+import java.util.Objects;
+
 /**
  * Base type for extraction-specific failures.
  *
@@ -7,7 +9,8 @@ package io.webagent4j.extraction.api;
  * ambiguous extraction source is already reported by the locator layer's own {@code
  * LocatorNotFoundException}/{@code AmbiguousLocatorException}, and a genuine backend or runtime
  * failure already propagates as itself. Neither is reinterpreted or wrapped here - only a missing
- * attribute, a failed conversion, or a failed validation are extraction's own concern.
+ * attribute, a failed conversion, or a failed validation are extraction's own concern. Subclassing
+ * is supported for domain-specific failures that preserve this package's safe-message contract.
  */
 public abstract class AExtractionException extends RuntimeException {
 
@@ -15,11 +18,11 @@ public abstract class AExtractionException extends RuntimeException {
 
     /** Creates an extraction failure with a descriptive message. */
     protected AExtractionException(String message) {
-        super(message);
+        super(Objects.requireNonNull(message, "message"));
     }
 
     /** Creates an extraction failure with a descriptive message and cause. */
     protected AExtractionException(String message, Throwable cause) {
-        super(message, cause);
+        super(Objects.requireNonNull(message, "message"), cause);
     }
 }

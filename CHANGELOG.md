@@ -6,6 +6,29 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### 1.0-A Public API stabilization
+
+Phase 1.0-A inventories and stabilizes the intended Java/Maven compatibility surface before
+`1.0.0`. It adds no product capability and does not release or freeze 1.0. The support boundary is
+defined in [docs/api-stability.md](docs/api-stability.md), with complete migration examples in
+[docs/migration-to-1.0.md](docs/migration-to-1.0.md).
+
+| Before | After | Compatibility | Migration | Reason |
+| --- | --- | --- | --- | --- |
+| `PluginRegistry#locatorStrategyRegistry()` returned concrete `LocatorStrategyRegistry` | Returns `ILocatorStrategyRegistry` | Source break only for concrete assignments; binary break | Type variables/parameters to `ILocatorStrategyRegistry`; direct `new LocatorEngine(plugins.locatorStrategyRegistry())` remains source compatible | Avoid freezing a sufficient implementation detail |
+| `PluginLoadException(PluginLoadFailure)` was publicly constructible | Construction is package-private and owned by `PluginLoader` | Source and binary break for direct construction | Catch the exception and inspect `failure()`; use an application exception for application validation | Keep loader failure semantics authoritative |
+| Structured exceptions could inherit misleading native Java serialization while required state was transient or not safely serializable | Native serialization is explicitly rejected with `NotSerializableException` | Behavioral break for `ObjectOutputStream` users | Persist a safe application DTO, not exception objects | Deserialization must not produce exceptions with missing required state |
+| Several required exception/diagnostic arguments and `BoundingBox` invalid numeric states were under-specified | Required values fail immediately; locator diagnostics absence uses the one-argument constructor; boxes require finite coordinates and non-negative finite dimensions | Behavioral break only for invalid inputs | Validate inputs and use explicit absence overloads | Prevent locally invalid public values |
+| Extraction/HTTP exception messages and crawler failure `toString()` output could render raw values, URIs, messages, or causes | Framework text exposes structural safe summaries; sensitive data remains available only through typed in-process accessors where documented | Behavioral diagnostic-text change | Stop parsing/logging raw diagnostic text; use typed fields plus application redaction | Prevent accidental disclosure |
+| A Playwright metadata timeout or broad `PlaywrightException` could be converted to element absence | Timeout becomes absence only after a fresh count confirms disappearance; genuine backend failures propagate | Behavioral correction | Handle backend failures separately from typed absence | Preserve fail-closed classification |
+| The BOM managed empty `http`, `storage`, and `testing` placeholders | Placeholder artifacts remain in the reactor but are not BOM-managed supported dependencies | Maven dependency-management break for placeholder consumers | Remove dependencies on the empty artifacts | Keep BOM alignment limited to consumable artifacts |
+
+Additional stabilization work documents the 368-type production inventory (296 consumer API, 32
+SPI, one runtime-public provider, 38 implementation-public internal types, and one CLI entry point),
+adds reflection-based third-party signature boundaries, and tests required-value, safe-diagnostic,
+serialization, plugin-composition, and Playwright failure contracts. Recording JSON schema V1,
+plugin discovery semantics, workflow behavior, and all product capabilities are unchanged.
+
 ### Added (Plugins — Phase 0.9-B)
 
 - `webagent4j-plugin-api` now provides explicit, deterministic `ServiceLoader` discovery for trusted

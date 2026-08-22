@@ -116,8 +116,8 @@ browser-specific implementations.
 
 | Area | Modules | Purpose |
 | --- | --- | --- |
-| Public contracts | `browser-api`, `dom`, `locator-api`, `observation-api` | Stable application-facing types |
-| Engines | `locator`, `observation`, `verification`, `action`, `workflow`, `recording` | Deterministic semantic behavior |
+| Public contracts | `browser-api`, `dom`, `locator-api`, `observation-api`, `extraction-api`, `crawler-api` | Candidate supported application-facing types |
+| Engines | `locator`, `observation`, `verification`, `action`, `extraction`, `crawler`, `browser-crawler`, `workflow`, `recording` | Deterministic domain behavior |
 | Extensions | `plugin-api` | Explicit trusted custom locator strategy discovery; zero plugins by default |
 | Browser adapters | `browser-playwright` | Playwright-backed execution |
 | Entry points | `core`, `cli`, `examples` | Configuration and usage |
@@ -129,6 +129,8 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 
 - [Getting started](docs/getting-started.md)
 - [Public API reference](docs/public-api.md) - which module to depend on, entry points, and contracts
+- [API stability policy](docs/api-stability.md) - supported API/SPI surface and 1.0 compatibility
+- [Migration to 1.0](docs/migration-to-1.0.md) - pre-freeze source, binary, and behavior cleanups
 - [Semantic locators](docs/locators.md)
 - [Semantic observations](docs/observation.md)
 - [Actions](docs/actions.md)
@@ -147,13 +149,15 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 
 ## Project status
 
-The current development line implements the browser foundation, semantic locator engine, verified
-actions, semantic observation engine, deterministic workflows and recording, and explicit custom
-locator plugins. The roadmap identifies remaining modules that are architectural placeholders and
-must not yet be treated as complete APIs.
+The current development line implements the browser foundation, semantic locator and observation
+engines, verified actions, extraction, HTTP and browser crawlers, deterministic workflows,
+schema-V1 recording, and explicit custom locator plugins. Phase 1.0-A is stabilizing and documenting
+the intended compatibility surface; empty `http`, `storage`, and `testing` reactor boundaries are
+not supported APIs.
 
-Compatibility follows semantic versioning after `1.0.0`. Before 1.0, breaking changes are documented
-in the [changelog](CHANGELOG.md) and release notes.
+Compatibility follows semantic versioning starting with `1.0.0`. Before 1.0, breaking changes are
+documented in the [changelog](CHANGELOG.md), [migration guide](docs/migration-to-1.0.md), and release
+notes. See the [API stability policy](docs/api-stability.md) for the exact support boundary.
 
 ## Community
 

@@ -42,7 +42,16 @@ Javadoc, user documentation, and a green `clean verify` build.
   filesystem) and automatic live replay execution are not part of this phase either - they remain
   future candidates, to be scoped as their own separate decision if and when they are taken up,
   never a default or an implicit promise of any phase number.
-- **1.0 Stable non-AI API:** compatibility policy and production hardening.
+- **1.0-A Public API stabilization (in progress):** inventory and classify every production module
+  and effective public type; remove or document accidental surface; correct pre-1.0 source, binary,
+  nullability, diagnostics, serialization, backend-failure, and Maven boundary issues; define the
+  [compatibility policy](api-stability.md) and [migration notes](migration-to-1.0.md). This phase adds
+  no product capability and does not release `1.0.0`.
+- **1.0-B Cross-module contract consistency:** review the stabilized candidate surface across
+  domains. Not started.
+- **1.0-C Hardening and adversarial testing:** validate the consistent contracts under broader
+  failure and boundary conditions. Not started.
+- **1.0-D Release readiness:** final release engineering and publication readiness. Not started.
 
 Post-1.0 candidates include MCP and agent adapters, distributed crawling, more browser backends,
 advanced observation, and opt-in self-healing. These remain optional consumers of the non-AI core.

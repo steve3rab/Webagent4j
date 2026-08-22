@@ -1,6 +1,9 @@
 package io.webagent4j.common;
 
-/** Indicates that an element could not be resolved under a locator's deterministic contract. */
+/**
+ * Indicates that an element could not be resolved under a locator's deterministic contract.
+ * Subclassing is supported for typed locator outcomes that implement {@link ILocatorFailure}.
+ */
 public class LocatorException extends WebAgentException {
 
     private static final long serialVersionUID = 1L;

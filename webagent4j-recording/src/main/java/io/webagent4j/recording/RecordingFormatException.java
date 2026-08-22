@@ -21,6 +21,8 @@ package io.webagent4j.recording;
  */
 public final class RecordingFormatException extends IllegalArgumentException {
 
+    private static final long serialVersionUID = 1L;
+
     /** Creates an exception with a fixed, safe diagnostic message. */
     RecordingFormatException(String message) {
         super(message);
