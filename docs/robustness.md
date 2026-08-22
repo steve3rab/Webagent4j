@@ -25,7 +25,7 @@ diagnostic and are not a fragile microbenchmark gate.
 
 ## Running and reproducing
 
-Run the complete local benchmark with Java 21 or newer:
+Run the complete local benchmark with Java 21 or later:
 
 ```bash
 ./mvnw -Probustness verify

@@ -1,4 +1,4 @@
-# ADR 0001: Use Java 21
+# ADR 0001: Use Java 21 as the minimum
 
 - Status: Accepted
 - Date: 2026-08-13
@@ -10,9 +10,12 @@ workloads.
 
 ## Decision
 
-Compile and run strictly on Java 21. Use records, switch expressions, immutable collections, and virtual
-threads only where they clarify real code. Avoid a reactive framework by default.
+Compile to Java 21-compatible bytecode and support builds and runtime use on Java 21 or later.
+Configure Maven Compiler Plugin with `--release 21` and Maven Enforcer with the open-ended `[21,)`
+JDK range. Use records, switch expressions, immutable collections, and virtual threads only where
+they clarify real code. Avoid a reactive framework by default.
 
 ## Consequences
 
-Consumers need Java 21 or newer, and the Enforcer plugin rejects other build JDKs.
+Consumers need Java 21 or later. Java 21 remains the minimum CI baseline, while the Enforcer plugin
+accepts later JDK feature releases and rejects only versions below 21.

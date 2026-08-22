@@ -10,7 +10,8 @@ linked throughout (the narrative "how it works" documents) - it exists to connec
 
 ## Status
 
-- **Java 21 or newer** is required everywhere in this project.
+- **Java 21 or later** is required everywhere in this project. Java 21 is the minimum supported
+  version, and later JDK feature releases are accepted.
 - WebAgent4J is **pre-1.0**. Public types are stable enough to build against today, but signatures
   may still change before `1.0.0` as gaps are found. Breaking changes before `1.0.0` are recorded in
   the [changelog](../CHANGELOG.md), not hidden.

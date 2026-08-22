@@ -2,11 +2,15 @@
 
 ## Requirements
 
-- Java 21
+- Java 21 or later
 - Git
 - Internet access on the first build so Maven and the Playwright Chromium binary can be downloaded
 
 Maven itself is supplied through Maven Wrapper.
+
+Java 21 is the minimum supported version. Maven Enforcer accepts JDK 21 and all later feature
+releases (`[21,)`), while the compiler uses `--release 21` so published classes remain compatible
+with Java 21. CI deliberately runs on Java 21 to verify that minimum.
 
 ```bash
 git clone <repository-url> webagent4j
