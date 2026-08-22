@@ -24,8 +24,9 @@ import java.util.Optional;
  * @param type the failure category
  * @param message a diagnostic message
  * @param statusCode the HTTP status code, when the failure followed a response
- * @param cause the underlying exception, when the failure originated from one - preserved rather
- *     than discarded
+ * @param cause the underlying exception, when the failure originated from one - preserved for
+ *     explicit diagnostics but excluded from {@link #toString()} because backend messages may
+ *     contain sensitive external data
  * @param attempts how many real HTTP requests were made for {@code failedUrl}, including the final
  *     one. {@code 0} only for a {@link CrawlFailureType#CRAWL_LIMIT_REACHED} or {@link
  *     CrawlFailureType#ALREADY_FETCHED} outcome, decided before any network call - every other
@@ -77,5 +78,21 @@ public record CrawlFailure(
                             + " never sends a real HTTP request, so attempts must be 0, got "
                             + attempts);
         }
+    }
+
+    /** Renders only bounded structural diagnostics, excluding URLs, messages, and causes. */
+    @Override
+    public String toString() {
+        return "CrawlFailure[type="
+                + type
+                + ", depth="
+                + depth
+                + ", attempts="
+                + attempts
+                + ", statusCode="
+                + statusCode.map(String::valueOf).orElse("-")
+                + ", redirectCount="
+                + redirectChain.size()
+                + "]";
     }
 }

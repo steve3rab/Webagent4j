@@ -13,7 +13,8 @@ import java.util.Optional;
  * @param type why navigation did not succeed
  * @param message a human-readable explanation - never the sole diagnostic signal, {@link #type()}
  *     always is
- * @param cause the backend/runtime exception, when one exists
+ * @param cause the backend/runtime exception, when one exists; retained for explicit diagnostics
+ *     but excluded from {@link #toString()} because backend messages may contain sensitive data
  * @param discoveredFrom the page this URL was discovered from; empty for a seed
  * @param navigationOrder this task's position in deterministic frontier order
  */
@@ -40,5 +41,17 @@ public record BrowserCrawlFailure(
             throw new IllegalArgumentException(
                     "navigationOrder must be >= 0, was " + navigationOrder);
         }
+    }
+
+    /** Renders only bounded structural diagnostics, excluding URLs, messages, and causes. */
+    @Override
+    public String toString() {
+        return "BrowserCrawlFailure[type="
+                + type
+                + ", depth="
+                + depth
+                + ", navigationOrder="
+                + navigationOrder
+                + "]";
     }
 }
