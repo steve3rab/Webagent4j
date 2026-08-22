@@ -84,6 +84,29 @@ final class ActionExecutor {
             target =
                     new ActionTargetResolver()
                             .resolve(command, config.options().resolutionRetry(), budget);
+        } catch (ActionInterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    elapsedSince(resolutionStartedNanos),
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    List.of(),
+                    List.of(),
+                    null,
+                    null,
+                    "",
+                    ActionFailureType.INTERRUPTED,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.CANCELLED,
+                    "Action target resolution was interrupted",
+                    failure);
         } catch (RuntimeException failure) {
             return failed(
                     context,
