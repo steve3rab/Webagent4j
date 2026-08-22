@@ -118,6 +118,7 @@ browser-specific implementations.
 | --- | --- | --- |
 | Public contracts | `browser-api`, `dom`, `locator-api`, `observation-api` | Stable application-facing types |
 | Engines | `locator`, `observation`, `verification`, `action`, `workflow`, `recording` | Deterministic semantic behavior |
+| Extensions | `plugin-api` | Explicit trusted custom locator strategy discovery; zero plugins by default |
 | Browser adapters | `browser-playwright` | Playwright-backed execution |
 | Entry points | `core`, `cli`, `examples` | Configuration and usage |
 | Quality | `testing`, `integration-tests`, `robustness-tests` | Fixtures, architecture rules, browser coverage, and adversarial validation |
@@ -137,6 +138,7 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 - [Browser crawler](docs/browser-crawler.md)
 - [Workflows](docs/workflow.md)
 - [Recording](docs/recording.md)
+- [Plugins](docs/plugins.md)
 - [Testing](docs/testing.md)
 - [Robustness benchmark](docs/robustness.md)
 - [Known limitations](docs/limitations.md)
@@ -146,8 +148,9 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 ## Project status
 
 The current development line implements the browser foundation, semantic locator engine, verified
-actions, and semantic observation engine. The roadmap identifies modules that are architectural
-placeholders and must not yet be treated as complete APIs.
+actions, semantic observation engine, deterministic workflows and recording, and explicit custom
+locator plugins. The roadmap identifies remaining modules that are architectural placeholders and
+must not yet be treated as complete APIs.
 
 Compatibility follows semantic versioning after `1.0.0`. Before 1.0, breaking changes are documented
 in the [changelog](CHANGELOG.md) and release notes.

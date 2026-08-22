@@ -1,6 +1,7 @@
 package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.TimeoutError;
 import io.webagent4j.dom.BoundingBox;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
@@ -15,6 +16,8 @@ import java.util.Optional;
 
 /** Internal live element adapter; queries are re-resolved at each fluent terminal operation. */
 final class PlaywrightElement implements IElement {
+
+    private static final double INSPECTION_TIMEOUT_MILLIS = 200;
 
     private final Locator locator;
     private final ElementRole knownRole;
@@ -40,7 +43,11 @@ final class PlaywrightElement implements IElement {
         if (knownRole != ElementRole.UNKNOWN) {
             return knownRole;
         }
-        String raw = String.valueOf(locator.evaluate(PlaywrightDomInspectionScripts.ROLE_FUNCTION));
+        Object inspected = evaluateOrNull(PlaywrightDomInspectionScripts.ROLE_FUNCTION);
+        if (inspected == null) {
+            return ElementRole.UNKNOWN;
+        }
+        String raw = String.valueOf(inspected);
         return switch (raw.toLowerCase(Locale.ROOT)) {
             case "a", "link" -> ElementRole.LINK;
             case "button" -> ElementRole.BUTTON;
@@ -81,19 +88,27 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public String accessibleName() {
-        Object value = locator.evaluate(PlaywrightDomInspectionScripts.ACCESSIBLE_NAME_FUNCTION);
+        Object value = evaluateOrNull(PlaywrightDomInspectionScripts.ACCESSIBLE_NAME_FUNCTION);
         return value == null ? "" : String.valueOf(value);
     }
 
     @Override
     public String text() {
-        String value = locator.textContent();
+        String value;
+        try {
+            value =
+                    locator.textContent(
+                            new Locator.TextContentOptions().setTimeout(INSPECTION_TIMEOUT_MILLIS));
+        } catch (TimeoutError vanished) {
+            return "";
+        }
         return value == null ? "" : value.trim().replaceAll("\\s+", " ");
     }
 
     @Override
     public String tagName() {
-        return String.valueOf(locator.evaluate("element => element.tagName.toLowerCase()"));
+        Object value = evaluateOrNull("element => element.tagName.toLowerCase()");
+        return value == null ? "" : String.valueOf(value);
     }
 
     @Override
@@ -101,9 +116,12 @@ final class PlaywrightElement implements IElement {
     public Map<String, String> attributes() {
         Map<String, Object> raw =
                 (Map<String, Object>)
-                        locator.evaluate(
+                        evaluateOrNull(
                                 "element => Object.fromEntries(Array.from(element.attributes)"
                                         + ".map(attribute => [attribute.name, attribute.value]))");
+        if (raw == null) {
+            return Map.of();
+        }
         Map<String, String> attributes = new LinkedHashMap<>();
         raw.forEach((name, value) -> attributes.put(name, String.valueOf(value)));
         return Map.copyOf(attributes);
@@ -111,7 +129,7 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public String value() {
-        Object value = locator.evaluate("element => 'value' in element ? element.value : ''");
+        Object value = evaluateOrNull("element => 'value' in element ? element.value : ''");
         return value == null ? "" : String.valueOf(value);
     }
 
@@ -128,10 +146,10 @@ final class PlaywrightElement implements IElement {
     @Override
     @SuppressWarnings("unchecked")
     public ElementState state() {
-        if (locator.count() == 0) {
-            return detachedState();
-        }
         try {
+            if (locator.count() == 0) {
+                return detachedState();
+            }
             Map<String, Object> value =
                     (Map<String, Object>)
                             locator.evaluate(PlaywrightDomInspectionScripts.STATE_FUNCTION);
@@ -174,6 +192,17 @@ final class PlaywrightElement implements IElement {
 
     Locator locator() {
         return locator;
+    }
+
+    private Object evaluateOrNull(String expression) {
+        try {
+            return locator.evaluate(
+                    expression,
+                    null,
+                    new Locator.EvaluateOptions().setTimeout(INSPECTION_TIMEOUT_MILLIS));
+        } catch (TimeoutError vanished) {
+            return null;
+        }
     }
 
     private static boolean booleanValue(Map<String, Object> values, String name) {

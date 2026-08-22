@@ -382,6 +382,58 @@ class ArchitectureTest {
     }
 
     @Test
+    void locatorAndCoreRemainIndependentFromPluginApi() {
+        noClasses()
+                .that()
+                .resideInAnyPackage("io.webagent4j.locator..", "io.webagent4j.core..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("io.webagent4j.plugin..")
+                .check(projectClasses);
+    }
+
+    @Test
+    void pluginApiDependsOnlyOnLocatorAndTheJdk() {
+        assertThat(
+                        projectClasses.stream()
+                                .filter(
+                                        type ->
+                                                type.getPackageName()
+                                                        .startsWith("io.webagent4j.plugin")))
+                .allSatisfy(
+                        type ->
+                                assertThat(type.getDirectDependenciesFromSelf())
+                                        .noneMatch(
+                                                dependency -> {
+                                                    String packageName =
+                                                            dependency
+                                                                    .getTargetClass()
+                                                                    .getPackageName();
+                                                    return packageName.startsWith("io.webagent4j")
+                                                            && !packageName.startsWith(
+                                                                    "io.webagent4j.plugin")
+                                                            && !packageName.startsWith(
+                                                                    "io.webagent4j.locator");
+                                                }));
+    }
+
+    @Test
+    void pluginApiRemainsIndependentFromBackendsAndAiLibraries() {
+        noClasses()
+                .that()
+                .resideInAPackage("io.webagent4j.plugin..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(
+                        "io.webagent4j.browser..",
+                        "com.microsoft.playwright..",
+                        "com.openai..",
+                        "dev.langchain4j..",
+                        "org.springframework.ai..")
+                .check(projectClasses);
+    }
+
+    @Test
     void recordingRemainsIndependentFromAiLibraries() {
         noClasses()
                 .that()

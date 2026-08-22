@@ -58,6 +58,18 @@ public final class LocatorEngine implements ILocatorEngine {
                 new WaitEngine());
     }
 
+    /** Creates an engine with an explicit registry and the standard engine collaborators. */
+    public LocatorEngine(ILocatorStrategyRegistry registry) {
+        this(
+                registry,
+                new LocatorPlanFactory(),
+                new LocatorFilter(),
+                new LocatorScorer(),
+                new LocatorDiagnosticsRenderer(),
+                ILocatorEventListener.noOp(),
+                new WaitEngine());
+    }
+
     /**
      * Creates an engine with explicit composable responsibilities and a custom strategy registry.
      */

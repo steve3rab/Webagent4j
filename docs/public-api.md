@@ -237,6 +237,39 @@ satisfied" cumulatively. Detachment, replacement, or a state violation resets th
 **Related guide:** [locators.md](locators.md) (candidates/evidence/scoring, contextual `within(...)`
 resolution, mixed scope ordering, frames, custom strategies - all covered in full there).
 
+### Plugins
+
+**What it is:** an explicit, deterministic `ServiceLoader` boundary for trusted providers that
+contribute custom `ILocatorStrategy` implementations. **Module:** `webagent4j-plugin-api`, which
+depends only on `webagent4j-locator`.
+
+No WebAgent4J component loads locator plugins automatically. The default `new LocatorEngine()` path
+always loads zero plugins. An application opts in and composes the result explicitly:
+
+```java
+PluginRegistry plugins = new PluginLoader().load();
+LocatorEngine locator = new LocatorEngine(plugins.locatorStrategyRegistry());
+```
+
+**Important types:** `PluginId`, `PluginVersion`, `PluginDescriptor`,
+`ILocatorStrategyProvider`, `PluginLoader`, `PluginRegistry`, `PluginLoadFailureType`,
+`PluginLoadFailure`, and `PluginLoadException`. `LocatorEngine(ILocatorStrategyRegistry)` is the
+generic locator-side composition constructor and has no dependency on the plugin API.
+
+Providers are initialized in fully qualified class-name order, plugin descriptors are exposed in
+plugin-ID order, and custom strategies retain the locator registry's phase/priority/ID ordering.
+Loading is fail-closed: a malformed provider, duplicate plugin ID, duplicate strategy ID, built-in
+strategy override attempt, or service configuration error prevents the entire registry from being
+returned. `PluginVersion` is opaque metadata; it is never used to choose between duplicates or
+negotiate compatibility.
+
+Provider code is trusted in-process Java code, not sandboxed or isolated. IDs, versions, and
+provider type names are non-sensitive metadata. Structured load failures use framework-owned safe
+messages and never expose raw provider exception messages or causes.
+
+**Related guide:** [plugins.md](plugins.md) (provider registration, classloader contract,
+deterministic ordering, failure categories, trust boundary, and non-goals).
+
 ### Wait and stability
 
 **What it is:** the one deterministic polling/deadline primitive shared by locator resolution,
@@ -855,13 +888,13 @@ public API. Do not add a dependency on them expecting functionality:
 | --- | --- |
 | `webagent4j-http` | A future standalone non-browser HTTP transport boundary (the HTTP crawler currently has its own fetcher and does not need this) |
 | `webagent4j-storage` | A future persistence boundary |
-| `webagent4j-plugin-api` | Phase 0.9-B `ServiceLoader`-based extension points |
 
 `webagent4j-crawler` graduated from this list to a real implementation in Phase 0.6,
 `webagent4j-workflow` graduated in Phase 0.8 (see [Workflows](#workflows) and
 [workflow.md](workflow.md)), and `webagent4j-recording` graduated in Phase 0.9-A (see
-[Recording](#recording) and [recording.md](recording.md)); nothing else on this list has graduated
-yet. See
+[Recording](#recording) and [recording.md](recording.md)). `webagent4j-plugin-api` graduated in
+Phase 0.9-B (see [Plugins](#plugins) and [plugins.md](plugins.md)); the two modules still listed
+above remain reserved. See
 [modules.md](modules.md) for the full dependency graph and [roadmap.md](roadmap.md) for what each
 future phase is expected to deliver.
 
