@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.webagent4j.locator.ILocatorStrategy;
+import io.webagent4j.locator.ILocatorStrategyRegistry;
 import io.webagent4j.locator.LocatorBackendSearchResult;
 import io.webagent4j.locator.LocatorCandidate;
 import io.webagent4j.locator.LocatorContext;
@@ -13,7 +14,10 @@ import io.webagent4j.locator.LocatorPlanStep;
 import io.webagent4j.locator.LocatorStrategyPhase;
 import io.webagent4j.locator.LocatorStrategyType;
 import io.webagent4j.locator.api.LocatorDefinition;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.NotSerializableException;
+import java.io.ObjectOutputStream;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -59,13 +63,27 @@ public class PluginLoaderTest {
     void pluginLoad002OneValidProviderLoads() throws IOException {
         try (URLClassLoader classLoader = serviceClassLoader(AlphaProvider.class)) {
             PluginRegistry registry = new PluginLoader().load(classLoader);
+            ILocatorStrategyRegistry strategies = registry.locatorStrategyRegistry();
+            LocatorEngine engine = new LocatorEngine(strategies);
 
             assertThat(registry.plugins())
                     .containsExactly(pluginDescriptor("alpha-plugin", "1.0.0"));
             assertThat(registry.locatorStrategies())
                     .extracting(ILocatorStrategy::id)
                     .containsExactly("alpha-strategy");
+            assertThat(engine).isNotNull();
         }
+    }
+
+    @Test
+    void pluginLoadExceptionRejectsJavaNativeSerialization() throws IOException {
+        PluginLoadException failure = loadFailure(ThrowingDescriptorProvider.class);
+
+        assertThat(failure.failure()).isNotNull();
+        assertThatThrownBy(() -> serialize(failure))
+                .isInstanceOf(NotSerializableException.class)
+                .hasMessageContaining(PluginLoadException.class.getName());
+        assertThat(failure.failure()).isNotNull();
     }
 
     @Test
@@ -310,6 +328,13 @@ public class PluginLoaderTest {
         assertThat(failure.toString()).doesNotContain(FAILURE_SENTINEL);
         assertThat(failure.failure().safeMessage()).doesNotContain(FAILURE_SENTINEL);
         assertThat(failure.getCause()).isNull();
+    }
+
+    private static void serialize(Object value) throws IOException {
+        try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                ObjectOutputStream output = new ObjectOutputStream(bytes)) {
+            output.writeObject(value);
+        }
     }
 
     @SafeVarargs

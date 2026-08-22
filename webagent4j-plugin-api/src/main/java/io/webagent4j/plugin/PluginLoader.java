@@ -20,7 +20,13 @@ import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.Set;
 
-/** Explicit deterministic loader for trusted locator strategy providers. */
+/**
+ * Explicit deterministic loader for trusted locator strategy providers.
+ *
+ * <p>The loader is stateless: every call performs an independent synchronous load on the caller's
+ * thread and retains no providers or class loaders afterward. The caller retains ownership of an
+ * explicitly supplied class loader.
+ */
 public final class PluginLoader {
 
     /** Creates an independent loader with no global cache or mutable process state. */

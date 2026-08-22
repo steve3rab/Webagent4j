@@ -1,6 +1,7 @@
 package io.webagent4j.plugin;
 
 import io.webagent4j.locator.ILocatorStrategy;
+import io.webagent4j.locator.ILocatorStrategyRegistry;
 import io.webagent4j.locator.LocatorStrategyRegistry;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -8,7 +9,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
-/** Immutable result of one explicit plugin load. */
+/** Immutable, thread-safe result of one explicit plugin load. */
 public final class PluginRegistry {
 
     private final List<PluginDescriptor> plugins;
@@ -46,7 +47,7 @@ public final class PluginRegistry {
     }
 
     /** Returns standard strategies augmented with the discovered custom strategies. */
-    public LocatorStrategyRegistry locatorStrategyRegistry() {
+    public ILocatorStrategyRegistry locatorStrategyRegistry() {
         return locatorStrategyRegistry;
     }
 
