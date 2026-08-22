@@ -333,6 +333,14 @@ Each `WorkflowStepResult` carries a `WorkflowStepStatus`:
 - `NOT_RUN` - the workflow had already failed at an earlier step; recorded so the result always
   preserves the workflow's complete step order, even for steps that never ran.
 
+Direct construction follows the exact same reachable-state contract as engine execution and
+recording: completed results contain only succeeded/skipped steps; preflight failures name no step
+and leave every step `NOT_RUN`; runtime failures contain exactly one matching `FAILED` step, with
+only succeeded/skipped predecessors and `NOT_RUN` successors. Step constructors also enforce the
+engine's output, condition, failure, and action-summary shapes. Consequently, every accepted public
+`WorkflowResult` can be projected into recording schema V1 without discovering a stricter invariant
+in the downstream module.
+
 ## Failure semantics
 
 Execution is **fail-fast only**: the first failed step stops the workflow immediately, and every

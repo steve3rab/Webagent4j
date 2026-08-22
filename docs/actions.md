@@ -91,6 +91,12 @@ is always redacted. Action events, failures, diagnostics, observations, and resu
 contain the original value. Avoid placing secrets in locator names, URLs, filenames, or custom
 predicate messages.
 
+`ActionEvent` retains its target, result, and metadata through explicit accessors for in-process
+audit consumers, but its framework-owned `toString()` is structural and excludes all three text
+sources. Treat accessor values as untrusted and apply an application-owned redaction policy before
+logging or persistence. Action, event, timing, and stabilization elapsed durations are always
+non-negative.
+
 ## Failure semantics
 
 Expected failures return `ActionResult` with a stable `ActionStatus` and `ActionFailureType`:
@@ -122,6 +128,11 @@ including a real backend or runtime failure such as a browser crash or a disconn
   `dryRun()` returns `true` only for this mode.
 - `NOT_EXECUTED` - the pipeline stopped before the backend stage: resolution failed, the target was
   ambiguous, or a precondition failed.
+
+Construction rejects impossible pairs: success cannot be `NOT_EXECUTED`, only success may be
+`DRY_RUN`, precondition failure is always `NOT_EXECUTED`, and verification failure/cancellation is
+always `REAL`. Execution failure and timeout may be either `NOT_EXECUTED` or `REAL`, because they
+can occur before invocation or after a real attempt whose side effect may be uncertain.
 
 The legacy `ActionResult(boolean, ...)` constructor cannot observe the true execution mode, so it
 always reports `REAL` regardless of whether `success` is `true` or `false` - this is the fail-safe

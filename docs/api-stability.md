@@ -6,7 +6,8 @@ applies to published Java and Maven surfaces, not to every declaration that happ
 
 WebAgent4J is still pre-1.0. Until `1.0.0`, necessary breaking cleanups are allowed when they are
 documented in the changelog and, when migration is not obvious, in the migration guide. The
-current cleanup is documented in [migration-to-1.0.md](migration-to-1.0.md).
+current cleanup is documented in [migration-to-1.0.md](migration-to-1.0.md). Shared behavioral
+rules and intentional domain differences are defined in [contracts.md](contracts.md).
 
 ## Starting with 1.0
 
@@ -124,6 +125,11 @@ Supported behavior includes:
 - typed expected absence versus genuine backend failure;
 - resource ownership and thread-safety statements;
 - the absence of hidden retries around potentially side-effecting work.
+
+The cross-module interpretation of these commitments is maintained in
+[Cross-module contracts](contracts.md). A domain guide may deliberately define a narrower contract,
+such as browser-crawler cancellation or HTTP-crawler partial success, without creating a universal
+framework abstraction.
 
 It does not include object identity, exception object identity, wall-clock durations, unordered
 third-party input, browser/network timing, or undocumented diagnostic prose.

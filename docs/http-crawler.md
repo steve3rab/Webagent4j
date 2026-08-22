@@ -364,6 +364,10 @@ uses), never a wall clock that can jump backwards or forwards independently of e
 same reason - it is a different measurement from `fetchDuration()` (the whole page's resolution,
 retries and redirects included), not a duplicate of it.
 
+`HttpFetchRequest.timeout()` is required to be positive. `HttpFetchResult.elapsed()` and the
+crawler API's accumulated fetch durations are elapsed measurements and reject negative values;
+zero remains valid for an immediate fake or clock-resolution-limited result.
+
 `CrawlStatistics#totalBytes()` sums `responseBytes()` from every response that was read in full
 across every retry and every redirect hop of every task - not just the final successful one. A
 response aborted for exceeding `maxResponseBytes` contributes nothing to the total, since the

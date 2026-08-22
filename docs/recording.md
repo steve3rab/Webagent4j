@@ -85,6 +85,11 @@ action-backed step is recorded identically, categorically, regardless of its `Ac
 
 ## Recording validity: a recording represents one fail-fast execution
 
+The live `WorkflowResult`, `WorkflowStepResult`, and `WorkflowFailure` constructors enforce the
+same engine-reachable invariants listed below. Recording remains strict when data arrives from JSON,
+but it is no longer the first module to discover an impossible live workflow shape. This alignment
+does not change schema V1 or replay comparison semantics.
+
 `WorkflowEngine` (Phase 0.8) is sequential and fail-fast: every step runs in definition order, and
 the first `FAILED` step stops execution immediately, with every later step recorded as `NOT_RUN`.
 `WorkflowRecording`'s constructor - via the package-private `RecordingInvariants` helper - enforces

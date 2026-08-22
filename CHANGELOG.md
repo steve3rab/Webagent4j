@@ -6,6 +6,27 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### 1.0-B Cross-module contract consistency
+
+Phase 1.0-B aligns the stabilized API candidate across domains without changing public signatures,
+adding features, or changing recording schema V1. The common rules and intentional differences are
+documented in [docs/contracts.md](docs/contracts.md).
+
+- Action and workflow projection constructors now accept only status/execution and sequential
+  fail-fast shapes that the engines can produce and the recording model can represent.
+- Public elapsed durations consistently reject negative values; HTTP request timeouts are positive;
+  impossible wait and verification status combinations fail at construction.
+- Playwright locator and frame URL inspection convert a typed timeout to absence only after a fresh
+  count proves disappearance. A still-present target, or a failed recheck, preserves the original
+  timeout; recheck failure is attached as suppressed context. The canonical `Frame was detached`
+  protocol error is also handled as definitive disappearance, while opaque failures still
+  propagate.
+- `ActionEvent#toString()` now renders structural audit fields only and excludes target, result, and
+  caller metadata text.
+- Observation threading documentation now states the actual conditional guarantee: the engine keeps
+  no per-call mutable state, but concurrent sharing also requires concurrency-safe injected
+  collaborators.
+
 ### 1.0-A Public API stabilization
 
 Phase 1.0-A inventories and stabilizes the intended Java/Maven compatibility surface before

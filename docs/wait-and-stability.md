@@ -47,6 +47,9 @@ once, outside any wait loop, never inside a probe.
   second sleep once the deadline has passed.
 - **`WaitResult<T>` / `WaitStatus`** - `SUCCESS` or `TIMED_OUT`, attempt count, elapsed duration,
   the last sample's value, and - on success under a stability policy - how long it was stable.
+  Construction enforces the engine-reachable shape: success always has a value, timeout never has
+  an achieved-stability duration, and elapsed/achieved-stability durations are non-negative. A
+  timeout may still carry the final informational value supplied by `WaitSample.pending(T)`.
 
 ## Stability semantics
 
