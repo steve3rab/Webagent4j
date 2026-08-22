@@ -43,6 +43,17 @@ class RetryPolicyTest {
                         () -> new RetryPolicy(1, Duration.ofMillis(-1), 1.0, Duration.ofMillis(1)));
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> new RetryPolicy(1, Duration.ZERO, 0.5, Duration.ofMillis(1)));
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () -> new RetryPolicy(1, Duration.ZERO, Double.NaN, Duration.ofMillis(1)));
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                new RetryPolicy(
+                                        1,
+                                        Duration.ZERO,
+                                        Double.POSITIVE_INFINITY,
+                                        Duration.ofMillis(1)));
         assertThat(Timeouts.defaults().navigation()).isEqualTo(Duration.ofSeconds(30));
         assertThatIllegalArgumentException()
                 .isThrownBy(
@@ -52,6 +63,25 @@ class RetryPolicyTest {
                                         Duration.ofSeconds(1),
                                         Duration.ofSeconds(1),
                                         Duration.ofSeconds(1)));
+    }
+
+    @Test
+    void saturatesDelayArithmeticWhenDurationsOrExponentialGrowthExceedMillis() {
+        RetryPolicy hugeDuration =
+                new RetryPolicy(
+                        3,
+                        Duration.ofSeconds(Long.MAX_VALUE),
+                        2.0,
+                        Duration.ofSeconds(Long.MAX_VALUE));
+        RetryPolicy hugeGrowth =
+                new RetryPolicy(100, Duration.ofMillis(2), Double.MAX_VALUE, Duration.ofSeconds(3));
+        RetryPolicy zeroDelay =
+                new RetryPolicy(100, Duration.ZERO, Double.MAX_VALUE, Duration.ofSeconds(3));
+
+        assertThat(hugeDuration.delayBeforeAttempt(2)).isEqualTo(Duration.ofMillis(Long.MAX_VALUE));
+        assertThat(hugeDuration.delayBeforeAttempt(3)).isEqualTo(Duration.ofMillis(Long.MAX_VALUE));
+        assertThat(hugeGrowth.delayBeforeAttempt(100)).isEqualTo(Duration.ofSeconds(3));
+        assertThat(zeroDelay.delayBeforeAttempt(100)).isZero();
     }
 
     @Test

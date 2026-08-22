@@ -25,8 +25,8 @@ public record RetryPolicy(
         if (delay.isNegative() || maximumDelay.isNegative()) {
             throw new IllegalArgumentException("retry delays cannot be negative");
         }
-        if (backoffFactor < 1.0) {
-            throw new IllegalArgumentException("backoffFactor must be at least one");
+        if (!Double.isFinite(backoffFactor) || backoffFactor < 1.0) {
+            throw new IllegalArgumentException("backoffFactor must be finite and at least one");
         }
     }
 
@@ -40,14 +40,33 @@ public record RetryPolicy(
         if (attempt < 2 || attempt > maxAttempts) {
             throw new IllegalArgumentException("attempt must be between two and maxAttempts");
         }
+        long delayMillis = saturatedMillis(delay);
+        long maximumMillis = saturatedMillis(maximumDelay);
+        if (delayMillis == 0L) {
+            return Duration.ZERO;
+        }
+        if (delayMillis >= maximumMillis) {
+            return Duration.ofMillis(maximumMillis);
+        }
         double multiplier = Math.pow(backoffFactor, attempt - 2.0);
-        long candidate = Math.round(delay.toMillis() * multiplier);
-        return Duration.ofMillis(Math.min(candidate, maximumDelay.toMillis()));
+        double candidate = delayMillis * multiplier;
+        if (!Double.isFinite(candidate) || candidate >= maximumMillis) {
+            return Duration.ofMillis(maximumMillis);
+        }
+        return Duration.ofMillis(Math.min(Math.round(candidate), maximumMillis));
     }
 
     /** Returns whether another attempt is allowed for a result matching the supplied predicate. */
     public <T> boolean shouldRetry(int attempt, T result, Predicate<T> retryableResult) {
         Objects.requireNonNull(retryableResult, "retryableResult");
         return attempt < maxAttempts && retryableResult.test(result);
+    }
+
+    private static long saturatedMillis(Duration duration) {
+        try {
+            return duration.toMillis();
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
     }
 }

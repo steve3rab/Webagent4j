@@ -82,6 +82,23 @@ class WaitBudgetTest {
     }
 
     @Test
+    void remainsConsistentWhenTheMonotonicClockRollsOver() {
+        clock.set(Long.MAX_VALUE - 10);
+        WaitBudget budget = WaitBudget.start(Duration.ofNanos(20), clock);
+
+        clock.advance(Duration.ofNanos(15));
+
+        assertThat(budget.elapsed()).isEqualTo(Duration.ofNanos(15));
+        assertThat(budget.remaining()).isEqualTo(Duration.ofNanos(5));
+        assertThat(budget.expired()).isFalse();
+
+        clock.advance(Duration.ofNanos(5));
+
+        assertThat(budget.remaining()).isZero();
+        assertThat(budget.expired()).isTrue();
+    }
+
+    @Test
     void rejectsANegativeTimeout() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> WaitBudget.start(Duration.ofMillis(-1), clock));
