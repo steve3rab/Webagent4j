@@ -388,7 +388,7 @@ public final class LocatorEngine implements ILocatorEngine {
                 break;
             }
             int candidateLimit = candidateLimit(context.config(), unit.strategy().phase());
-            Instant strategyStarted = Instant.now();
+            long strategyStartedNanos = waitEngine.clock().nanoTime();
             LocatorBackendSearchResult discovered =
                     unit.strategy()
                             .discover(
@@ -408,7 +408,9 @@ public final class LocatorEngine implements ILocatorEngine {
                             || (unit.strategy().phase() == LocatorStrategyPhase.DETERMINISTIC
                                     && unit.step().query().text().isPresent()
                                     && acceptance.hardConstraintRejected());
-            Duration strategyDuration = Duration.between(strategyStarted, Instant.now());
+            Duration strategyDuration =
+                    Duration.ofNanos(
+                            Math.max(0L, waitEngine.clock().nanoTime() - strategyStartedNanos));
             diagnostics.executed(type, strategyDuration, discovered, accepted);
             if (discovered.truncated()
                     && unit.strategy().phase() == LocatorStrategyPhase.FALLBACK) {

@@ -25,6 +25,29 @@ import org.junit.jupiter.api.Test;
 class LocatorEngineWaitIntegrationTest {
 
     @Test
+    void measuresStrategyDurationWithTheInjectedMonotonicClock() {
+        IElement element = LocatorTestFixtures.element(ElementRole.BUTTON, "Confirm");
+        FakeClock clock = new FakeClock();
+        ILocatorBackend backend =
+                (query, scope, config, timeout, candidateLimit) -> {
+                    clock.advance(Duration.ofMillis(7));
+                    return new LocatorBackendSearchResult(candidates("confirm", element), 1, false);
+                };
+        LocatorEngine engine = new LocatorEngine(new WaitEngine(clock, duration -> {}));
+
+        LocatorResult result =
+                engine.locate(
+                        pageContext(backend),
+                        LocatorDefinition.forRole(ElementRole.BUTTON).named("Confirm"));
+
+        assertThat(result.diagnostics().strategiesExecuted())
+                .isNotEmpty()
+                .allSatisfy(
+                        execution ->
+                                assertThat(execution.duration()).isEqualTo(Duration.ofMillis(7)));
+    }
+
+    @Test
     void aNeverSatisfiedWaitTimesOutByFakeTimeInsteadOfBusyLoopingOnRealWallClockTime() {
         // A backend that never has a match: the only way this wait can ever end is the
         // WaitBudget's deadline expiring.

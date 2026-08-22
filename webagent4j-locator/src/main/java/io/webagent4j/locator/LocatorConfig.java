@@ -218,7 +218,7 @@ public record LocatorConfig(
     }
 
     private static void validateUnit(double value, String name) {
-        if (value < 0.0 || value > 1.0) {
+        if (!Double.isFinite(value) || value < 0.0 || value > 1.0) {
             throw new IllegalArgumentException(name + " must be between zero and one");
         }
     }

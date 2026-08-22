@@ -24,7 +24,7 @@ public record LocatorEvidence(
         Objects.requireNonNull(matchType, "matchType");
         expected = Objects.requireNonNull(expected, "expected");
         actual = Objects.requireNonNull(actual, "actual");
-        if (contribution < 0.0 || contribution > 1.0) {
+        if (!Double.isFinite(contribution) || contribution < 0.0 || contribution > 1.0) {
             throw new IllegalArgumentException("contribution must be between zero and one");
         }
     }

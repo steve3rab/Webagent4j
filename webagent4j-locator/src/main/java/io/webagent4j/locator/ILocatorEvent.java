@@ -59,7 +59,7 @@ public sealed interface ILocatorEvent
             Objects.requireNonNull(timestamp, "timestamp");
             identity = Objects.requireNonNull(identity, "identity");
             Objects.requireNonNull(strategy, "strategy");
-            if (score < 0.0 || score > 1.0) {
+            if (!Double.isFinite(score) || score < 0.0 || score > 1.0) {
                 throw new IllegalArgumentException("score must be between zero and one");
             }
         }
@@ -78,7 +78,7 @@ public sealed interface ILocatorEvent
             if (duration.isNegative()) {
                 throw new IllegalArgumentException("duration cannot be negative");
             }
-            if (confidence < 0.0 || confidence > 1.0) {
+            if (!Double.isFinite(confidence) || confidence < 0.0 || confidence > 1.0) {
                 throw new IllegalArgumentException("confidence must be between zero and one");
             }
         }
