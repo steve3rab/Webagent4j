@@ -48,24 +48,51 @@ public record ActionResult<T>(
         if (status != ActionStatus.SUCCESS && failure.isEmpty()) {
             throw new IllegalArgumentException("failed actions must contain a failure");
         }
-        requireExecutionShape(status, executionMode);
+        requireOutcomeShape(status, executionMode, failure.map(ActionFailure::type).orElse(null));
     }
 
-    private static void requireExecutionShape(
-            ActionStatus status, ActionExecutionMode executionMode) {
-        if (status == ActionStatus.SUCCESS && executionMode == ActionExecutionMode.NOT_EXECUTED) {
-            throw new IllegalArgumentException("a successful action must be REAL or DRY_RUN");
-        }
-        if (executionMode == ActionExecutionMode.DRY_RUN && status != ActionStatus.SUCCESS) {
-            throw new IllegalArgumentException("only a successful action may be DRY_RUN");
-        }
-        if (status == ActionStatus.PRECONDITION_FAILED
-                && executionMode != ActionExecutionMode.NOT_EXECUTED) {
-            throw new IllegalArgumentException("a precondition failure must be NOT_EXECUTED");
-        }
-        if ((status == ActionStatus.VERIFICATION_FAILED || status == ActionStatus.CANCELLED)
-                && executionMode != ActionExecutionMode.REAL) {
-            throw new IllegalArgumentException(status + " must report REAL execution mode");
+    private static void requireOutcomeShape(
+            ActionStatus status, ActionExecutionMode executionMode, ActionFailureType failureType) {
+        boolean valid =
+                switch (status) {
+                    case SUCCESS ->
+                            failureType == null
+                                    && (executionMode == ActionExecutionMode.REAL
+                                            || executionMode == ActionExecutionMode.DRY_RUN);
+                    case PRECONDITION_FAILED ->
+                            executionMode == ActionExecutionMode.NOT_EXECUTED
+                                    && failureType == ActionFailureType.PRECONDITION_FAILED;
+                    case EXECUTION_FAILED ->
+                            switch (executionMode) {
+                                case NOT_EXECUTED ->
+                                        failureType == ActionFailureType.TARGET_NOT_FOUND
+                                                || failureType == ActionFailureType.TARGET_AMBIGUOUS
+                                                || failureType == ActionFailureType.BACKEND_FAILURE;
+                                case REAL ->
+                                        failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
+                                                || failureType
+                                                        == ActionFailureType
+                                                                .ACTION_NOT_SUPPORTED_BY_TARGET
+                                                || failureType == ActionFailureType.BACKEND_FAILURE
+                                                || failureType == ActionFailureType.UPLOAD_FAILURE
+                                                || failureType
+                                                        == ActionFailureType.DOWNLOAD_FAILURE;
+                                case DRY_RUN -> false;
+                            };
+                    case VERIFICATION_FAILED ->
+                            executionMode == ActionExecutionMode.REAL
+                                    && failureType == ActionFailureType.POSTCONDITION_FAILED;
+                    case TIMEOUT ->
+                            (executionMode == ActionExecutionMode.REAL
+                                            || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                                    && failureType == ActionFailureType.TIMEOUT;
+                    case CANCELLED ->
+                            executionMode == ActionExecutionMode.REAL
+                                    && failureType == ActionFailureType.INTERRUPTED;
+                };
+        if (!valid) {
+            throw new IllegalArgumentException(
+                    "action status, execution mode, and failure type are inconsistent");
         }
     }
 
