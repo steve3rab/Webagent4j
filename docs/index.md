@@ -6,6 +6,7 @@ map of every module and entry point, and use the focused guides below for full d
 
 - [Public API reference](public-api.md)
 - [API stability policy](api-stability.md)
+- [Cross-module contracts](contracts.md)
 - [Migration to the 1.0 API candidate](migration-to-1.0.md)
 - [Java API Reference (generated Javadoc)](https://steve3rab.github.io/Webagent4j/api/latest/)
 - [Architecture and dependency rules](architecture.md)
@@ -26,5 +27,5 @@ map of every module and entry point, and use the focused guides below for full d
 - [Roadmap](roadmap.md)
 
 Workflows, schema-V1 recording, and explicit trusted locator plugins are implemented. Their guides
-define the supported behavior and deliberate non-goals; Phase 1.0-A is stabilizing the candidate
-compatibility surface without adding features.
+define the supported behavior and deliberate non-goals. Phase 1.0-B is aligning cross-module
+contracts without adding features or changing recording schema V1.

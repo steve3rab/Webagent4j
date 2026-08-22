@@ -43,6 +43,9 @@ public record ObservationStatistics(
             throw new IllegalArgumentException("observation counts cannot be negative");
         }
         Objects.requireNonNull(duration, "duration");
+        if (duration.isNegative()) {
+            throw new IllegalArgumentException("duration cannot be negative");
+        }
         truncations = List.copyOf(Objects.requireNonNull(truncations, "truncations"));
     }
 

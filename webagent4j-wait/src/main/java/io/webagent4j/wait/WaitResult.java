@@ -31,6 +31,18 @@ public record WaitResult<T>(
         Objects.requireNonNull(elapsed, "elapsed");
         Objects.requireNonNull(value, "value");
         Objects.requireNonNull(achievedStability, "achievedStability");
+        if (elapsed.isNegative()) {
+            throw new IllegalArgumentException("elapsed cannot be negative");
+        }
+        if (achievedStability.filter(Duration::isNegative).isPresent()) {
+            throw new IllegalArgumentException("achievedStability cannot be negative");
+        }
+        if (status == WaitStatus.SUCCESS && value.isEmpty()) {
+            throw new IllegalArgumentException("a successful wait must carry a value");
+        }
+        if (status == WaitStatus.TIMED_OUT && achievedStability.isPresent()) {
+            throw new IllegalArgumentException("a timed-out wait cannot carry achieved stability");
+        }
     }
 
     /** Returns whether this result is {@link WaitStatus#SUCCESS}. */

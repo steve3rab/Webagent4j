@@ -255,6 +255,15 @@ bounded chain of wrapped causes: a `LocatorNotFoundException` wrapped by an unre
 backend failure - wrapped or not - is always rethrown rather than silently reported as a missing
 match.
 
+The Playwright adapter applies the same proof at race boundaries. A typed inspection timeout during
+match counting, candidate identity evaluation, or frame URL inspection becomes absence only after
+a fresh synchronous `count()` proves the locator is gone. If it remains present, the original
+timeout propagates; if the recheck itself fails, that failure is attached as suppressed context to
+the original timeout. Playwright 1.60 exposes an owning-frame detachment without a dedicated Java
+exception subtype, so the adapter also recognizes only the canonical `Frame was detached` protocol
+error field as definitive disappearance. An opaque error that merely mentions those words still
+propagates unchanged.
+
 ## Hard constraints and preferences
 
 Requested role, name, label, id, attribute, test id, and state predicates are mandatory. A candidate

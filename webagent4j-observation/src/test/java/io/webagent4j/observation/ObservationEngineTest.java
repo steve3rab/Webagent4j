@@ -185,6 +185,19 @@ class ObservationEngineTest {
         }
     }
 
+    @Test
+    void observationEventsRejectNegativeDurations() {
+        assertThatThrownBy(
+                        () ->
+                                new IObservationEvent.ObservationCompleted(
+                                        NOW,
+                                        new ObservationId("observation"),
+                                        Duration.ofNanos(-1),
+                                        0,
+                                        0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     private static ObservationEngine engine(List<IObservationEvent> events) {
         return new ObservationEngine(
                 Clock.fixed(NOW, ZoneOffset.UTC),

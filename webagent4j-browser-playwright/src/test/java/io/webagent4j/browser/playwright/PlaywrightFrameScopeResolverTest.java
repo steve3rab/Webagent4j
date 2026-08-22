@@ -14,6 +14,7 @@ import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.FrameLocator;
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
 import io.webagent4j.browser.FrameDefinition;
 import io.webagent4j.common.LocatorException;
@@ -219,6 +220,7 @@ class PlaywrightFrameScopeResolverTest {
         Locator iframeLocator = mock(Locator.class);
         when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
                 .thenThrow(new TimeoutError("Timeout exceeded while resolving element handle"));
+        when(iframeLocator.count()).thenReturn(0);
         IElement vanished =
                 new PlaywrightElement(
                         iframeLocator,
@@ -239,6 +241,104 @@ class PlaywrightFrameScopeResolverTest {
                                         definition,
                                         SHORT_TIMEOUT))
                 .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    @Test
+    void anExplicitFrameDetachmentDuringUrlInspectionIsExcludedFromThisPoll() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenThrow(
+                        new PlaywrightException(
+                                "Error {\n  message='Frame was detached\n  name='Error\n}"));
+        IElement vanished =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(vanished)));
+        FrameDefinition definition =
+                FrameDefinition.frame().withUrl(TextMatch.exact("https://example.com/checkout"));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameElement(
+                                        engine,
+                                        ILiveLocatorContext.fixed(context),
+                                        definition,
+                                        SHORT_TIMEOUT))
+                .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    @Test
+    void aUrlInspectionTimeoutForAStillPresentCandidatePropagatesUnchanged() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        TimeoutError timeout = new TimeoutError("URL inspection exceeded its bound");
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenThrow(timeout);
+        when(iframeLocator.count()).thenReturn(1);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+        FrameDefinition definition =
+                FrameDefinition.frame().withUrl(TextMatch.exact("https://example.com/checkout"));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameElement(
+                                        engine,
+                                        ILiveLocatorContext.fixed(context),
+                                        definition,
+                                        SHORT_TIMEOUT))
+                .isSameAs(timeout);
+    }
+
+    @Test
+    void aFailedUrlInspectionRecheckPreservesTheOriginalTimeout() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        TimeoutError timeout = new TimeoutError("URL inspection exceeded its bound");
+        RuntimeException recheckFailure = new IllegalStateException("browser disconnected");
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenThrow(timeout);
+        when(iframeLocator.count()).thenThrow(recheckFailure);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+        FrameDefinition definition =
+                FrameDefinition.frame().withUrl(TextMatch.exact("https://example.com/checkout"));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameElement(
+                                        engine,
+                                        ILiveLocatorContext.fixed(context),
+                                        definition,
+                                        SHORT_TIMEOUT))
+                .isSameAs(timeout)
+                .satisfies(
+                        failure ->
+                                assertThat(failure.getSuppressed())
+                                        .containsExactly(recheckFailure));
     }
 
     /**

@@ -61,7 +61,14 @@ Observation observation = page.observe(options);
 Applied limits are never silent. `ObservationStatistics.truncations()` identifies element, text,
 tree, table, list, and option truncation with retained and original counts. Statistics also report
 visited, included, filtered, and interactive counts and total duration. Timeout and interruption
-fail with observation-specific exceptions.
+fail with observation-specific exceptions. Snapshot capture, statistics, and completion-event
+elapsed durations reject negative values.
+
+`ObservationEngine` retains no per-observation mutable state and does not retain pages or live
+elements between calls. Sharing one engine concurrently is safe only when every injected
+collaborator (clock, identifier supplier, policies, factories, resolver, and listener) is also safe
+for concurrent use. A page or frame remains caller-confined and must not be observed concurrently
+unless its own implementation explicitly promises that behavior.
 
 ## Redaction
 

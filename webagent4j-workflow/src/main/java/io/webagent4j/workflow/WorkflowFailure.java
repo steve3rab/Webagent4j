@@ -1,8 +1,10 @@
 package io.webagent4j.workflow;
 
 import io.webagent4j.action.ActionFailureType;
+import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Safe, structured overall failure reason for a {@link WorkflowStatus#FAILED} {@link
@@ -29,6 +31,12 @@ public record WorkflowFailure(
         Optional<String> underlyingTypeName,
         Optional<ActionFailureType> actionFailureType) {
 
+    private static final Set<WorkflowFailureType> PREFLIGHT_FAILURE_TYPES =
+            EnumSet.of(
+                    WorkflowFailureType.MISSING_REQUIRED_INPUT,
+                    WorkflowFailureType.INPUT_TYPE_MISMATCH,
+                    WorkflowFailureType.UNDECLARED_INPUT);
+
     /** Validates failure data. */
     public WorkflowFailure {
         Objects.requireNonNull(type, "type");
@@ -36,6 +44,27 @@ public record WorkflowFailure(
         stepId = Objects.requireNonNull(stepId, "stepId");
         underlyingTypeName = Objects.requireNonNull(underlyingTypeName, "underlyingTypeName");
         actionFailureType = Objects.requireNonNull(actionFailureType, "actionFailureType");
+        if (type == WorkflowFailureType.ACTION_FAILED) {
+            if (actionFailureType.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "an ACTION_FAILED failure must carry an ActionFailureType");
+            }
+        } else if (actionFailureType.isPresent()) {
+            throw new IllegalArgumentException(
+                    "only an ACTION_FAILED failure may carry an ActionFailureType");
+        }
+        if (PREFLIGHT_FAILURE_TYPES.contains(type)) {
+            if (stepId.isPresent()) {
+                throw new IllegalArgumentException("a preflight failure cannot carry a stepId");
+            }
+            if (underlyingTypeName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a preflight failure cannot carry an underlying exception type name");
+            }
+        } else if (stepId.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "a non-preflight failure must carry the failing step's stepId");
+        }
     }
 
     /** Renders only the safe category, step, and redacted message - never a raw exception. */

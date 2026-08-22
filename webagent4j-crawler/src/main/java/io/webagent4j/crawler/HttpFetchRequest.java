@@ -24,6 +24,9 @@ public record HttpFetchRequest(
         Objects.requireNonNull(uri, "uri");
         Objects.requireNonNull(timeout, "timeout");
         headers = Map.copyOf(new LinkedHashMap<>(Objects.requireNonNull(headers, "headers")));
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
         if (maxResponseBytes <= 0) {
             throw new IllegalArgumentException("maxResponseBytes must be positive");
         }

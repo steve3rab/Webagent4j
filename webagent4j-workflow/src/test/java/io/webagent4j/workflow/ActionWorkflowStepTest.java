@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.webagent4j.action.ActionExecutionMode;
 import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionResult;
+import io.webagent4j.action.ActionStatus;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -107,6 +108,37 @@ class ActionWorkflowStepTest {
         assertThat(outcome.actionSummary()).isPresent();
         assertThat(outcome.actionSummary().get().executionMode())
                 .isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+    }
+
+    @Test
+    void preBackendInterruptionProjectsCancelledNotExecutedOutcome() {
+        AtomicInteger executions = new AtomicInteger();
+        Workflow workflow =
+                Workflow.builder("interrupted-action")
+                        .step(
+                                WorkflowSteps.action(
+                                        "s",
+                                        variables ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.<String>interrupted(
+                                                                ActionExecutionMode.NOT_EXECUTED),
+                                                        executions)))
+                        .build();
+
+        WorkflowResult result = new WorkflowEngine().execute(workflow, WorkflowInputs.empty());
+        WorkflowStepResult step = result.steps().get(0);
+
+        assertThat(result.status()).isEqualTo(WorkflowStatus.FAILED);
+        assertThat(step.status()).isEqualTo(WorkflowStepStatus.FAILED);
+        assertThat(step.failure().orElseThrow().type())
+                .isEqualTo(WorkflowFailureType.ACTION_FAILED);
+        assertThat(step.failure().orElseThrow().actionFailureType())
+                .contains(ActionFailureType.INTERRUPTED);
+        assertThat(step.actionSummary()).isPresent();
+        assertThat(step.actionSummary().orElseThrow().status()).isEqualTo(ActionStatus.CANCELLED);
+        assertThat(step.actionSummary().orElseThrow().executionMode())
+                .isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+        assertThat(executions).hasValue(1);
     }
 
     @Test

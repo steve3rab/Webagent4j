@@ -25,11 +25,10 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Proves {@link PlaywrightLocatorBackend#find} distinguishes a candidate that genuinely vanished
- * while counting or between {@link Locator#count()} and its identity-evaluation call - Playwright's
- * typed {@link TimeoutError} for "did not resolve within the bounded inspection timeout" is
- * absorbed only after a fresh count confirms that the candidate is gone. A real backend or runtime
- * failure (a disconnected browser, a closed context, or any other opaque failure) must always
- * propagate unchanged rather than being silently turned into an absent candidate.
+ * while counting or between {@link Locator#count()} and its identity-evaluation call. A typed
+ * {@link TimeoutError} is absorbed only after a fresh count confirms absence; Playwright's
+ * canonical frame-detached protocol failure is already definitive. Every opaque backend/runtime
+ * failure propagates unchanged.
  */
 class PlaywrightLocatorBackendTest {
 
@@ -112,7 +111,9 @@ class PlaywrightLocatorBackendTest {
     void aFrameRootThatVanishesWithATimeoutErrorDuringCountingProducesAnEmptyPoll() {
         Locator matches = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
-        when(matches.count()).thenThrow(new TimeoutError("Frame root disappeared while counting"));
+        when(matches.count())
+                .thenThrow(new TimeoutError("Frame root disappeared while counting"))
+                .thenReturn(0);
 
         LocatorBackendSearchResult result =
                 backend(documentRoot)
@@ -126,6 +127,68 @@ class PlaywrightLocatorBackendTest {
         assertThat(result.candidates()).isEmpty();
         assertThat(result.discoveredCount()).isZero();
         assertThat(result.truncated()).isFalse();
+    }
+
+    @Test
+    void anExplicitFrameDetachmentDuringCountingProducesAnEmptyPoll() {
+        Locator matches = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenThrow(frameDetachedFailure());
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isZero();
+    }
+
+    @Test
+    void aCountingTimeoutForAStillPresentRootPropagatesUnchanged() {
+        Locator matches = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        TimeoutError timeout = new TimeoutError("Counting exceeded its bound");
+        when(matches.count()).thenThrow(timeout).thenReturn(1);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isSameAs(timeout);
+    }
+
+    @Test
+    void aFailedCountingRecheckPreservesTheOriginalTimeoutAndSuppressesTheRecheck() {
+        Locator matches = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        TimeoutError timeout = new TimeoutError("Counting exceeded its bound");
+        RuntimeException recheckFailure = new IllegalStateException("browser disconnected");
+        when(matches.count()).thenThrow(timeout).thenThrow(recheckFailure);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isSameAs(timeout)
+                .satisfies(
+                        failure ->
+                                assertThat(failure.getSuppressed())
+                                        .containsExactly(recheckFailure));
     }
 
     @Test
@@ -157,6 +220,7 @@ class PlaywrightLocatorBackendTest {
         when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
                 .thenThrow(
                         new TimeoutError("Timeout exceeded while evaluating candidate identity"));
+        when(item.count()).thenReturn(0);
 
         LocatorBackendSearchResult result =
                 backend(documentRoot)
@@ -172,6 +236,72 @@ class PlaywrightLocatorBackendTest {
         // currently present" outcome instead of aborting the whole resolution.
         assertThat(result.candidates()).isEmpty();
         assertThat(result.discoveredCount()).isEqualTo(1);
+    }
+
+    @Test
+    void anExplicitFrameDetachmentDuringIdentityEvaluationExcludesTheCandidate() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
+                .thenThrow(frameDetachedFailure());
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isEqualTo(1);
+    }
+
+    @Test
+    void anOpaqueFailureThatMerelyMentionsFrameDetachmentPropagatesUnchanged() {
+        Locator matches = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        PlaywrightException failure =
+                new PlaywrightException("browser disconnected after a Frame was detached event");
+        when(matches.count()).thenThrow(failure);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isSameAs(failure);
+    }
+
+    @Test
+    void anIdentityTimeoutForAStillPresentCandidatePropagatesUnchanged() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        TimeoutError timeout = new TimeoutError("Identity evaluation exceeded its bound");
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class))).thenThrow(timeout);
+        when(item.count()).thenReturn(1);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isSameAs(timeout);
     }
 
     @Test
@@ -221,5 +351,9 @@ class PlaywrightLocatorBackendTest {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty());
+    }
+
+    private static PlaywrightException frameDetachedFailure() {
+        return new PlaywrightException("Error {\n  message='Frame was detached\n  name='Error\n}");
     }
 }

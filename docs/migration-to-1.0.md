@@ -78,7 +78,9 @@ Reason: framework-owned diagnostics should not accidentally disclose untrusted o
 
 A Playwright inspection timeout is translated to expected element disappearance only when a fresh
 count confirms the element is gone. If the element remains present, or the backend recheck fails,
-the original backend exception propagates.
+the original backend exception propagates. The canonical Playwright protocol error whose first
+field is `Frame was detached` is also definitive disappearance because Playwright 1.60 provides no
+dedicated Java subtype for it; incidental text in any other error is not classified as absence.
 
 Migration: code that incorrectly depended on backend failures appearing as absent metadata must
 handle the genuine backend failure. Typed disappearance behavior is unchanged.
@@ -103,3 +105,23 @@ compatibility promise for placeholders.
 - Workflow execution remains sequential and fail-fast with no hidden workflow retry.
 - No new locator strategy, workflow step, crawler behavior, persistence, AI, agent, or MCP feature
   is introduced.
+
+## Phase 1.0-B behavioral contract corrections
+
+Phase 1.0-B changes no public Java signature and does not change recording schema V1. It rejects
+public values that could not be produced or consumed consistently:
+
+- direct `ActionResult`, `WorkflowActionSummary`, `RecordedAction`, `WorkflowFailure`,
+  `WorkflowStepResult`, and `WorkflowResult` construction must follow the engines' documented
+  status/execution and sequential fail-fast shapes;
+- elapsed durations cannot be negative, configured `HttpFetchRequest` timeouts must be positive,
+  successful waits carry a value, timed-out waits carry no achieved-stability duration, and a
+  successful verification cannot also be timed out;
+- `ActionEvent#toString()` no longer includes target, result, or metadata text;
+- Playwright inspection timeout is absence only after a fresh count proves disappearance; the
+  canonical frame-detached protocol error is also a definitive disappearance signal.
+
+Migration: fix invalid test fixtures or application-created DTOs at their construction boundary,
+and use typed action-event accessors only inside an application-owned redaction policy. Valid
+engine-produced values are unchanged. Code that depended on a still-present Playwright target being
+reported absent must handle the original backend timeout instead.

@@ -29,6 +29,7 @@ class WorkflowRecorderTest {
 
     private final WorkflowEngine engine = new WorkflowEngine();
     private final WorkflowRecorder recorder = new WorkflowRecorder();
+    private final JsonWorkflowRecordingCodec codec = new JsonWorkflowRecordingCodec();
 
     /** REC-001: a successful execution's every safe field is faithfully recorded. */
     @Test
@@ -375,6 +376,41 @@ class WorkflowRecorderTest {
         RecordedWorkflowStep step = recording.steps().get(0);
         assertThat(step.action()).isPresent();
         assertThat(step.action().orElseThrow().status()).isNotEqualTo(ActionStatus.SUCCESS);
+    }
+
+    @Test
+    void interruptedActionRoundTripsAcrossWorkflowRecordingAndJson() {
+        for (ActionExecutionMode executionMode :
+                Set.of(ActionExecutionMode.NOT_EXECUTED, ActionExecutionMode.REAL)) {
+            Workflow workflow =
+                    Workflow.builder("wf-interrupted-" + executionMode.name())
+                            .step(
+                                    WorkflowSteps.action(
+                                            "s1",
+                                            variables ->
+                                                    new FakePreparedAction<>(
+                                                            ActionResults.interrupted(
+                                                                    executionMode))))
+                            .build();
+
+            WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+            WorkflowRecording recording =
+                    recorder.record(
+                            new RecordingId("rec-interrupted-" + executionMode.name()),
+                            Instant.parse("2026-01-01T00:00:00Z"),
+                            result);
+            WorkflowRecording decoded = codec.decode(codec.encode(recording));
+
+            assertThat(result.status()).isEqualTo(WorkflowStatus.FAILED);
+            assertThat(result.failure().orElseThrow().actionFailureType())
+                    .contains(ActionFailureType.INTERRUPTED);
+            assertThat(decoded).isEqualTo(recording);
+            assertThat(decoded.schemaVersion()).isEqualTo(RecordingSchemaVersion.V1);
+            assertThat(decoded.steps().get(0).action().orElseThrow().status())
+                    .isEqualTo(ActionStatus.CANCELLED);
+            assertThat(decoded.steps().get(0).action().orElseThrow().executionMode())
+                    .isEqualTo(executionMode);
+        }
     }
 
     /** REC-FAIL-008: NULL_OUTPUT records successfully, with a SUCCESS-status action summary. */

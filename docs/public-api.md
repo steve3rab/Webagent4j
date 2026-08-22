@@ -20,8 +20,9 @@ linked throughout (the narrative "how it works" documents) - it exists to connec
   and `./mvnw install` locally, then depend on the resulting local artifacts (see
   [API modules vs. implementation modules](#api-modules-vs-implementation-modules)).
 - Browser and HTTP crawling, workflows, schema-V1 recording, and explicit trusted locator plugins
-  are implemented. Phase 1.0-A is reviewing and documenting their compatibility surface; see the
-  [API stability policy](api-stability.md) and [Roadmap](roadmap.md).
+  are implemented. Phase 1.0-B is aligning their shared behavioral contracts; see the
+  [cross-module contract matrix](contracts.md), [API stability policy](api-stability.md), and
+  [Roadmap](roadmap.md).
 
 ## Choosing modules
 

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.webagent4j.locator.api.ElementRole;
+import io.webagent4j.observation.spi.PageSnapshot;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -166,5 +167,32 @@ class ObservationModelTest {
                 new ListObservation(new SemanticElementId("list"), false, 1, mutableItems, false);
         mutableItems.add("two");
         assertThat(list.items()).containsExactly("one");
+    }
+
+    @Test
+    void rejectsNegativeObservationDurations() {
+        assertThatThrownBy(
+                        () ->
+                                new ObservationStatistics(
+                                        0, 0, 0, 0, 0, 0, 0, 0, Duration.ofNanos(-1), List.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                new PageSnapshot(
+                                        "https://example.test",
+                                        "Example",
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        "complete",
+                                        new ViewportSize(1280, 720),
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        List.of(),
+                                        0,
+                                        0,
+                                        Duration.ofNanos(-1),
+                                        false,
+                                        List.of()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

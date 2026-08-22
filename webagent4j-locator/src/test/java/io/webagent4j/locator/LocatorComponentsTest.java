@@ -8,9 +8,11 @@ import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.locator.api.TextMatch;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class LocatorComponentsTest {
@@ -146,5 +148,49 @@ class LocatorComponentsTest {
                                         0.80)
                                 .candidate())
                 .isEmpty();
+    }
+
+    @Test
+    void diagnosticAndEventDurationsCannotBeNegative() {
+        assertThatThrownBy(
+                        () ->
+                                new LocatorDiagnostics.StrategyExecution(
+                                        LocatorStrategyType.ROLE, Duration.ofNanos(-1), 0, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                new ILocatorEvent.StrategyExecuted(
+                                        Instant.EPOCH,
+                                        LocatorStrategyType.ROLE,
+                                        0,
+                                        Duration.ofNanos(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                new ILocatorEvent.ResolutionCompleted(
+                                        Instant.EPOCH, "candidate", 1.0, Duration.ofNanos(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                new LocatorDiagnostics(
+                                        LocatorDefinition.element(),
+                                        LocatorResolutionPolicy.BALANCED,
+                                        LocatorDiagnosticsLevel.BASIC,
+                                        List.of("Page"),
+                                        List.of(),
+                                        List.of(),
+                                        0,
+                                        0,
+                                        0,
+                                        List.of(),
+                                        0,
+                                        0,
+                                        Optional.empty(),
+                                        Duration.ofNanos(-1),
+                                        false,
+                                        Set.of(),
+                                        Optional.empty(),
+                                        List.of()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

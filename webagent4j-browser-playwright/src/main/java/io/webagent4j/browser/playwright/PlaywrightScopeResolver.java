@@ -4,6 +4,7 @@ import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.FrameLocator;
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
 import io.webagent4j.browser.FrameDefinition;
 import io.webagent4j.common.LocatorException;
@@ -443,17 +444,16 @@ final class PlaywrightScopeResolver {
      * treating every exception alike:
      *
      * <ul>
-     *   <li>the {@code <iframe>} element itself was removed between discovery and this call -
-     *       Playwright's own typed signal for "this locator resolved to nothing within the given
-     *       timeout" is {@link TimeoutError}, bounded here to {@link
-     *       #URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS} so the race window stays short; caught and
-     *       treated as "does not currently match", never propagated;
+     *   <li>the {@code <iframe>} element itself was removed between discovery and this call - a
+     *       {@link TimeoutError}, bounded here to {@link #URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS},
+     *       is treated as absence only after a fresh count proves it; Playwright's canonical
+     *       frame-detached protocol failure is already a definitive disappearance signal;
      *   <li>the element is present but its content document is not (a fresh iframe not yet loaded,
      *       or one whose frame is {@link Frame#isDetached()}) - also "does not currently match", no
      *       exception involved at all;
-     *   <li>anything else - a disconnected browser, a closed context, or any other opaque backend
-     *       or runtime failure - is a genuine failure that must propagate unchanged, never absorbed
-     *       as "not found".
+     *   <li>anything else - including a still-present locator after a timeout, a failed presence
+     *       recheck, an opaque failure that merely mentions detachment, a disconnected browser, or
+     *       a closed context - propagates unchanged, never absorbed as "not found".
      * </ul>
      */
     private static boolean matchesUrl(IElement iframeElement, TextMatch match) {
@@ -465,7 +465,15 @@ final class PlaywrightScopeResolver {
                             new Locator.ElementHandleOptions()
                                     .setTimeout(URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS));
         } catch (TimeoutError vanished) {
-            return false;
+            if (confirmedAbsent(iframeLocator, vanished)) {
+                return false;
+            }
+            throw vanished;
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameDetached(failure)) {
+                return false;
+            }
+            throw failure;
         }
         Frame frame = handle.contentFrame();
         if (frame == null || frame.isDetached()) {
@@ -483,6 +491,22 @@ final class PlaywrightScopeResolver {
             case REGEX -> url.matches(match.value());
             case FUZZY -> throw new LocatorException("Frame URL matching does not support FUZZY");
         };
+    }
+
+    /** Returns true only when a fresh synchronous count proves the timed-out iframe is gone. */
+    private static boolean confirmedAbsent(Locator locator, TimeoutError original) {
+        try {
+            return locator.count() == 0;
+        } catch (PlaywrightException recheckFailure) {
+            if (PlaywrightFailureClassifier.isFrameDetached(recheckFailure)) {
+                return true;
+            }
+            original.addSuppressed(recheckFailure);
+            throw original;
+        } catch (RuntimeException recheckFailure) {
+            original.addSuppressed(recheckFailure);
+            throw original;
+        }
     }
 
     private static String frameElementSelector(FrameDefinition definition) {

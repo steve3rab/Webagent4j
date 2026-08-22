@@ -49,12 +49,58 @@ final class ActionResults {
     }
 
     static <R> ActionResult<R> failure(ActionFailureType type, String message) {
+        ActionStatus status =
+                switch (type) {
+                    case PRECONDITION_FAILED -> ActionStatus.PRECONDITION_FAILED;
+                    case TIMEOUT -> ActionStatus.TIMEOUT;
+                    case POSTCONDITION_FAILED -> ActionStatus.VERIFICATION_FAILED;
+                    case INTERRUPTED -> ActionStatus.CANCELLED;
+                    default -> ActionStatus.EXECUTION_FAILED;
+                };
+        ActionExecutionMode executionMode =
+                type == ActionFailureType.PRECONDITION_FAILED
+                                || type == ActionFailureType.TARGET_NOT_FOUND
+                                || type == ActionFailureType.TARGET_AMBIGUOUS
+                        ? ActionExecutionMode.NOT_EXECUTED
+                        : ActionExecutionMode.REAL;
         return new ActionResult<>(
-                false,
+                ActionId.create(),
+                ActionType.CLICK,
+                executionMode,
+                status,
                 null,
                 Duration.ZERO,
+                ActionTimings.empty(Duration.ZERO),
+                List.of(),
+                List.of(),
+                null,
+                null,
+                null,
                 List.<ActionEvent>of(),
                 Optional.of(new ActionFailure(type, message, Optional.empty())),
-                ActionExecutionMode.REAL);
+                ActionDiagnostics.empty());
+    }
+
+    static <R> ActionResult<R> interrupted(ActionExecutionMode executionMode) {
+        return new ActionResult<>(
+                ActionId.create(),
+                ActionType.CLICK,
+                executionMode,
+                ActionStatus.CANCELLED,
+                null,
+                Duration.ZERO,
+                ActionTimings.empty(Duration.ZERO),
+                List.of(),
+                List.of(),
+                null,
+                null,
+                null,
+                List.of(),
+                Optional.of(
+                        new ActionFailure(
+                                ActionFailureType.INTERRUPTED,
+                                "action interrupted",
+                                Optional.empty())),
+                ActionDiagnostics.empty());
     }
 }

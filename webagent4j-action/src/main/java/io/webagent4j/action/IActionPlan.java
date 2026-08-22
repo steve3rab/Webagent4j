@@ -15,7 +15,8 @@ import java.util.Optional;
  * when the semantic target resolved to a single unambiguous candidate and every precondition passed
  * at the moment {@code plan()} was called; otherwise it is {@link ActionPlanStatus#BLOCKED} with a
  * structured {@link #failure()} reusing the same {@link ActionFailureType} taxonomy as {@link
- * ActionResult}.
+ * ActionResult}. An interruption while retrying target resolution is preserved on the caller thread
+ * and produces a blocked plan with {@link ActionFailureType#INTERRUPTED}.
  *
  * <p>A plan is a snapshot, not a guarantee. Page state can change between {@code plan()} and {@link
  * #execute()}, so {@code execute()} never trusts the snapshot: it revalidates target resolution,

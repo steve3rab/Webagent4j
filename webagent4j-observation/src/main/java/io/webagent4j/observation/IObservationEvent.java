@@ -41,6 +41,9 @@ public sealed interface IObservationEvent
             Objects.requireNonNull(timestamp, "timestamp");
             Objects.requireNonNull(observationId, "observationId");
             Objects.requireNonNull(duration, "duration");
+            if (duration.isNegative()) {
+                throw new IllegalArgumentException("duration cannot be negative");
+            }
             if (elementsIncluded < 0 || warningCount < 0) {
                 throw new IllegalArgumentException("event counts cannot be negative");
             }

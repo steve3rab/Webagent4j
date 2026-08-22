@@ -33,13 +33,22 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 
 /** Executes the ordered resolve, validate, execute-once, stabilize, observe, verify pipeline. */
 final class ActionExecutor {
 
-    private static final IMonotonicClock CLOCK = IMonotonicClock.systemClock();
+    private final IMonotonicClock clock;
+
+    ActionExecutor() {
+        this(IMonotonicClock.systemClock());
+    }
+
+    ActionExecutor(IMonotonicClock clock) {
+        this.clock = Objects.requireNonNull(clock, "clock");
+    }
 
     <R> ActionResult<R> execute(
             IActionContext context, ActionCommand<R> command, ActionExecutionConfig config) {
@@ -56,12 +65,13 @@ final class ActionExecutor {
             ActionCommand<R> command,
             ActionExecutionConfig config,
             ActionId actionId) {
-        Instant started = Instant.now();
-        WaitBudget budget = WaitBudget.start(config.options().timeout(), CLOCK);
+        long startedNanos = clock.nanoTime();
+        WaitBudget budget = WaitBudget.start(config.options().timeout(), clock);
         List<ActionEvent> events = new ArrayList<>();
-        events.add(event(actionId, command, ActionStage.ACTION_STARTED, "started", "", started));
+        events.add(
+                event(actionId, command, ActionStage.ACTION_STARTED, "started", "", startedNanos));
         IElement target;
-        Instant resolutionStarted = Instant.now();
+        long resolutionStartedNanos = clock.nanoTime();
         events.add(
                 event(
                         actionId,
@@ -69,20 +79,43 @@ final class ActionExecutor {
                         ActionStage.TARGET_RESOLUTION_STARTED,
                         "started",
                         "",
-                        started));
+                        startedNanos));
         try {
             target =
                     new ActionTargetResolver()
                             .resolve(command, config.options().resolutionRetry(), budget);
+        } catch (ActionInterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    elapsedSince(resolutionStartedNanos),
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    List.of(),
+                    List.of(),
+                    null,
+                    null,
+                    "",
+                    ActionFailureType.INTERRUPTED,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.CANCELLED,
+                    "Action target resolution was interrupted",
+                    failure);
         } catch (RuntimeException failure) {
             return failed(
                     context,
                     command,
                     config,
                     actionId,
-                    started,
+                    startedNanos,
                     events,
-                    resolutionStarted,
+                    elapsedSince(resolutionStartedNanos),
                     Duration.ZERO,
                     Duration.ZERO,
                     Duration.ZERO,
@@ -97,7 +130,7 @@ final class ActionExecutor {
                     "Action target could not be resolved",
                     failure);
         }
-        Duration resolutionDuration = Duration.between(resolutionStarted, Instant.now());
+        Duration resolutionDuration = elapsedSince(resolutionStartedNanos);
         String targetDescription = describe(target);
         events.add(
                 event(
@@ -106,10 +139,10 @@ final class ActionExecutor {
                         ActionStage.TARGET_RESOLVED,
                         "resolved",
                         targetDescription,
-                        started));
+                        startedNanos));
 
         Observation before = captureBefore(context, config.options().observationCapture());
-        Instant preconditionStarted = Instant.now();
+        long preconditionStartedNanos = clock.nanoTime();
         events.add(
                 event(
                         actionId,
@@ -117,11 +150,11 @@ final class ActionExecutor {
                         ActionStage.PRECONDITION_STARTED,
                         "started",
                         targetDescription,
-                        started));
+                        startedNanos));
         List<VerificationResult> preconditions =
                 new PreconditionEvaluator()
                         .evaluate(command.type(), target, context, config.preconditions());
-        Duration preconditionDuration = Duration.between(preconditionStarted, Instant.now());
+        Duration preconditionDuration = elapsedSince(preconditionStartedNanos);
         if (preconditions.stream().anyMatch(result -> !result.success())) {
             events.add(
                     event(
@@ -130,15 +163,15 @@ final class ActionExecutor {
                             ActionStage.ACTION_FAILED,
                             "precondition-failed",
                             targetDescription,
-                            started));
+                            startedNanos));
             return failed(
                     context,
                     command,
                     config,
                     actionId,
-                    started,
+                    startedNanos,
                     events,
-                    resolutionStarted,
+                    resolutionDuration,
                     preconditionDuration,
                     Duration.ZERO,
                     Duration.ZERO,
@@ -160,14 +193,14 @@ final class ActionExecutor {
                         ActionStage.PRECONDITION_COMPLETED,
                         "succeeded",
                         targetDescription,
-                        started));
+                        startedNanos));
 
         if (config.dryRun()) {
             // A dry-run never invokes the backend, so it never emits BACKEND_ACTION_STARTED or
             // BACKEND_ACTION_COMPLETED, and it never performs stabilization or postcondition
             // verification, which both depend on a real side effect having happened. Exactly one
             // terminal ACTION_COMPLETED event is emitted for this logical execution.
-            Duration total = Duration.between(started, Instant.now());
+            Duration total = elapsedSince(startedNanos);
             events.add(
                     event(
                             actionId,
@@ -175,7 +208,7 @@ final class ActionExecutor {
                             ActionStage.ACTION_COMPLETED,
                             "dry-run-validated",
                             targetDescription,
-                            started));
+                            startedNanos));
             return new ActionResult<>(
                     actionId,
                     command.type(),
@@ -211,15 +244,15 @@ final class ActionExecutor {
                             ActionStage.ACTION_FAILED,
                             "budget-expired-before-backend-action",
                             targetDescription,
-                            started));
+                            startedNanos));
             return failed(
                     context,
                     command,
                     config,
                     actionId,
-                    started,
+                    startedNanos,
                     events,
-                    resolutionStarted,
+                    resolutionDuration,
                     preconditionDuration,
                     Duration.ZERO,
                     Duration.ZERO,
@@ -236,7 +269,7 @@ final class ActionExecutor {
         }
 
         R value;
-        Instant executionStarted = Instant.now();
+        long executionStartedNanos = clock.nanoTime();
         events.add(
                 event(
                         actionId,
@@ -244,7 +277,7 @@ final class ActionExecutor {
                         ActionStage.BACKEND_ACTION_STARTED,
                         "started",
                         targetDescription,
-                        started));
+                        startedNanos));
         try {
             value = command.executeBackend(context.actionBackend(), target);
         } catch (RuntimeException failure) {
@@ -253,11 +286,11 @@ final class ActionExecutor {
                     command,
                     config,
                     actionId,
-                    started,
+                    startedNanos,
                     events,
-                    resolutionStarted,
+                    resolutionDuration,
                     preconditionDuration,
-                    Duration.between(executionStarted, Instant.now()),
+                    elapsedSince(executionStartedNanos),
                     Duration.ZERO,
                     preconditions,
                     List.of(),
@@ -270,7 +303,7 @@ final class ActionExecutor {
                     "Backend action execution failed",
                     failure);
         }
-        Duration executionDuration = Duration.between(executionStarted, Instant.now());
+        Duration executionDuration = elapsedSince(executionStartedNanos);
         events.add(
                 event(
                         actionId,
@@ -278,9 +311,9 @@ final class ActionExecutor {
                         ActionStage.BACKEND_ACTION_COMPLETED,
                         "executed-once",
                         targetDescription,
-                        started));
+                        startedNanos));
 
-        Instant stabilizationStarted = Instant.now();
+        long stabilizationStartedNanos = clock.nanoTime();
         events.add(
                 event(
                         actionId,
@@ -288,9 +321,9 @@ final class ActionExecutor {
                         ActionStage.STABILIZATION_STARTED,
                         "started",
                         targetDescription,
-                        started));
+                        startedNanos));
         config.stabilization().await(context, budget.remaining());
-        Duration stabilizationDuration = Duration.between(stabilizationStarted, Instant.now());
+        Duration stabilizationDuration = elapsedSince(stabilizationStartedNanos);
         events.add(
                 event(
                         actionId,
@@ -298,9 +331,9 @@ final class ActionExecutor {
                         ActionStage.STABILIZATION_COMPLETED,
                         "stable",
                         targetDescription,
-                        started));
+                        startedNanos));
 
-        Instant verificationStarted = Instant.now();
+        long verificationStartedNanos = clock.nanoTime();
         events.add(
                 event(
                         actionId,
@@ -308,7 +341,7 @@ final class ActionExecutor {
                         ActionStage.VERIFICATION_STARTED,
                         "started",
                         targetDescription,
-                        started));
+                        startedNanos));
         List<VerificationResult> postconditions;
         try {
             postconditions =
@@ -325,12 +358,12 @@ final class ActionExecutor {
                     command,
                     config,
                     actionId,
-                    started,
+                    startedNanos,
                     events,
-                    resolutionStarted,
+                    resolutionDuration,
                     preconditionDuration,
                     executionDuration,
-                    Duration.between(verificationStarted, Instant.now()),
+                    elapsedSince(verificationStartedNanos),
                     preconditions,
                     List.of(),
                     before,
@@ -342,7 +375,7 @@ final class ActionExecutor {
                     "Action verification was interrupted",
                     failure);
         }
-        Duration verificationDuration = Duration.between(verificationStarted, Instant.now());
+        Duration verificationDuration = elapsedSince(verificationStartedNanos);
         events.add(
                 event(
                         actionId,
@@ -350,7 +383,7 @@ final class ActionExecutor {
                         ActionStage.VERIFICATION_COMPLETED,
                         "completed",
                         targetDescription,
-                        started));
+                        startedNanos));
         Optional<VerificationResult> mismatch =
                 postconditions.stream().filter(result -> !result.success()).findFirst();
         if (mismatch.isPresent()) {
@@ -360,9 +393,9 @@ final class ActionExecutor {
                     command,
                     config,
                     actionId,
-                    started,
+                    startedNanos,
                     events,
-                    resolutionStarted,
+                    resolutionDuration,
                     preconditionDuration,
                     executionDuration,
                     verificationDuration,
@@ -384,7 +417,7 @@ final class ActionExecutor {
 
         Observation after = captureAfter(context, config.options().observationCapture());
         ObservationDiff diff = before == null || after == null ? null : before.diff(after);
-        Duration total = Duration.between(started, Instant.now());
+        Duration total = elapsedSince(startedNanos);
         events.add(
                 event(
                         actionId,
@@ -392,7 +425,7 @@ final class ActionExecutor {
                         ActionStage.ACTION_COMPLETED,
                         "completed",
                         targetDescription,
-                        started));
+                        startedNanos));
         return new ActionResult<>(
                 actionId,
                 command.type(),
@@ -442,12 +475,31 @@ final class ActionExecutor {
         // A plan-time-only budget: never stored in the returned IActionPlan/DefaultActionPlan. A
         // real execution budget is started fresh, independently, when IActionPlan.execute() begins
         // the real pipeline - a plan built minutes ago must not appear pre-expired at that point.
-        WaitBudget prepareBudget = WaitBudget.start(config.options().timeout(), CLOCK);
+        WaitBudget prepareBudget = WaitBudget.start(config.options().timeout(), clock);
         IElement target;
         try {
             target =
                     new ActionTargetResolver()
                             .resolve(command, config.options().resolutionRetry(), prepareBudget);
+        } catch (ActionInterruptedException failure) {
+            Thread.currentThread().interrupt();
+            String targetDescription = describe(null);
+            return new DefaultActionPlan<>(
+                    actionId,
+                    command.type(),
+                    command.idempotency(),
+                    command.sideEffect(),
+                    ActionPlanStatus.BLOCKED,
+                    targetDescription,
+                    List.of(),
+                    expectedPostconditions,
+                    Optional.of(
+                            new ActionFailure(
+                                    ActionFailureType.INTERRUPTED,
+                                    "Action target resolution was interrupted",
+                                    config.sensitive() ? Optional.empty() : Optional.of(failure))),
+                    new ActionDiagnostics(targetDescription, "", Map.of("plan", "blocked")),
+                    executor);
         } catch (RuntimeException failure) {
             String targetDescription = describe(null);
             return new DefaultActionPlan<>(
@@ -528,14 +580,14 @@ final class ActionExecutor {
     }
 
     @SuppressWarnings("checkstyle:ParameterNumber")
-    private static <R> ActionResult<R> failed(
+    private <R> ActionResult<R> failed(
             IActionContext context,
             ActionCommand<R> command,
             ActionExecutionConfig config,
             ActionId actionId,
-            Instant started,
+            long startedNanos,
             List<ActionEvent> events,
-            Instant resolutionStarted,
+            Duration resolutionDuration,
             Duration preconditionDuration,
             Duration executionDuration,
             Duration verificationDuration,
@@ -557,11 +609,10 @@ final class ActionExecutor {
                         ActionStage.ACTION_FAILED,
                         "failed",
                         targetDescription,
-                        started));
+                        startedNanos));
         Observation after = captureFailure(context, config.options().observationCapture());
         ObservationDiff diff = before == null || after == null ? null : before.diff(after);
-        Duration total = Duration.between(started, Instant.now());
-        Duration resolution = Duration.between(resolutionStarted, Instant.now());
+        Duration total = elapsedSince(startedNanos);
         Optional<Throwable> safeCause =
                 cause == null || config.sensitive() ? Optional.empty() : Optional.of(cause);
         return new ActionResult<>(
@@ -573,7 +624,7 @@ final class ActionExecutor {
                 total,
                 new ActionTimings(
                         total,
-                        resolution,
+                        resolutionDuration,
                         preconditionDuration,
                         executionDuration,
                         Duration.ZERO,
@@ -649,13 +700,13 @@ final class ActionExecutor {
         return target == null ? "page" : target.role() + " '" + target.accessibleName() + "'";
     }
 
-    private static ActionEvent event(
+    private ActionEvent event(
             ActionId actionId,
             ActionCommand<?> command,
             ActionStage stage,
             String result,
             String target,
-            Instant started) {
+            long startedNanos) {
         return new ActionEvent(
                 actionId,
                 Instant.now(),
@@ -663,7 +714,11 @@ final class ActionExecutor {
                 command.type(),
                 target,
                 result,
-                Duration.between(started, Instant.now()),
+                elapsedSince(startedNanos),
                 Map.of("idempotency", command.idempotency().name()));
+    }
+
+    private Duration elapsedSince(long startedNanos) {
+        return Duration.ofNanos(Math.max(0L, clock.nanoTime() - startedNanos));
     }
 }

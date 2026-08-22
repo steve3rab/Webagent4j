@@ -39,11 +39,61 @@ public record ActionResult<T>(
         events = List.copyOf(Objects.requireNonNull(events, "events"));
         failure = Objects.requireNonNull(failure, "failure");
         Objects.requireNonNull(diagnostics, "diagnostics");
+        if (duration.isNegative()) {
+            throw new IllegalArgumentException("duration cannot be negative");
+        }
         if (status == ActionStatus.SUCCESS && failure.isPresent()) {
             throw new IllegalArgumentException("successful actions cannot contain a failure");
         }
         if (status != ActionStatus.SUCCESS && failure.isEmpty()) {
             throw new IllegalArgumentException("failed actions must contain a failure");
+        }
+        requireOutcomeShape(status, executionMode, failure.map(ActionFailure::type).orElse(null));
+    }
+
+    private static void requireOutcomeShape(
+            ActionStatus status, ActionExecutionMode executionMode, ActionFailureType failureType) {
+        boolean valid =
+                switch (status) {
+                    case SUCCESS ->
+                            failureType == null
+                                    && (executionMode == ActionExecutionMode.REAL
+                                            || executionMode == ActionExecutionMode.DRY_RUN);
+                    case PRECONDITION_FAILED ->
+                            executionMode == ActionExecutionMode.NOT_EXECUTED
+                                    && failureType == ActionFailureType.PRECONDITION_FAILED;
+                    case EXECUTION_FAILED ->
+                            switch (executionMode) {
+                                case NOT_EXECUTED ->
+                                        failureType == ActionFailureType.TARGET_NOT_FOUND
+                                                || failureType == ActionFailureType.TARGET_AMBIGUOUS
+                                                || failureType == ActionFailureType.BACKEND_FAILURE;
+                                case REAL ->
+                                        failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
+                                                || failureType
+                                                        == ActionFailureType
+                                                                .ACTION_NOT_SUPPORTED_BY_TARGET
+                                                || failureType == ActionFailureType.BACKEND_FAILURE
+                                                || failureType == ActionFailureType.UPLOAD_FAILURE
+                                                || failureType
+                                                        == ActionFailureType.DOWNLOAD_FAILURE;
+                                case DRY_RUN -> false;
+                            };
+                    case VERIFICATION_FAILED ->
+                            executionMode == ActionExecutionMode.REAL
+                                    && failureType == ActionFailureType.POSTCONDITION_FAILED;
+                    case TIMEOUT ->
+                            (executionMode == ActionExecutionMode.REAL
+                                            || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                                    && failureType == ActionFailureType.TIMEOUT;
+                    case CANCELLED ->
+                            (executionMode == ActionExecutionMode.REAL
+                                            || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                                    && failureType == ActionFailureType.INTERRUPTED;
+                };
+        if (!valid) {
+            throw new IllegalArgumentException(
+                    "action status, execution mode, and failure type are inconsistent");
         }
     }
 

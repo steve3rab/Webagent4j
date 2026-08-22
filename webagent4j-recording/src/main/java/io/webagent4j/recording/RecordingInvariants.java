@@ -51,6 +51,9 @@ final class RecordingInvariants {
             WorkflowStatus status,
             List<RecordedWorkflowStep> steps,
             Optional<RecordedFailure> failure) {
+        if (steps.isEmpty()) {
+            throw new IllegalArgumentException("a recording must contain at least one step");
+        }
         requireUniqueStepIds(steps);
         if (status == WorkflowStatus.COMPLETED) {
             requireOnlySucceededOrSkipped(steps);

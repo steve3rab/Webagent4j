@@ -1,10 +1,12 @@
 package io.webagent4j.action;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.webagent4j.verification.VerificationResult;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -114,7 +116,7 @@ class ActionModelTest {
     void rendersCompactActionSummaryForFailureWithoutSensitiveFields() {
         ActionFailure failure =
                 new ActionFailure(
-                        ActionFailureType.TARGET_NOT_INTERACTABLE,
+                        ActionFailureType.PRECONDITION_FAILED,
                         "token=super-secret-value",
                         Optional.empty());
         ActionResult<Void> result =
@@ -140,9 +142,53 @@ class ActionModelTest {
         assertThat(compact)
                 .contains("CLICK BUTTON \"Commander\"")
                 .contains("status=PRECONDITION_FAILED")
-                .contains("failure=TARGET_NOT_INTERACTABLE")
+                .contains("failure=PRECONDITION_FAILED")
                 .contains("duration=73ms");
         assertThat(compact).doesNotContain("token").doesNotContain("super-secret-value");
+    }
+
+    @Test
+    void enforcesTheCompleteStatusExecutionModeAndFailureTypeMatrix() {
+        for (ActionStatus status : ActionStatus.values()) {
+            for (ActionExecutionMode executionMode : ActionExecutionMode.values()) {
+                assertOutcomeShape(status, executionMode, null);
+                for (ActionFailureType failureType : ActionFailureType.values()) {
+                    assertOutcomeShape(status, executionMode, failureType);
+                }
+            }
+        }
+    }
+
+    @Test
+    void rejectsContradictoryFailureCategories() {
+        assertThatThrownBy(
+                        () ->
+                                actionResult(
+                                        ActionStatus.CANCELLED,
+                                        ActionExecutionMode.REAL,
+                                        failure(ActionFailureType.PRECONDITION_FAILED)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                actionResult(
+                                        ActionStatus.PRECONDITION_FAILED,
+                                        ActionExecutionMode.NOT_EXECUTED,
+                                        failure(ActionFailureType.POSTCONDITION_FAILED)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                actionResult(
+                                        ActionStatus.VERIFICATION_FAILED,
+                                        ActionExecutionMode.REAL,
+                                        failure(ActionFailureType.BACKEND_FAILURE)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                actionResult(
+                                        ActionStatus.TIMEOUT,
+                                        ActionExecutionMode.REAL,
+                                        failure(ActionFailureType.INTERRUPTED)))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -160,5 +206,157 @@ class ActionModelTest {
                                         -1,
                                         Optional.empty()))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsNegativeDurationsAndKeepsAuditRenderingStructural() {
+        String sentinel = "WEBAGENT4J_UNTRUSTED_EVENT_TEXT";
+        ActionEvent event =
+                new ActionEvent(
+                        new ActionId("event"),
+                        Instant.EPOCH,
+                        ActionStage.ACTION_COMPLETED,
+                        ActionType.CLICK,
+                        sentinel,
+                        sentinel,
+                        Duration.ZERO,
+                        Map.of("untrusted", sentinel));
+
+        assertThat(event.toString()).doesNotContain(sentinel).contains("ACTION_COMPLETED", "CLICK");
+        assertThatThrownBy(
+                        () ->
+                                new ActionEvent(
+                                        new ActionId("event"),
+                                        Instant.EPOCH,
+                                        ActionStage.ACTION_COMPLETED,
+                                        ActionType.CLICK,
+                                        "target",
+                                        "result",
+                                        Duration.ofNanos(-1),
+                                        Map.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new StabilizationResult(false, Duration.ofNanos(-1), "not stable"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                new ActionResult<>(
+                                        true,
+                                        null,
+                                        Duration.ofNanos(-1),
+                                        List.of(),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsImpossibleStatusAndExecutionModePairs() {
+        ActionFailure failure =
+                new ActionFailure(
+                        ActionFailureType.PRECONDITION_FAILED,
+                        "precondition failed",
+                        Optional.empty());
+
+        assertThatThrownBy(
+                        () ->
+                                actionResult(
+                                        ActionStatus.SUCCESS,
+                                        ActionExecutionMode.NOT_EXECUTED,
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                actionResult(
+                                        ActionStatus.PRECONDITION_FAILED,
+                                        ActionExecutionMode.REAL,
+                                        Optional.of(failure)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                actionResult(
+                                        ActionStatus.EXECUTION_FAILED,
+                                        ActionExecutionMode.DRY_RUN,
+                                        Optional.of(failure)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private static ActionResult<Void> actionResult(
+            ActionStatus status,
+            ActionExecutionMode executionMode,
+            Optional<ActionFailure> failure) {
+        return new ActionResult<>(
+                new ActionId("action"),
+                ActionType.CLICK,
+                executionMode,
+                status,
+                null,
+                Duration.ZERO,
+                ActionTimings.empty(Duration.ZERO),
+                List.of(),
+                List.of(),
+                null,
+                null,
+                null,
+                List.of(),
+                failure,
+                ActionDiagnostics.empty());
+    }
+
+    private static void assertOutcomeShape(
+            ActionStatus status, ActionExecutionMode executionMode, ActionFailureType failureType) {
+        Optional<ActionFailure> failure =
+                failureType == null ? Optional.empty() : failure(failureType);
+        String description = status + "/" + executionMode + "/" + failureType;
+        if (isValidOutcome(status, executionMode, failureType)) {
+            assertThatCode(() -> actionResult(status, executionMode, failure))
+                    .as(description)
+                    .doesNotThrowAnyException();
+        } else {
+            assertThatThrownBy(() -> actionResult(status, executionMode, failure))
+                    .as(description)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    private static Optional<ActionFailure> failure(ActionFailureType failureType) {
+        return Optional.of(new ActionFailure(failureType, "failed", Optional.empty()));
+    }
+
+    private static boolean isValidOutcome(
+            ActionStatus status, ActionExecutionMode executionMode, ActionFailureType failureType) {
+        return switch (status) {
+            case SUCCESS ->
+                    failureType == null
+                            && (executionMode == ActionExecutionMode.REAL
+                                    || executionMode == ActionExecutionMode.DRY_RUN);
+            case PRECONDITION_FAILED ->
+                    executionMode == ActionExecutionMode.NOT_EXECUTED
+                            && failureType == ActionFailureType.PRECONDITION_FAILED;
+            case EXECUTION_FAILED ->
+                    switch (executionMode) {
+                        case NOT_EXECUTED ->
+                                failureType == ActionFailureType.TARGET_NOT_FOUND
+                                        || failureType == ActionFailureType.TARGET_AMBIGUOUS
+                                        || failureType == ActionFailureType.BACKEND_FAILURE;
+                        case REAL ->
+                                failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
+                                        || failureType
+                                                == ActionFailureType.ACTION_NOT_SUPPORTED_BY_TARGET
+                                        || failureType == ActionFailureType.BACKEND_FAILURE
+                                        || failureType == ActionFailureType.UPLOAD_FAILURE
+                                        || failureType == ActionFailureType.DOWNLOAD_FAILURE;
+                        case DRY_RUN -> false;
+                    };
+            case VERIFICATION_FAILED ->
+                    executionMode == ActionExecutionMode.REAL
+                            && failureType == ActionFailureType.POSTCONDITION_FAILED;
+            case TIMEOUT ->
+                    (executionMode == ActionExecutionMode.REAL
+                                    || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                            && failureType == ActionFailureType.TIMEOUT;
+            case CANCELLED ->
+                    (executionMode == ActionExecutionMode.REAL
+                                    || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                            && failureType == ActionFailureType.INTERRUPTED;
+        };
     }
 }

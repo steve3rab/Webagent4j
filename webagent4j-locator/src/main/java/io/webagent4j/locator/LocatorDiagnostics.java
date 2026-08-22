@@ -74,6 +74,9 @@ public record LocatorDiagnostics(
                 || fuzzyMatches < 0) {
             throw new IllegalArgumentException("diagnostic counts cannot be negative");
         }
+        if (duration.isNegative()) {
+            throw new IllegalArgumentException("duration cannot be negative");
+        }
         if (budgetReached != !reachedLimits.isEmpty()) {
             throw new IllegalArgumentException("budgetReached must agree with reachedLimits");
         }
@@ -90,6 +93,9 @@ public record LocatorDiagnostics(
         public StrategyExecution {
             Objects.requireNonNull(strategy, "strategy");
             Objects.requireNonNull(duration, "duration");
+            if (duration.isNegative()) {
+                throw new IllegalArgumentException("duration cannot be negative");
+            }
             if (candidatesDiscovered < 0 || candidatesAccepted < 0) {
                 throw new IllegalArgumentException("strategy counts cannot be negative");
             }

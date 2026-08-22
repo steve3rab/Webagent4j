@@ -85,6 +85,11 @@ action-backed step is recorded identically, categorically, regardless of its `Ac
 
 ## Recording validity: a recording represents one fail-fast execution
 
+The live `WorkflowResult`, `WorkflowStepResult`, and `WorkflowFailure` constructors enforce the
+same engine-reachable invariants listed below. Recording remains strict when data arrives from JSON,
+but it is no longer the first module to discover an impossible live workflow shape. This alignment
+does not change schema V1 or replay comparison semantics.
+
 `WorkflowEngine` (Phase 0.8) is sequential and fail-fast: every step runs in definition order, and
 the first `FAILED` step stops execution immediately, with every later step recorded as `NOT_RUN`.
 `WorkflowRecording`'s constructor - via the package-private `RecordingInvariants` helper - enforces
@@ -92,14 +97,16 @@ the shapes that fact actually guarantees, so a recording that could never come f
 is rejected at construction time, whether built directly, produced by `WorkflowRecorder`, or decoded
 by `JsonWorkflowRecordingCodec`:
 
+- A recording contains at least one step; schema V1 documents with an empty `steps` array are
+  invalid for both `COMPLETED` and preflight `FAILED` outcomes.
 - Every `stepId` in `steps()` is unique.
 - **`COMPLETED`**: every step is `SUCCEEDED` or `SKIPPED` - never `FAILED`, never `NOT_RUN`.
 - **`FAILED` before execution (preflight)**: raised by `WorkflowEngine.Session#validateAndSeedInputs`
   before step 0 ever runs, so it can *only* be one of the three preflight failure types -
   `MISSING_REQUIRED_INPUT`, `INPUT_TYPE_MISMATCH`, `UNDECLARED_INPUT` - and *only* one of those three
   may ever omit a `stepId`. Concretely: the overall failure carries no `stepId`, no
-  `underlyingTypeName`, and no `actionFailureType`, and every step is `NOT_RUN` (there may be zero
-  steps). Every other failure type is a **runtime** failure and is rejected unless it carries the
+  `underlyingTypeName`, and no `actionFailureType`, and every step is `NOT_RUN`. Every other failure
+  type is a **runtime** failure and is rejected unless it carries the
   failing step's `stepId` - a runtime failure type with no `stepId` is invalid even if every step
   happens to be `NOT_RUN`, since the *type* alone determines which shape is legal, not how the steps
   happen to look.
@@ -135,7 +142,7 @@ source, for every `FAILED` step:
 | `MISSING_VARIABLE` | `ACTION` only | absent | n/a |
 | `ACTION_FACTORY_FAILED` | `ACTION` only | absent | n/a |
 | `STEP_EXCEPTION` | `ACTION` only | absent | n/a |
-| `ACTION_FAILED` | `ACTION` only | present | != `SUCCESS` |
+| `ACTION_FAILED` | `ACTION` only | present | Exact action status/mode/failure matrix from [Actions](actions.md#execution-mode-and-semantics) |
 | `NULL_OUTPUT` | `ACTION` only | present | `SUCCESS` |
 | `OUTPUT_TYPE_MISMATCH` | `ACTION` only | present | `SUCCESS` |
 
@@ -146,11 +153,14 @@ its own, so every other runtime type is impossible on `ASSIGN` today (a structur
 AssignWorkflowStep` closed hierarchy makes provable, not merely conventional). `NULL_OUTPUT` and
 `OUTPUT_TYPE_MISMATCH` report `ActionStatus.SUCCESS` because both are raised only *after* the action
 itself already succeeded, while validating the declared output; `ACTION_FAILED`'s summary is built
-from the same non-success `ActionResult` that caused the failure, so it always carries a present
-`ActionFailureType` and a non-success status (`ActionResult`'s own invariant guarantees `status ==
-SUCCESS` if and only if its `failure` is absent). This module never assumes a `FAILED` `ACTION`
-step's action-summary status correlates with the step's own terminal status beyond this table - it
-enforces the table directly instead.
+from the same non-success `ActionResult` that caused the failure, so its status, execution mode, and
+present `ActionFailureType` must preserve the exact action matrix. A merely non-success status is
+insufficient. The constructor and strict JSON decoder reject contradictory projections directly.
+For interruption, schema V1 records `CANCELLED/NOT_EXECUTED/INTERRUPTED` when cancellation happened
+before backend invocation and `CANCELLED/REAL/INTERRUPTED` after invocation or once a side effect
+may have started. Both shapes preserve the upstream distinction without adding or reordering JSON
+fields; `CANCELLED/DRY_RUN` and every cancellation failure type other than `INTERRUPTED` remain
+invalid.
 
 ### Full equality vs. replay semantics
 

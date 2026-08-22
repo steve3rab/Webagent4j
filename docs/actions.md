@@ -70,6 +70,11 @@ of postconditions can never silently add up to several times the configured time
 [wait-and-stability.md](wait-and-stability.md) for the shared polling primitive behind this and
 behind locator resolution.
 
+The same monotonic clock measures the total action duration, every phase in `ActionTimings`, and
+every `ActionEvent.duration()`. Wall-clock time is used only for the event's absolute audit
+`timestamp`; a wall-clock correction cannot make elapsed action timing negative or change timeout
+arithmetic.
+
 ## Observations and semantic diff
 
 Use `captureObservations(ObservationCapturePolicy.ALWAYS)` to retain immutable observations before
@@ -86,10 +91,20 @@ escaping the requested directory.
 
 ## Secrets
 
-Use `Secret.of(...)` and `typeSecret(...)` for passwords, tokens, and similar input. `Secret.toString()`
-is always redacted. Action events, failures, diagnostics, observations, and result rendering must not
-contain the original value. Avoid placing secrets in locator names, URLs, filenames, or custom
-predicate messages.
+Use `Secret.of(...)` and `typeSecret(...)` for passwords, tokens, and similar input.
+`Secret.toString()` is always redacted. Avoid placing secrets in locator names, URLs, filenames, or
+custom predicate messages.
+
+`ActionEvent` retains its target, result, and metadata through explicit accessors for in-process
+audit consumers, but its framework-owned `toString()` is structural and excludes all three text
+sources. Treat accessor values as untrusted and apply an application-owned redaction policy before
+logging or persistence. Action, event, timing, and stabilization elapsed durations are always
+non-negative.
+
+Only a surface explicitly documented as safe or structural - such as `Secret#toString()`,
+`ActionEvent#toString()`, or `ActionResult#toCompactText()` - provides that rendering guarantee.
+`ActionResult` is a general value object whose ordinary record `toString()` can traverse its value,
+observations, diagnostics, and retained failure cause; it is not a logging or persistence boundary.
 
 ## Failure semantics
 
@@ -121,14 +136,37 @@ including a real backend or runtime failure such as a browser crash or a disconn
 - `DRY_RUN` - target resolution and preconditions were validated, but the backend was never invoked.
   `dryRun()` returns `true` only for this mode.
 - `NOT_EXECUTED` - the pipeline stopped before the backend stage: resolution failed, the target was
-  ambiguous, or a precondition failed.
+  ambiguous, a precondition failed, or target-resolution retry was interrupted.
+
+Construction enforces the complete outcome matrix below. Any other
+status/execution-mode/failure-type combination is rejected:
+
+| `ActionStatus` | `ActionExecutionMode` | Failure |
+| --- | --- | --- |
+| `SUCCESS` | `REAL` or `DRY_RUN` | absent |
+| `PRECONDITION_FAILED` | `NOT_EXECUTED` | `PRECONDITION_FAILED` |
+| `EXECUTION_FAILED` | `NOT_EXECUTED` | `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, or `BACKEND_FAILURE` |
+| `EXECUTION_FAILED` | `REAL` | `TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`, `UPLOAD_FAILURE`, or `DOWNLOAD_FAILURE` |
+| `VERIFICATION_FAILED` | `REAL` | `POSTCONDITION_FAILED` |
+| `TIMEOUT` | `NOT_EXECUTED` or `REAL` | `TIMEOUT` |
+| `CANCELLED` | `NOT_EXECUTED` or `REAL` | `INTERRUPTED` |
+
+For cancellation, `NOT_EXECUTED` means interruption was observed before backend invocation, so
+`executed()` is `false`. `REAL` means the backend was already invoked or a side effect may have
+started, so `executed()` is `true`. The caller thread's interrupt flag is preserved in both cases,
+and `CANCELLED` is never a `DRY_RUN` outcome.
+
+`BACKEND_FAILURE` can be `NOT_EXECUTED` when an opaque backend failure occurs during resolution,
+before invocation, or `REAL` when the backend action call itself fails. `TARGET_NOT_INTERACTABLE`
+remains a supported public category for a real attempted execution; the current built-in pipeline
+normally detects non-interactability during preconditions and emits `PRECONDITION_FAILED` instead.
 
 The legacy `ActionResult(boolean, ...)` constructor cannot observe the true execution mode, so it
 always reports `REAL` regardless of whether `success` is `true` or `false` - this is the fail-safe
-choice, since `executed() == true` signals "already attempted, do not blindly retry", and an
-unattempted failure wrongly marked `REAL` is far less dangerous than an attempted failure wrongly
-marked `NOT_EXECUTED`. It is deprecated in favor of the canonical constructor or the explicit
-`ActionExecutionMode` overload.
+choice, since `executed() == true` signals "already attempted, do not blindly retry". Its failure
+category must therefore be one allowed for `EXECUTION_FAILED`/`REAL`; callers representing a known
+pre-backend failure must use the canonical constructor or the explicit `ActionExecutionMode`
+overload. The boolean-only constructor remains deprecated.
 
 ## Dry-run
 
@@ -174,6 +212,9 @@ unambiguously and every precondition held at that moment; otherwise `BLOCKED`, w
 `ActionFailure` reusing the same `ActionFailureType` values as `ActionResult`. `IActionPlan` is
 obtained only through `plan()`: its sole implementation is package-private, so there is no public
 constructor to build a plan by hand or bypass its execution guard.
+
+If target-resolution retry is interrupted while planning, the caller's interrupt flag remains set
+and the plan is `BLOCKED` with `ActionFailureType.INTERRUPTED`; the backend is never invoked.
 
 A plan is a snapshot, not a guarantee. `IActionPlan.execute()` never trusts it: it reruns the entire
 pipeline from scratch, so target resolution, ambiguity detection, and preconditions are all

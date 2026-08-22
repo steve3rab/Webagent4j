@@ -32,7 +32,7 @@ class RecordingDecoderErrorSafetyTest {
     /** ERR-SAFE-001: an unknown external field's own name is never echoed. */
     @Test
     void errSafe001UnknownFieldNameNeverEchoed() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted =
                 valid.substring(0, valid.length() - 1) + ",\"" + FIELD_SENTINEL + "\":1}";
 
@@ -66,7 +66,7 @@ class RecordingDecoderErrorSafetyTest {
     /** ERR-SAFE-003: a duplicated external field's own sentinel name is never echoed. */
     @Test
     void errSafe003DuplicateExternalFieldNeverEchoed() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted =
                 valid.replaceFirst(
                         "\\{", "{\"" + FIELD_SENTINEL + "\":1,\"" + FIELD_SENTINEL + "\":2,");
@@ -103,7 +103,7 @@ class RecordingDecoderErrorSafetyTest {
     /** ERR-SAFE-005: a malformed Instant's own sentinel text is never echoed. */
     @Test
     void errSafe005MalformedInstantNeverEchoed() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid.replace("\"2026-01-01T00:00:00Z\"", "\"" + VALUE_SENTINEL + "\"");
 
         RecordingFormatException exception =
@@ -120,7 +120,7 @@ class RecordingDecoderErrorSafetyTest {
     /** ERR-SAFE-006: an unsupported schemaVersion's raw numeric value stays out of the message. */
     @Test
     void errSafe006UnsupportedSchemaVersionNeverEchoesRawValue() {
-        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf", List.of()));
+        String valid = codec.encode(RecordingFixtures.minimalCompleted("wf"));
         String corrupted = valid.replace("\"schemaVersion\":1", "\"schemaVersion\":48271");
 
         RecordingFormatException exception =

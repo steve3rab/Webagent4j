@@ -323,6 +323,8 @@ performed a real side effect, and an automatic replay could resubmit, delete, pa
 secret - see [Secret masking](#secret-masking)); `WorkflowResult#throwIfFailed()`
 is an optional convenience mirroring `ActionResult#throwIfFailed()`, and the resulting
 `WorkflowFailedException`'s message is built from the already-safe, already-redacted result.
+Every result contains at least one step, matching `Workflow.Builder#build()`'s non-empty definition
+contract; this also applies to preflight failures where every step is `NOT_RUN`.
 
 Each `WorkflowStepResult` carries a `WorkflowStepStatus`:
 
@@ -332,6 +334,23 @@ Each `WorkflowStepResult` carries a `WorkflowStepStatus`:
 - `FAILED` - the step itself, or its condition's evaluation, failed.
 - `NOT_RUN` - the workflow had already failed at an earlier step; recorded so the result always
   preserves the workflow's complete step order, even for steps that never ran.
+
+Direct construction follows the exact same reachable-state contract as engine execution and
+recording: completed results contain only succeeded/skipped steps; preflight failures name no step
+and leave every step `NOT_RUN`; runtime failures contain exactly one matching `FAILED` step, with
+only succeeded/skipped predecessors and `NOT_RUN` successors. Step constructors also enforce the
+engine's output, condition, failure, and action-summary shapes. Consequently, every accepted public
+`WorkflowResult` can be projected into recording schema V1 without discovering a stricter invariant
+in the downstream module.
+
+For an `ACTION_FAILED` step, the projected `ActionStatus`, `ActionExecutionMode`, and
+`ActionFailureType` must form one of the exact combinations documented in
+[Actions](actions.md#execution-mode-and-semantics). A merely non-success action status is not enough;
+contradictory categories such as `CANCELLED/PRECONDITION_FAILED` are rejected at construction.
+An interrupted action projects as `CANCELLED/NOT_EXECUTED/INTERRUPTED` when the backend was not
+invoked, or `CANCELLED/REAL/INTERRUPTED` once it was invoked or a side effect may have started.
+This distinction is retained so callers do not infer that retrying a `REAL` cancellation is safe;
+`CANCELLED/DRY_RUN` is always invalid.
 
 ## Failure semantics
 

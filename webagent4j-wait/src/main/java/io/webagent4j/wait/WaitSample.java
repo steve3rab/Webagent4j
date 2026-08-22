@@ -37,6 +37,9 @@ public record WaitSample<T>(Status status, Optional<T> value, Optional<Object> s
         if (status == Status.PENDING && stabilityKey.isPresent()) {
             throw new IllegalArgumentException("a pending sample must not carry a stability key");
         }
+        if (status == Status.SATISFIED && value.isEmpty()) {
+            throw new IllegalArgumentException("a satisfied sample must carry a value");
+        }
     }
 
     /**

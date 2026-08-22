@@ -10,6 +10,9 @@ public record StabilizationResult(boolean stable, Duration duration, String desc
     public StabilizationResult {
         Objects.requireNonNull(duration, "duration");
         description = Objects.requireNonNull(description, "description");
+        if (duration.isNegative()) {
+            throw new IllegalArgumentException("duration cannot be negative");
+        }
     }
 
     /** Returns the zero-cost default relying on backend actionability and verification polling. */

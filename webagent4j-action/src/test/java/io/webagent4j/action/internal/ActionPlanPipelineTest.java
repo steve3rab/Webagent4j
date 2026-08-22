@@ -13,12 +13,15 @@ import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionContext;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.Secret;
+import io.webagent4j.common.RetryPolicy;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.locator.api.ElementRole;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -58,6 +61,38 @@ class ActionPlanPipelineTest {
         assertThat(plan.failure().orElseThrow().type())
                 .isEqualTo(ActionFailureType.TARGET_NOT_FOUND);
         verifyNoInteractions(backend);
+    }
+
+    @Test
+    void preservesAnInterruptedResolutionAsABlockedPlan() {
+        IActionBackend backend = mock(IActionBackend.class);
+        AtomicInteger resolutionAttempts = new AtomicInteger();
+
+        try {
+            IActionPlan<Void> plan =
+                    new DefaultActionBuilder(context(backend))
+                            .click(
+                                    () -> {
+                                        resolutionAttempts.incrementAndGet();
+                                        Thread.currentThread().interrupt();
+                                        throw new LocatorNotFoundException("missing");
+                                    })
+                            .retry(
+                                    new RetryPolicy(
+                                            2, Duration.ofSeconds(1), 1.0, Duration.ofSeconds(1)))
+                            .plan();
+
+            assertThat(plan.status()).isEqualTo(ActionPlanStatus.BLOCKED);
+            assertThat(plan.ready()).isFalse();
+            assertThat(plan.failure()).isPresent();
+            assertThat(plan.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.INTERRUPTED);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            assertThat(resolutionAttempts).hasValue(1);
+            verifyNoInteractions(backend);
+        } finally {
+            Thread.interrupted();
+        }
     }
 
     @Test
@@ -156,6 +191,43 @@ class ActionPlanPipelineTest {
         assertThat(plan.targetDescription()).doesNotContain(marker);
         assertThat(plan.diagnostics().toString()).doesNotContain(marker);
         assertThat(plan.toString()).doesNotContain(marker);
+    }
+
+    @Test
+    void redactsSensitiveDetailsWhenPlanningIsInterrupted() {
+        String marker = "WEBAGENT4J_INTERRUPTED_PLAN_SECRET";
+        IActionBackend backend = mock(IActionBackend.class);
+        AtomicInteger resolutionAttempts = new AtomicInteger();
+        IElement target = mock(IElement.class);
+        org.mockito.Mockito.when(target.state())
+                .thenAnswer(
+                        ignored -> {
+                            resolutionAttempts.incrementAndGet();
+                            Thread.currentThread().interrupt();
+                            throw new LocatorNotFoundException(marker);
+                        });
+
+        try {
+            IActionPlan<Void> plan =
+                    new DefaultActionBuilder(context(backend))
+                            .typeSecret(target, Secret.of(marker))
+                            .retry(
+                                    new RetryPolicy(
+                                            2, Duration.ofSeconds(1), 1.0, Duration.ofSeconds(1)))
+                            .plan();
+
+            assertThat(plan.status()).isEqualTo(ActionPlanStatus.BLOCKED);
+            assertThat(plan.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.INTERRUPTED);
+            assertThat(plan.failure().orElseThrow().cause()).isEmpty();
+            assertThat(plan.diagnostics().toString()).doesNotContain(marker);
+            assertThat(plan.toString()).doesNotContain(marker);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            assertThat(resolutionAttempts).hasValue(1);
+            verifyNoInteractions(backend);
+        } finally {
+            Thread.interrupted();
+        }
     }
 
     private static IActionContext context(IActionBackend backend) {

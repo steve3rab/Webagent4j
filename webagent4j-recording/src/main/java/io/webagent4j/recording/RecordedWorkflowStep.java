@@ -1,5 +1,7 @@
 package io.webagent4j.recording;
 
+import io.webagent4j.action.ActionExecutionMode;
+import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionStatus;
 import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowStepId;
@@ -68,7 +70,7 @@ public record RecordedWorkflowStep(
                 throw new IllegalArgumentException(
                         "a FAILED step's own failure.stepId must equal the step's own stepId");
             }
-            requireFailureShapeMatchesStepTypeAndAction(stepType, stepFailure.type(), action);
+            requireFailureShapeMatchesStepTypeAndAction(stepType, stepFailure, action);
         }
         if (stepType == WorkflowStepType.ASSIGN
                 && status == WorkflowStepStatus.SUCCEEDED
@@ -152,9 +154,8 @@ public record RecordedWorkflowStep(
      * </ul>
      */
     private static void requireFailureShapeMatchesStepTypeAndAction(
-            WorkflowStepType stepType,
-            WorkflowFailureType failureType,
-            Optional<RecordedAction> action) {
+            WorkflowStepType stepType, RecordedFailure failure, Optional<RecordedAction> action) {
+        WorkflowFailureType failureType = failure.type();
         switch (failureType) {
             case MISSING_REQUIRED_INPUT, INPUT_TYPE_MISMATCH, UNDECLARED_INPUT ->
                     throw new IllegalArgumentException(
@@ -166,7 +167,12 @@ public record RecordedWorkflowStep(
             }
             case ACTION_FAILED -> {
                 requireActionStepType(stepType, failureType);
-                requireActionSummaryWithNonSuccessStatus(action, failureType);
+                RecordedAction summary =
+                        requireActionSummaryWithNonSuccessStatus(action, failureType);
+                requireActionFailureOutcome(
+                        summary.status(),
+                        summary.executionMode(),
+                        failure.actionFailureType().orElseThrow());
             }
             case NULL_OUTPUT, OUTPUT_TYPE_MISMATCH -> {
                 requireActionStepType(stepType, failureType);
@@ -200,7 +206,7 @@ public record RecordedWorkflowStep(
         }
     }
 
-    private static void requireActionSummaryWithNonSuccessStatus(
+    private static RecordedAction requireActionSummaryWithNonSuccessStatus(
             Optional<RecordedAction> action, WorkflowFailureType failureType) {
         if (action.isEmpty()) {
             throw new IllegalArgumentException(failureType + " must carry an action summary");
@@ -208,6 +214,50 @@ public record RecordedWorkflowStep(
         if (action.get().status() == ActionStatus.SUCCESS) {
             throw new IllegalArgumentException(
                     failureType + "'s action summary must not report ActionStatus.SUCCESS");
+        }
+        return action.get();
+    }
+
+    private static void requireActionFailureOutcome(
+            ActionStatus status, ActionExecutionMode executionMode, ActionFailureType failureType) {
+        boolean valid =
+                switch (status) {
+                    case PRECONDITION_FAILED ->
+                            executionMode == ActionExecutionMode.NOT_EXECUTED
+                                    && failureType == ActionFailureType.PRECONDITION_FAILED;
+                    case EXECUTION_FAILED ->
+                            switch (executionMode) {
+                                case NOT_EXECUTED ->
+                                        failureType == ActionFailureType.TARGET_NOT_FOUND
+                                                || failureType == ActionFailureType.TARGET_AMBIGUOUS
+                                                || failureType == ActionFailureType.BACKEND_FAILURE;
+                                case REAL ->
+                                        failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
+                                                || failureType
+                                                        == ActionFailureType
+                                                                .ACTION_NOT_SUPPORTED_BY_TARGET
+                                                || failureType == ActionFailureType.BACKEND_FAILURE
+                                                || failureType == ActionFailureType.UPLOAD_FAILURE
+                                                || failureType
+                                                        == ActionFailureType.DOWNLOAD_FAILURE;
+                                case DRY_RUN -> false;
+                            };
+                    case VERIFICATION_FAILED ->
+                            executionMode == ActionExecutionMode.REAL
+                                    && failureType == ActionFailureType.POSTCONDITION_FAILED;
+                    case TIMEOUT ->
+                            (executionMode == ActionExecutionMode.REAL
+                                            || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                                    && failureType == ActionFailureType.TIMEOUT;
+                    case CANCELLED ->
+                            (executionMode == ActionExecutionMode.REAL
+                                            || executionMode == ActionExecutionMode.NOT_EXECUTED)
+                                    && failureType == ActionFailureType.INTERRUPTED;
+                    case SUCCESS -> false;
+                };
+        if (!valid) {
+            throw new IllegalArgumentException(
+                    "action status, execution mode, and failure type are inconsistent");
         }
     }
 }
