@@ -70,6 +70,11 @@ of postconditions can never silently add up to several times the configured time
 [wait-and-stability.md](wait-and-stability.md) for the shared polling primitive behind this and
 behind locator resolution.
 
+The same monotonic clock measures the total action duration, every phase in `ActionTimings`, and
+every `ActionEvent.duration()`. Wall-clock time is used only for the event's absolute audit
+`timestamp`; a wall-clock correction cannot make elapsed action timing negative or change timeout
+arithmetic.
+
 ## Observations and semantic diff
 
 Use `captureObservations(ObservationCapturePolicy.ALWAYS)` to retain immutable observations before
@@ -86,16 +91,20 @@ escaping the requested directory.
 
 ## Secrets
 
-Use `Secret.of(...)` and `typeSecret(...)` for passwords, tokens, and similar input. `Secret.toString()`
-is always redacted. Action events, failures, diagnostics, observations, and result rendering must not
-contain the original value. Avoid placing secrets in locator names, URLs, filenames, or custom
-predicate messages.
+Use `Secret.of(...)` and `typeSecret(...)` for passwords, tokens, and similar input.
+`Secret.toString()` is always redacted. Avoid placing secrets in locator names, URLs, filenames, or
+custom predicate messages.
 
 `ActionEvent` retains its target, result, and metadata through explicit accessors for in-process
 audit consumers, but its framework-owned `toString()` is structural and excludes all three text
 sources. Treat accessor values as untrusted and apply an application-owned redaction policy before
 logging or persistence. Action, event, timing, and stabilization elapsed durations are always
 non-negative.
+
+Only a surface explicitly documented as safe or structural - such as `Secret#toString()`,
+`ActionEvent#toString()`, or `ActionResult#toCompactText()` - provides that rendering guarantee.
+`ActionResult` is a general value object whose ordinary record `toString()` can traverse its value,
+observations, diagnostics, and retained failure cause; it is not a logging or persistence boundary.
 
 ## Failure semantics
 
@@ -129,17 +138,30 @@ including a real backend or runtime failure such as a browser crash or a disconn
 - `NOT_EXECUTED` - the pipeline stopped before the backend stage: resolution failed, the target was
   ambiguous, or a precondition failed.
 
-Construction rejects impossible pairs: success cannot be `NOT_EXECUTED`, only success may be
-`DRY_RUN`, precondition failure is always `NOT_EXECUTED`, and verification failure/cancellation is
-always `REAL`. Execution failure and timeout may be either `NOT_EXECUTED` or `REAL`, because they
-can occur before invocation or after a real attempt whose side effect may be uncertain.
+Construction enforces the complete outcome matrix below. Any other
+status/execution-mode/failure-type combination is rejected:
+
+| `ActionStatus` | `ActionExecutionMode` | Failure |
+| --- | --- | --- |
+| `SUCCESS` | `REAL` or `DRY_RUN` | absent |
+| `PRECONDITION_FAILED` | `NOT_EXECUTED` | `PRECONDITION_FAILED` |
+| `EXECUTION_FAILED` | `NOT_EXECUTED` | `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, or `BACKEND_FAILURE` |
+| `EXECUTION_FAILED` | `REAL` | `TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`, `UPLOAD_FAILURE`, or `DOWNLOAD_FAILURE` |
+| `VERIFICATION_FAILED` | `REAL` | `POSTCONDITION_FAILED` |
+| `TIMEOUT` | `NOT_EXECUTED` or `REAL` | `TIMEOUT` |
+| `CANCELLED` | `REAL` | `INTERRUPTED` |
+
+`BACKEND_FAILURE` can be `NOT_EXECUTED` when an opaque backend failure occurs during resolution,
+before invocation, or `REAL` when the backend action call itself fails. `TARGET_NOT_INTERACTABLE`
+remains a supported public category for a real attempted execution; the current built-in pipeline
+normally detects non-interactability during preconditions and emits `PRECONDITION_FAILED` instead.
 
 The legacy `ActionResult(boolean, ...)` constructor cannot observe the true execution mode, so it
 always reports `REAL` regardless of whether `success` is `true` or `false` - this is the fail-safe
-choice, since `executed() == true` signals "already attempted, do not blindly retry", and an
-unattempted failure wrongly marked `REAL` is far less dangerous than an attempted failure wrongly
-marked `NOT_EXECUTED`. It is deprecated in favor of the canonical constructor or the explicit
-`ActionExecutionMode` overload.
+choice, since `executed() == true` signals "already attempted, do not blindly retry". Its failure
+category must therefore be one allowed for `EXECUTION_FAILED`/`REAL`; callers representing a known
+pre-backend failure must use the canonical constructor or the explicit `ActionExecutionMode`
+overload. The boolean-only constructor remains deprecated.
 
 ## Dry-run
 

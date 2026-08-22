@@ -323,6 +323,8 @@ performed a real side effect, and an automatic replay could resubmit, delete, pa
 secret - see [Secret masking](#secret-masking)); `WorkflowResult#throwIfFailed()`
 is an optional convenience mirroring `ActionResult#throwIfFailed()`, and the resulting
 `WorkflowFailedException`'s message is built from the already-safe, already-redacted result.
+Every result contains at least one step, matching `Workflow.Builder#build()`'s non-empty definition
+contract; this also applies to preflight failures where every step is `NOT_RUN`.
 
 Each `WorkflowStepResult` carries a `WorkflowStepStatus`:
 
@@ -340,6 +342,11 @@ only succeeded/skipped predecessors and `NOT_RUN` successors. Step constructors 
 engine's output, condition, failure, and action-summary shapes. Consequently, every accepted public
 `WorkflowResult` can be projected into recording schema V1 without discovering a stricter invariant
 in the downstream module.
+
+For an `ACTION_FAILED` step, the projected `ActionStatus`, `ActionExecutionMode`, and
+`ActionFailureType` must form one of the exact combinations documented in
+[Actions](actions.md#execution-mode-and-semantics). A merely non-success action status is not enough;
+contradictory categories such as `CANCELLED/PRECONDITION_FAILED` are rejected at construction.
 
 ## Failure semantics
 

@@ -40,24 +40,30 @@ The modules intentionally retain domain-specific result types. A universal `Resu
 erase important differences such as a wait's last value, an action's execution mode, a crawler's
 partial page set, and a workflow's full fail-fast trace.
 
-Action status/execution-mode pairs remain consistent through `ActionResult`,
-`WorkflowActionSummary`, and `RecordedAction`: success is real or dry-run, dry-run is successful,
-precondition failure is not executed, and verification failure/cancellation follows a real backend
-attempt. Resolution/execution failure and timeout deliberately allow either `NOT_EXECUTED` or
-`REAL`, because the pipeline may fail before invocation or after an uncertain attempted side effect.
+The exact action status/execution-mode/failure-type matrix is enforced at every layer that carries
+all three fields: `ActionResult`, a workflow `ACTION_FAILED` projection, and a recorded
+`ACTION_FAILED` projection. Success is `REAL` or `DRY_RUN` without a failure; precondition failure
+is `NOT_EXECUTED/PRECONDITION_FAILED`; resolution failure is
+`EXECUTION_FAILED/NOT_EXECUTED` with `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, or
+`BACKEND_FAILURE`; an attempted execution failure is `EXECUTION_FAILED/REAL` with
+`TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`,
+`UPLOAD_FAILURE`, or `DOWNLOAD_FAILURE`; verification failure is
+`VERIFICATION_FAILED/REAL/POSTCONDITION_FAILED`; timeout is `NOT_EXECUTED` or `REAL` with
+`TIMEOUT`; cancellation is `CANCELLED/REAL/INTERRUPTED`.
 
 ### Workflow and recording projection
 
 Every public `WorkflowResult` accepted by its constructors is now representable by the recording
 model:
 
+- every result and recording contains at least one step;
 - a completed result contains only `SUCCEEDED` and `SKIPPED` steps;
 - a preflight failure has no step ID and every step is `NOT_RUN`;
 - a runtime failure has exactly one matching `FAILED` step, only successful/skipped predecessors,
   and only `NOT_RUN` successors;
 - a failed step publishes no output, and its own failure names that step;
 - `ASSIGN` and `ACTION` steps carry only the output/action-summary shapes the engine can emit;
-- only `ACTION_FAILED` carries `ActionFailureType`.
+- only `ACTION_FAILED` carries `ActionFailureType`, and it obeys the exact action matrix above.
 
 These are constructor invariants, not a second workflow execution algorithm. Recording schema V1
 is unchanged.
@@ -69,7 +75,7 @@ is unchanged.
 | Wait | `WaitBudget` accepts zero for one immediate probe | Injected monotonic clock | Poll interval and stability window are positive |
 | Locator | Positive definition/config timeout | One shared `WaitBudget` per resolution | Always performs the documented immediate probe; browser adapter precision is whole milliseconds where Playwright requires it |
 | Verification | Positive polling interval; timeout or shared budget supplied by caller | Shared monotonic budget when the budget overload is used | The fixed-duration `awaitAll` overload intentionally gives each verification its own timeout |
-| Action | Positive overall action timeout | One monotonic budget shared by resolution, stabilization, and postconditions | An already-running backend side effect is not forcibly interrupted when the budget expires |
+| Action | Positive overall action timeout | One monotonic clock for the shared budget, total/phase/event elapsed timing; wall clock only for absolute audit timestamps | An already-running backend side effect is not forcibly interrupted when the budget expires |
 | HTTP crawler/fetch | Positive request/crawl timeouts | Monotonic elapsed measurement | `HttpFetchRequest` rejects zero; HTTP status responses are not timeout failures |
 | Browser crawler | Positive whole-millisecond navigation timeout and stability window | One navigation/stability budget | Stability cannot exceed navigation timeout |
 | Observation | Positive observation budget | Monotonic elapsed enforcement | Snapshot/statistics/event elapsed durations are non-negative |
@@ -121,8 +127,9 @@ crawling. Those operations have different side-effect and partial-result semanti
 | Plugin identifiers, versions, strategy IDs | Treated as trusted diagnostic metadata after validation | Provider/application owns their content |
 | SPI callbacks | Trusted in-process code, not sandboxed | Callback failures follow the declaring SPI contract |
 
-Framework-owned `toString()`, exception messages, and safe diagnostic projections do not invoke or
-copy arbitrary untrusted text unless the domain contract explicitly labels that field caller-owned.
+Only surfaces explicitly documented as safe or structural diagnostic renderings provide a
+no-untrusted-text guarantee. General value/result `toString()` output must not be treated as a
+logging or persistence boundary unless its domain contract explicitly documents that guarantee.
 Native Java serialization is not a persistence contract; recording JSON V1 is the only stable
 framework-owned persistence format.
 

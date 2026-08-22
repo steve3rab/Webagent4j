@@ -14,6 +14,13 @@ documented in [docs/contracts.md](docs/contracts.md).
 
 - Action and workflow projection constructors now accept only status/execution and sequential
   fail-fast shapes that the engines can produce and the recording model can represent.
+- Action results and their workflow/recording `ACTION_FAILED` projections now enforce one exact
+  status/execution-mode/failure-type matrix; contradictory categories are rejected during direct
+  construction and strict recording decode.
+- Workflow results and recordings now require at least one step, including completed and preflight
+  failure traces; recording JSON schema V1 is unchanged and an empty V1 trace is invalid.
+- Action totals, phases, and event elapsed values now use the same monotonic clock as the action
+  budget; wall-clock time is limited to absolute audit timestamps.
 - Public elapsed durations consistently reject negative values; HTTP request timeouts are positive;
   impossible wait and verification status combinations fail at construction.
 - Playwright locator and frame URL inspection convert a typed timeout to absence only after a fresh
@@ -23,6 +30,8 @@ documented in [docs/contracts.md](docs/contracts.md).
   propagate.
 - `ActionEvent#toString()` now renders structural audit fields only and excludes target, result, and
   caller metadata text.
+- Security guidance now limits safe-rendering guarantees to explicitly documented structural/safe
+  surfaces; general result/value `toString()` output is not a logging or persistence boundary.
 - Observation threading documentation now states the actual conditional guarantee: the engine keeps
   no per-call mutable state, but concurrent sharing also requires concurrency-safe injected
   collaborators.
