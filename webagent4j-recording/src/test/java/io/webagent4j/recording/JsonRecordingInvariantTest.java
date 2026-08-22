@@ -3,6 +3,8 @@ package io.webagent4j.recording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.webagent4j.action.ActionExecutionMode;
+import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.workflow.WorkflowStatus;
 import io.webagent4j.workflow.WorkflowStepStatus;
 import org.junit.jupiter.api.Test;
@@ -424,6 +426,47 @@ class JsonRecordingInvariantTest {
         assertThatThrownBy(() -> codec.decode(json)).isInstanceOf(RecordingFormatException.class);
     }
 
+    @Test
+    void jsonAction004CancelledInterruptedAcceptsRealAndNotExecutedModes() {
+        for (ActionExecutionMode executionMode :
+                new ActionExecutionMode[] {
+                    ActionExecutionMode.NOT_EXECUTED, ActionExecutionMode.REAL
+                }) {
+            WorkflowRecording decoded =
+                    codec.decode(
+                            cancelledActionFailureDocument(
+                                    executionMode, ActionFailureType.INTERRUPTED));
+
+            assertThat(decoded.steps().get(0).action().orElseThrow().executionMode())
+                    .isEqualTo(executionMode);
+        }
+    }
+
+    @Test
+    void jsonAction005CancelledContradictionsAreRejectedSafely() {
+        Object[][] contradictions = {
+            {ActionExecutionMode.DRY_RUN, ActionFailureType.INTERRUPTED},
+            {ActionExecutionMode.NOT_EXECUTED, ActionFailureType.BACKEND_FAILURE},
+            {ActionExecutionMode.REAL, ActionFailureType.TIMEOUT},
+            {ActionExecutionMode.REAL, ActionFailureType.PRECONDITION_FAILED}
+        };
+
+        for (Object[] contradiction : contradictions) {
+            ActionExecutionMode executionMode = (ActionExecutionMode) contradiction[0];
+            ActionFailureType failureType = (ActionFailureType) contradiction[1];
+
+            assertThatThrownBy(
+                            () ->
+                                    codec.decode(
+                                            cancelledActionFailureDocument(
+                                                    executionMode, failureType)))
+                    .as("CANCELLED/%s/%s", executionMode, failureType)
+                    .isInstanceOf(RecordingFormatException.class)
+                    .hasMessage("recording invariant violation")
+                    .hasNoCause();
+        }
+    }
+
     // ==================== JSON-ASSIGN ====================
 
     /** JSON-ASSIGN-001: an ASSIGN step JSON carrying a non-null action object is rejected. */
@@ -442,5 +485,29 @@ class JsonRecordingInvariantTest {
                         + "}]},\"failure\":null}";
 
         assertThatThrownBy(() -> codec.decode(json)).isInstanceOf(RecordingFormatException.class);
+    }
+
+    private static String cancelledActionFailureDocument(
+            ActionExecutionMode executionMode, ActionFailureType failureType) {
+        String failure =
+                "{\"type\":\"ACTION_FAILED\",\"safeMessage\":\"interrupted\",\"stepId\":\"s1\","
+                        + "\"underlyingTypeName\":null,\"actionFailureType\":\""
+                        + failureType
+                        + "\"}";
+        String action =
+                "{\"actionId\":\"a1\",\"actionType\":\"CLICK\",\"status\":\"CANCELLED\","
+                        + "\"executionMode\":\""
+                        + executionMode
+                        + "\"}";
+        return "{\"schemaVersion\":1,\"recordingId\":\"r1\",\"capturedAt\":\"2026-01-01T00:00:00Z\","
+                + "\"workflow\":{\"workflowId\":\"wf\",\"status\":\"FAILED\",\"steps\":["
+                + "{\"stepId\":\"s1\",\"stepType\":\"ACTION\",\"status\":\"FAILED\","
+                + "\"condition\":null,\"outputVariableName\":null,\"failure\":"
+                + failure
+                + ",\"action\":"
+                + action
+                + "}]},\"failure\":"
+                + failure
+                + "}";
     }
 }

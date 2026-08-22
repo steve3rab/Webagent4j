@@ -48,9 +48,15 @@ public record RecordedAction(
                 && executionMode != ActionExecutionMode.NOT_EXECUTED) {
             throw new IllegalArgumentException("a precondition failure must be NOT_EXECUTED");
         }
-        if ((status == ActionStatus.VERIFICATION_FAILED || status == ActionStatus.CANCELLED)
+        if (status == ActionStatus.VERIFICATION_FAILED
                 && executionMode != ActionExecutionMode.REAL) {
-            throw new IllegalArgumentException(status + " must report REAL execution mode");
+            throw new IllegalArgumentException(
+                    "VERIFICATION_FAILED must report REAL execution mode");
+        }
+        if (status == ActionStatus.CANCELLED
+                && executionMode != ActionExecutionMode.REAL
+                && executionMode != ActionExecutionMode.NOT_EXECUTED) {
+            throw new IllegalArgumentException("CANCELLED must report REAL or NOT_EXECUTED mode");
         }
     }
 }

@@ -702,7 +702,8 @@ class RecordingFailureTaxonomyTest {
                                     || executionMode == ActionExecutionMode.NOT_EXECUTED)
                             && failureType == ActionFailureType.TIMEOUT;
             case CANCELLED ->
-                    executionMode == ActionExecutionMode.REAL
+                    (executionMode == ActionExecutionMode.REAL
+                                    || executionMode == ActionExecutionMode.NOT_EXECUTED)
                             && failureType == ActionFailureType.INTERRUPTED;
             case SUCCESS -> false;
         };
