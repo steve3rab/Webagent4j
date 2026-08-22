@@ -13,7 +13,7 @@ tests, documentation, design feedback, and reproducible bug reports are welcome.
 
 ## Development setup
 
-1. Install a Java 21 JDK and Git.
+1. Install a JDK for Java 21 or later and Git.
 2. Fork and clone the repository.
 3. Configure the repository hooks with `git config core.hooksPath .githooks`.
 4. Run `./mvnw clean verify` (`mvnw.cmd clean verify` on Windows).
@@ -25,7 +25,8 @@ Use `./mvnw spotless:apply` before committing when formatting needs correction.
 
 ## Design and coding conventions
 
-- Target Java 21 and keep public contracts backend-neutral.
+- Target Java 21-compatible bytecode, support build and runtime JDKs from Java 21 onward, and keep
+  public contracts backend-neutral.
 - Prefer immutable values, composition, constructor injection, explicit names, and one primary
   responsibility per class.
 - Preserve Maven module boundaries and avoid dependency cycles.
