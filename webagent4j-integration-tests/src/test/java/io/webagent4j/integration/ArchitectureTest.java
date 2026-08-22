@@ -9,6 +9,22 @@ import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaModifier;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.GenericArrayType;
+import java.lang.reflect.Member;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.TypeVariable;
+import java.lang.reflect.WildcardType;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Predicate;
 import org.junit.jupiter.api.Test;
 
 class ArchitectureTest {
@@ -434,6 +450,35 @@ class ArchitectureTest {
     }
 
     @Test
+    void publicSignaturesPreserveBackendAndSerializationBoundaries() {
+        assertPublicSignaturesExclude(
+                type ->
+                        (type.getPackageName().startsWith("io.webagent4j.browser")
+                                        && !type.getPackageName()
+                                                .startsWith("io.webagent4j.browser.playwright"))
+                                || type.getPackageName().startsWith("io.webagent4j.locator.api")
+                                || type.getPackageName().startsWith("io.webagent4j.observation")
+                                || type.getPackageName().startsWith("io.webagent4j.extraction.api")
+                                || type.getPackageName().startsWith("io.webagent4j.crawler.api"),
+                Set.of("com.microsoft.playwright"));
+        assertPublicSignaturesExclude(
+                type -> type.getPackageName().startsWith("io.webagent4j.recording"),
+                Set.of("com.fasterxml.jackson"));
+        assertPublicSignaturesExclude(
+                type -> type.getPackageName().startsWith("io.webagent4j.crawler.api"),
+                Set.of("org.jsoup"));
+        assertPublicSignaturesExclude(
+                type -> type.getPackageName().startsWith("io.webagent4j.plugin"),
+                Set.of(
+                        "com.fasterxml.jackson",
+                        "com.microsoft.playwright",
+                        "info.picocli",
+                        "net.bytebuddy",
+                        "org.jsoup",
+                        "org.slf4j"));
+    }
+
+    @Test
     void recordingRemainsIndependentFromAiLibraries() {
         noClasses()
                 .that()
@@ -463,5 +508,123 @@ class ArchitectureTest {
                 .should()
                 .haveSimpleNameStartingWith("I")
                 .check(projectClasses);
+    }
+
+    private void assertPublicSignaturesExclude(
+            Predicate<Class<?>> typeSelector, Set<String> forbiddenPackagePrefixes) {
+        List<String> violations = new ArrayList<>();
+        projectClasses.stream()
+                .map(ArchitectureTest::loadWithoutInitialization)
+                .filter(ArchitectureTest::isEffectivelyPublic)
+                .filter(typeSelector)
+                .forEach(
+                        type ->
+                                publicSignatureTypes(type).stream()
+                                        .filter(
+                                                signatureType ->
+                                                        forbiddenPackagePrefixes.stream()
+                                                                .anyMatch(
+                                                                        prefix ->
+                                                                                signatureType
+                                                                                        .getTypeName()
+                                                                                        .startsWith(
+                                                                                                prefix)))
+                                        .forEach(
+                                                signatureType ->
+                                                        violations.add(
+                                                                type.getName()
+                                                                        + " exposes "
+                                                                        + signatureType
+                                                                                .getTypeName())));
+
+        assertThat(violations).isEmpty();
+    }
+
+    private static Class<?> loadWithoutInitialization(JavaClass type) {
+        try {
+            return Class.forName(type.getName(), false, ArchitectureTest.class.getClassLoader());
+        } catch (ClassNotFoundException failure) {
+            throw new IllegalStateException("Could not inspect " + type.getName(), failure);
+        }
+    }
+
+    private static boolean isEffectivelyPublic(Class<?> type) {
+        if (!Modifier.isPublic(type.getModifiers())) {
+            return false;
+        }
+        Class<?> enclosing = type.getEnclosingClass();
+        return enclosing == null || isEffectivelyPublic(enclosing);
+    }
+
+    private static Set<Class<?>> publicSignatureTypes(Class<?> type) {
+        Set<Class<?>> result = new HashSet<>();
+        Set<Type> visited = new HashSet<>();
+        collect(type.getGenericSuperclass(), result, visited);
+        Arrays.stream(type.getGenericInterfaces())
+                .forEach(value -> collect(value, result, visited));
+        Arrays.stream(type.getTypeParameters())
+                .flatMap(value -> Arrays.stream(value.getBounds()))
+                .forEach(value -> collect(value, result, visited));
+        Arrays.stream(type.getDeclaredFields())
+                .filter(ArchitectureTest::isPublicOrProtected)
+                .map(Field::getGenericType)
+                .forEach(value -> collect(value, result, visited));
+        Arrays.stream(type.getDeclaredConstructors())
+                .filter(ArchitectureTest::isPublicOrProtected)
+                .forEach(constructor -> collect(constructor, result, visited));
+        Arrays.stream(type.getDeclaredMethods())
+                .filter(ArchitectureTest::isPublicOrProtected)
+                .forEach(method -> collect(method, result, visited));
+        return result;
+    }
+
+    private static boolean isPublicOrProtected(Member member) {
+        int modifiers = member.getModifiers();
+        return Modifier.isPublic(modifiers) || Modifier.isProtected(modifiers);
+    }
+
+    private static void collect(
+            Constructor<?> constructor, Set<Class<?>> result, Set<Type> visited) {
+        Arrays.stream(constructor.getGenericParameterTypes())
+                .forEach(value -> collect(value, result, visited));
+        Arrays.stream(constructor.getGenericExceptionTypes())
+                .forEach(value -> collect(value, result, visited));
+        Arrays.stream(constructor.getTypeParameters())
+                .flatMap(value -> Arrays.stream(value.getBounds()))
+                .forEach(value -> collect(value, result, visited));
+    }
+
+    private static void collect(Method method, Set<Class<?>> result, Set<Type> visited) {
+        collect(method.getGenericReturnType(), result, visited);
+        Arrays.stream(method.getGenericParameterTypes())
+                .forEach(value -> collect(value, result, visited));
+        Arrays.stream(method.getGenericExceptionTypes())
+                .forEach(value -> collect(value, result, visited));
+        Arrays.stream(method.getTypeParameters())
+                .flatMap(value -> Arrays.stream(value.getBounds()))
+                .forEach(value -> collect(value, result, visited));
+    }
+
+    private static void collect(Type type, Set<Class<?>> result, Set<Type> visited) {
+        if (type == null || !visited.add(type)) {
+            return;
+        }
+        if (type instanceof Class<?> rawType) {
+            result.add(rawType);
+        } else if (type instanceof ParameterizedType parameterized) {
+            collect(parameterized.getRawType(), result, visited);
+            collect(parameterized.getOwnerType(), result, visited);
+            Arrays.stream(parameterized.getActualTypeArguments())
+                    .forEach(value -> collect(value, result, visited));
+        } else if (type instanceof GenericArrayType array) {
+            collect(array.getGenericComponentType(), result, visited);
+        } else if (type instanceof WildcardType wildcard) {
+            Arrays.stream(wildcard.getUpperBounds())
+                    .forEach(value -> collect(value, result, visited));
+            Arrays.stream(wildcard.getLowerBounds())
+                    .forEach(value -> collect(value, result, visited));
+        } else if (type instanceof TypeVariable<?> variable) {
+            Arrays.stream(variable.getBounds()).forEach(value -> collect(value, result, visited));
+        }
     }
 }
