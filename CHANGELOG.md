@@ -12,6 +12,8 @@ Phase 1.0-B aligns the stabilized API candidate across domains without changing 
 adding features, or changing recording schema V1. The common rules and intentional differences are
 documented in [docs/contracts.md](docs/contracts.md).
 
+- Documentation now consistently defines Java 21 as the minimum supported version and Java 21 or
+  later as the build and runtime range; the compiler release and minimum-version CI job remain 21.
 - Action and workflow projection constructors now accept only status/execution and sequential
   fail-fast shapes that the engines can produce and the recording model can represent.
 - Action results and their workflow/recording `ACTION_FAILED` projections now enforce one exact

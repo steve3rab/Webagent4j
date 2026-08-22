@@ -1,13 +1,13 @@
 # WebAgent4J
 
 [![CI](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml/badge.svg)](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml)
-[![Java 21](https://img.shields.io/badge/Java-21-ED8B00.svg?logo=openjdk&logoColor=white)](https://adoptium.net/)
+[![Java 21+](https://img.shields.io/badge/Java-21%2B-ED8B00.svg?logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Project status](https://img.shields.io/badge/Status-Active%20development-orange.svg)](#project-status)
 
-WebAgent4J is a deterministic, backend-neutral web automation foundation for Java 21. It combines
-accessible semantic locators, explicit actions, verifiable outcomes, and bounded page observations
-behind stable public contracts. Playwright is the first browser adapter.
+WebAgent4J is a deterministic, backend-neutral web automation foundation for Java 21 or later. It
+combines accessible semantic locators, explicit actions, verifiable outcomes, and bounded page
+observations behind stable public contracts. Playwright is the first browser adapter.
 
 > [!IMPORTANT]
 > WebAgent4J is under active pre-1.0 development. Public APIs may evolve before the first stable
@@ -28,10 +28,13 @@ behind stable public contracts. Playwright is the first browser adapter.
 
 ### Requirements
 
-- Java 21 or newer
+- Java 21 or later
 - Git
 
 Maven is included through the Maven Wrapper.
+
+Java 21 is the minimum supported version. Later JDK releases are accepted for both builds and
+runtime use; the project still emits Java 21-compatible bytecode and tests that minimum in CI.
 
 ```bash
 git clone https://github.com/steve3rab/Webagent4j.git
