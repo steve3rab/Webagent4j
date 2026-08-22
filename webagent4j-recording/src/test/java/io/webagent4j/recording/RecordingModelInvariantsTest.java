@@ -3,7 +3,11 @@ package io.webagent4j.recording;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.webagent4j.action.ActionExecutionMode;
 import io.webagent4j.action.ActionFailureType;
+import io.webagent4j.action.ActionId;
+import io.webagent4j.action.ActionStatus;
+import io.webagent4j.action.ActionType;
 import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowId;
 import io.webagent4j.workflow.WorkflowStatus;
@@ -16,6 +20,26 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class RecordingModelInvariantsTest {
+
+    @Test
+    void recordedActionsRejectImpossibleExecutionPairs() {
+        assertThatThrownBy(
+                        () ->
+                                new RecordedAction(
+                                        ActionId.create(),
+                                        ActionType.CLICK,
+                                        ActionStatus.SUCCESS,
+                                        ActionExecutionMode.NOT_EXECUTED))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () ->
+                                new RecordedAction(
+                                        ActionId.create(),
+                                        ActionType.CLICK,
+                                        ActionStatus.CANCELLED,
+                                        ActionExecutionMode.DRY_RUN))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
     @Test
     void failedStepWithoutFailureIsRejected() {

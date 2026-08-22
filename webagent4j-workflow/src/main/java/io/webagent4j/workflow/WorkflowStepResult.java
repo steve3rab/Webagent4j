@@ -1,5 +1,6 @@
 package io.webagent4j.workflow;
 
+import io.webagent4j.action.ActionStatus;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -40,10 +41,33 @@ public record WorkflowStepResult(
         if (status != WorkflowStepStatus.FAILED && failure.isPresent()) {
             throw new IllegalArgumentException("only a FAILED step result may carry a failure");
         }
+        if (status == WorkflowStepStatus.FAILED && outputVariableName.isPresent()) {
+            throw new IllegalArgumentException(
+                    "a FAILED step result cannot carry a published output variable name");
+        }
+        if (status == WorkflowStepStatus.FAILED) {
+            WorkflowFailure stepFailure = failure.orElseThrow();
+            if (stepFailure.stepId().isEmpty() || !stepFailure.stepId().get().equals(stepId)) {
+                throw new IllegalArgumentException(
+                        "a FAILED step's failure.stepId must equal the step's own stepId");
+            }
+            requireFailureShapeMatchesStepTypeAndAction(
+                    stepType, stepFailure.type(), actionSummary);
+        }
+        if (stepType == WorkflowStepType.ASSIGN
+                && status == WorkflowStepStatus.SUCCEEDED
+                && outputVariableName.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "a SUCCEEDED ASSIGN step must carry a published output variable name");
+        }
         if (status == WorkflowStepStatus.SKIPPED) {
             if (condition.isEmpty()) {
                 throw new IllegalArgumentException(
                         "a SKIPPED step result must carry a condition outcome");
+            }
+            if (condition.get().outcome()) {
+                throw new IllegalArgumentException(
+                        "a SKIPPED step result's condition outcome must be false");
             }
             if (outputVariableName.isPresent()) {
                 throw new IllegalArgumentException(
@@ -67,6 +91,85 @@ public record WorkflowStepResult(
                 throw new IllegalArgumentException(
                         "a NOT_RUN step result cannot carry an action summary");
             }
+        }
+        if (condition.isPresent()
+                && !condition.get().outcome()
+                && status != WorkflowStepStatus.SKIPPED) {
+            throw new IllegalArgumentException(
+                    "a step result with a false condition outcome must be SKIPPED");
+        }
+        if (stepType == WorkflowStepType.ASSIGN && actionSummary.isPresent()) {
+            throw new IllegalArgumentException("an ASSIGN step cannot carry an action summary");
+        }
+        if (stepType == WorkflowStepType.ACTION && status == WorkflowStepStatus.SUCCEEDED) {
+            if (actionSummary.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a SUCCEEDED ACTION step must carry an action summary");
+            }
+            if (actionSummary.get().status() != ActionStatus.SUCCESS) {
+                throw new IllegalArgumentException(
+                        "a SUCCEEDED ACTION step's action summary must report ActionStatus.SUCCESS");
+            }
+        }
+    }
+
+    private static void requireFailureShapeMatchesStepTypeAndAction(
+            WorkflowStepType stepType,
+            WorkflowFailureType failureType,
+            Optional<WorkflowActionSummary> actionSummary) {
+        switch (failureType) {
+            case MISSING_REQUIRED_INPUT, INPUT_TYPE_MISMATCH, UNDECLARED_INPUT ->
+                    throw new IllegalArgumentException(
+                            "a preflight failure type cannot be a step's own failure");
+            case CONDITION_EVALUATION_FAILED -> requireNoActionSummary(actionSummary, failureType);
+            case MISSING_VARIABLE, ACTION_FACTORY_FAILED, STEP_EXCEPTION -> {
+                requireActionStepType(stepType, failureType);
+                requireNoActionSummary(actionSummary, failureType);
+            }
+            case ACTION_FAILED -> {
+                requireActionStepType(stepType, failureType);
+                requireActionSummaryWithNonSuccessStatus(actionSummary, failureType);
+            }
+            case NULL_OUTPUT, OUTPUT_TYPE_MISMATCH -> {
+                requireActionStepType(stepType, failureType);
+                requireActionSummaryWithSuccessStatus(actionSummary, failureType);
+            }
+        }
+    }
+
+    private static void requireActionStepType(
+            WorkflowStepType stepType, WorkflowFailureType failureType) {
+        if (stepType != WorkflowStepType.ACTION) {
+            throw new IllegalArgumentException(failureType + " can only occur on an ACTION step");
+        }
+    }
+
+    private static void requireNoActionSummary(
+            Optional<WorkflowActionSummary> actionSummary, WorkflowFailureType failureType) {
+        if (actionSummary.isPresent()) {
+            throw new IllegalArgumentException(failureType + " cannot carry an action summary");
+        }
+    }
+
+    private static void requireActionSummaryWithSuccessStatus(
+            Optional<WorkflowActionSummary> actionSummary, WorkflowFailureType failureType) {
+        if (actionSummary.isEmpty()) {
+            throw new IllegalArgumentException(failureType + " must carry an action summary");
+        }
+        if (actionSummary.get().status() != ActionStatus.SUCCESS) {
+            throw new IllegalArgumentException(
+                    failureType + "'s action summary must report ActionStatus.SUCCESS");
+        }
+    }
+
+    private static void requireActionSummaryWithNonSuccessStatus(
+            Optional<WorkflowActionSummary> actionSummary, WorkflowFailureType failureType) {
+        if (actionSummary.isEmpty()) {
+            throw new IllegalArgumentException(failureType + " must carry an action summary");
+        }
+        if (actionSummary.get().status() == ActionStatus.SUCCESS) {
+            throw new IllegalArgumentException(
+                    failureType + "'s action summary must not report ActionStatus.SUCCESS");
         }
     }
 

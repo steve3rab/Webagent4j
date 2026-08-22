@@ -222,6 +222,10 @@ final class RecordingFixtures {
      */
     static RecordedWorkflowStep actionStepFailedWithSummary(
             String stepId, RecordedFailure failure, ActionStatus actionStatus) {
+        ActionExecutionMode executionMode =
+                actionStatus == ActionStatus.PRECONDITION_FAILED
+                        ? ActionExecutionMode.NOT_EXECUTED
+                        : ActionExecutionMode.REAL;
         return new RecordedWorkflowStep(
                 new WorkflowStepId(stepId),
                 WorkflowStepType.ACTION,
@@ -229,7 +233,7 @@ final class RecordingFixtures {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.of(failure),
-                Optional.of(action(ActionType.CLICK, actionStatus, ActionExecutionMode.REAL)));
+                Optional.of(action(ActionType.CLICK, actionStatus, executionMode)));
     }
 
     static WorkflowRecording minimalCompleted(String workflowId, List<RecordedWorkflowStep> steps) {

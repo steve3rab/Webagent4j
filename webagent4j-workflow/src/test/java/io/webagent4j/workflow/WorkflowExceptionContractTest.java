@@ -17,7 +17,7 @@ class WorkflowExceptionContractTest {
         WorkflowVariable<String> variable = WorkflowVariable.publicValue("account", String.class);
         WorkflowFailure failure =
                 new WorkflowFailure(
-                        WorkflowFailureType.MISSING_VARIABLE,
+                        WorkflowFailureType.MISSING_REQUIRED_INPUT,
                         "Required input is missing",
                         Optional.empty(),
                         Optional.empty(),
