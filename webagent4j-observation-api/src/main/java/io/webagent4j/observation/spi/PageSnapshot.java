@@ -44,6 +44,9 @@ public record PageSnapshot(
             throw new IllegalArgumentException("snapshot counts cannot be negative");
         }
         Objects.requireNonNull(captureDuration, "captureDuration");
+        if (captureDuration.isNegative()) {
+            throw new IllegalArgumentException("captureDuration cannot be negative");
+        }
         warnings = List.copyOf(Objects.requireNonNull(warnings, "warnings"));
     }
 

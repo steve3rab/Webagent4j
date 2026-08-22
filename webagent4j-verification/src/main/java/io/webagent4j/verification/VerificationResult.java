@@ -23,6 +23,9 @@ public record VerificationResult(
         if (duration.isNegative()) {
             throw new IllegalArgumentException("duration cannot be negative");
         }
+        if (success && timedOut) {
+            throw new IllegalArgumentException("a successful verification cannot be timed out");
+        }
     }
 
     /** Compatibility constructor for simple immediate verifications. */

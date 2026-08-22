@@ -38,6 +38,9 @@ public record HttpFetchResult(
         body = Objects.requireNonNull(body, "body").clone();
         Objects.requireNonNull(contentType, "contentType");
         Objects.requireNonNull(elapsed, "elapsed");
+        if (elapsed.isNegative()) {
+            throw new IllegalArgumentException("elapsed cannot be negative");
+        }
     }
 
     /** Returns a defensive copy of the response body. */

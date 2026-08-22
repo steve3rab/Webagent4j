@@ -40,6 +40,9 @@ public sealed interface ILocatorEvent
             Objects.requireNonNull(timestamp, "timestamp");
             Objects.requireNonNull(strategy, "strategy");
             Objects.requireNonNull(duration, "duration");
+            if (duration.isNegative()) {
+                throw new IllegalArgumentException("duration cannot be negative");
+            }
             if (candidateCount < 0) {
                 throw new IllegalArgumentException("candidateCount cannot be negative");
             }
@@ -72,6 +75,9 @@ public sealed interface ILocatorEvent
             Objects.requireNonNull(timestamp, "timestamp");
             selectedIdentity = Objects.requireNonNull(selectedIdentity, "selectedIdentity");
             Objects.requireNonNull(duration, "duration");
+            if (duration.isNegative()) {
+                throw new IllegalArgumentException("duration cannot be negative");
+            }
             if (confidence < 0.0 || confidence > 1.0) {
                 throw new IllegalArgumentException("confidence must be between zero and one");
             }

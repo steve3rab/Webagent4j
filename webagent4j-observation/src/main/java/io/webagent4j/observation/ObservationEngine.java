@@ -32,8 +32,10 @@ import org.slf4j.LoggerFactory;
 /**
  * Default deterministic semantic observation engine.
  *
- * <p>The engine is immutable and thread-safe. It orchestrates one backend batch snapshot and
- * focused semantic observers. It does not retain pages or live elements between calls.
+ * <p>The engine is immutable and retains no per-observation mutable state. Concurrent sharing is
+ * safe only when the injected clock, identifier supplier, policies, factories, resolvers, and
+ * listener are themselves safe for concurrent use. It orchestrates one backend batch snapshot and
+ * focused semantic observers, and does not retain pages or live elements between calls.
  */
 public final class ObservationEngine implements IObservationEngine {
 
