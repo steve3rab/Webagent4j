@@ -51,7 +51,10 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             """;
 
     private static final int MAXIMUM_INSPECTIONS_PER_CANDIDATE = 8;
-    private static final double MINIMUM_INSPECTION_TIMEOUT_MILLIS = 200;
+    private static final double MINIMUM_INSPECTION_WINDOW_MILLIS = 200;
+    private static final double MAXIMUM_MINIMUM_INSPECTION_WINDOW_MILLIS = 5_000;
+    private static final double TARGET_OPERATION_TIMEOUT_MILLIS = 25;
+    private static final double MINIMUM_OPERATION_TIMEOUT_MILLIS = 1;
 
     private final Locator documentRoot;
     private final ILocatorEngine engine;
@@ -104,10 +107,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         int discoveredCount = countOrZero(resolved);
         int count = Math.min(discoveredCount, candidateLimit);
         double inspectionTimeoutMillis = inspectionTimeoutMillis(timeout, count);
+        double identityTimeoutMillis = identityTimeoutMillis(timeout, count);
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
             Locator item = resolved.nth(index);
-            Map<String, Object> identity = identifyOrNull(item, inspectionTimeoutMillis);
+            Map<String, Object> identity = identifyOrNull(item, identityTimeoutMillis);
             if (identity == null) {
                 // count() confirmed this candidate a moment ago, but it (or, for a frame-scoped
                 // backend, the whole document containing it) was torn down before evaluate()
@@ -185,9 +189,9 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
 
     /**
      * Reserves an equal bounded share for every possible inspection of every discovered candidate.
-     * The conservative floor keeps internal one-shot discovery usable on a loaded host while larger
-     * caller budgets scale with the amount of candidate work instead of using an unrelated fixed
-     * timeout.
+     * The conservative window keeps internal one-shot discovery usable on a loaded host while being
+     * shared by all possible inspections. Applying the window to each inspection would multiply a
+     * one-shot lookup into a multi-second nested wait.
      */
     static double inspectionTimeoutMillis(Duration timeout, int candidateCount) {
         long inspectionCount =
@@ -195,10 +199,27 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         return operationTimeoutMillis(timeout, inspectionCount);
     }
 
+    static double identityTimeoutMillis(Duration timeout, int candidateCount) {
+        long boundedCandidateCount = Math.max(1L, candidateCount);
+        double cumulativeIdentityFloor =
+                MAXIMUM_MINIMUM_INSPECTION_WINDOW_MILLIS / boundedCandidateCount;
+        return Math.max(
+                inspectionTimeoutMillis(timeout, candidateCount),
+                Math.min(MINIMUM_INSPECTION_WINDOW_MILLIS, cumulativeIdentityFloor));
+    }
+
     static double operationTimeoutMillis(Duration timeout, long operationCount) {
         double totalMillis = timeout.getSeconds() * 1_000.0 + timeout.getNano() / 1_000_000.0;
+        long boundedOperationCount = Math.max(1L, operationCount);
+        double minimumWindow =
+                Math.min(
+                        MAXIMUM_MINIMUM_INSPECTION_WINDOW_MILLIS,
+                        Math.max(
+                                MINIMUM_INSPECTION_WINDOW_MILLIS,
+                                boundedOperationCount * TARGET_OPERATION_TIMEOUT_MILLIS));
         return Math.max(
-                MINIMUM_INSPECTION_TIMEOUT_MILLIS, totalMillis / Math.max(1L, operationCount));
+                MINIMUM_OPERATION_TIMEOUT_MILLIS,
+                Math.max(minimumWindow, totalMillis) / boundedOperationCount);
     }
 
     /** Returns true only when a fresh synchronous count proves the timed-out locator is gone. */

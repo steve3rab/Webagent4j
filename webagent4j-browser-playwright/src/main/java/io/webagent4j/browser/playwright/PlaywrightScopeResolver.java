@@ -605,9 +605,11 @@ final class PlaywrightScopeResolver {
     private static final Duration ONE_SHOT_TIMEOUT = Duration.ofNanos(1);
 
     /**
-     * Resolves one unambiguous container matching {@code text}, preferring accessible-name evidence
-     * (aria-label, aria-labelledby, etc.) and falling back to visible text only when
-     * accessible-name resolution demonstrably reports a safe "not found" outcome.
+     * Resolves one unambiguous container matching {@code text}, preferring an exact {@code
+     * aria-label} lookup before the general accessible-name strategy (aria-labelledby, labels,
+     * content, etc.) and falling back to visible text only when accessible-name resolution
+     * demonstrably reports a safe "not found" outcome. The direct attribute lookup avoids scanning
+     * every DOM node for the most common structured-scope representation.
      *
      * <p>The fallback is never triggered by ambiguity or by a genuine backend/runtime failure: both
      * are hard constraints that must propagate unchanged rather than being silently retried under a
@@ -615,6 +617,18 @@ final class PlaywrightScopeResolver {
      */
     private static IElement resolveContainer(
             ILocatorEngine engine, LocatorContext context, String text) {
+        try {
+            return engine.locateSingle(
+                            context,
+                            LocatorDefinition.element()
+                                    .withAttribute("aria-label", text)
+                                    .withTimeout(ONE_SHOT_TIMEOUT))
+                    .element();
+        } catch (RuntimeException directLabelFailure) {
+            if (!LocatorFailureClassifier.isNotFound(directLabelFailure)) {
+                throw directLabelFailure;
+            }
+        }
         try {
             return engine.locateSingle(
                             context,

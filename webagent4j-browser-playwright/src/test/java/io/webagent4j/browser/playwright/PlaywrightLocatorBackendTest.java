@@ -65,6 +65,18 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
+    void sharesTheOneShotFloorAcrossAllPossibleCandidateInspections() {
+        assertThat(PlaywrightLocatorBackend.inspectionTimeoutMillis(Duration.ofNanos(1), 1))
+                .isEqualTo(25.0);
+        assertThat(PlaywrightLocatorBackend.inspectionTimeoutMillis(Duration.ofNanos(1), 21))
+                .isEqualTo(25.0);
+        assertThat(PlaywrightLocatorBackend.identityTimeoutMillis(Duration.ofNanos(1), 21))
+                .isEqualTo(200.0);
+        assertThat(PlaywrightLocatorBackend.identityTimeoutMillis(Duration.ofSeconds(4), 1))
+                .isEqualTo(500.0);
+    }
+
+    @Test
     void aFrameRootThatVanishesWhileReadingElementStateIsReportedAsDetached() {
         Locator locator = mock(Locator.class);
         when(locator.count())

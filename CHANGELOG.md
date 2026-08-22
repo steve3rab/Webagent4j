@@ -19,6 +19,9 @@ and closure matrix is documented in [docs/hardening.md](docs/hardening.md).
   clock rather than wall time.
 - Playwright candidate, element, and frame-URL inspections allocate time from the remaining bounded
   work instead of relying only on a fixed host-independent timeout.
+- Structured Playwright scopes avoid multiplying one-shot work across every DOM node by resolving an
+  exact `aria-label` first and sharing capped candidate inspection windows; accessible-name and
+  visible-text fallbacks, ambiguity, and backend failures retain their fail-closed behavior.
 - Deterministic regressions cover every corrected boundary. Public API/SPI signatures and recording
   JSON schema V1 remain unchanged.
 
