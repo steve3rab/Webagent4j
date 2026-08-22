@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.microsoft.playwright.Locator;
@@ -22,6 +24,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 /**
  * Proves {@link PlaywrightLocatorBackend#find} distinguishes a candidate that genuinely vanished
@@ -31,6 +34,35 @@ import org.junit.jupiter.api.Test;
  * failure propagates unchanged.
  */
 class PlaywrightLocatorBackendTest {
+
+    @Test
+    void derivesCandidateInspectionTimeoutFromTheRemainingResolutionBudget() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
+                .thenReturn(Map.of("identity", "candidate", "domOrder", 0))
+                .thenReturn(Map.of());
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(4),
+                                20);
+        result.candidates().getFirst().element().attributes();
+
+        ArgumentCaptor<Locator.EvaluateOptions> options =
+                ArgumentCaptor.forClass(Locator.EvaluateOptions.class);
+        verify(item, times(2)).evaluate(any(), any(), options.capture());
+        assertThat(options.getAllValues())
+                .extracting(value -> value.timeout)
+                .containsExactly(500.0, 500.0);
+    }
 
     @Test
     void aFrameRootThatVanishesWhileReadingElementStateIsReportedAsDetached() {

@@ -306,6 +306,37 @@ class PlaywrightFrameScopeResolverTest {
     }
 
     @Test
+    void derivesFrameUrlInspectionTimeoutFromTheRemainingFrameBudget() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        Frame frame = mock(Frame.class);
+        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
+                .thenReturn(handle);
+        when(handle.contentFrame()).thenReturn(frame);
+        when(frame.url()).thenReturn("https://example.com/checkout");
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+        FrameDefinition definition =
+                FrameDefinition.frame().withUrl(TextMatch.exact("https://example.com/checkout"));
+
+        PlaywrightScopeResolver.resolveFrameElement(
+                engine, ILiveLocatorContext.fixed(context), definition, Duration.ofSeconds(4));
+
+        ArgumentCaptor<Locator.ElementHandleOptions> options =
+                ArgumentCaptor.forClass(Locator.ElementHandleOptions.class);
+        verify(iframeLocator).elementHandle(options.capture());
+        assertThat(options.getValue().timeout).isGreaterThan(200.0).isLessThanOrEqualTo(4_000.0);
+    }
+
+    @Test
     void aFailedUrlInspectionRecheckPreservesTheOriginalTimeout() {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext context = pageContext();

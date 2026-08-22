@@ -17,13 +17,12 @@ import java.util.Optional;
 /** Internal live element adapter; queries are re-resolved at each fluent terminal operation. */
 final class PlaywrightElement implements IElement {
 
-    private static final double INSPECTION_TIMEOUT_MILLIS = 200;
-
     private final Locator locator;
     private final ElementRole knownRole;
     private final PlaywrightLocatorBackend locatorBackend;
     private final LocatorScope originatingScope;
     private final LocatorConfig locatorConfig;
+    private final double inspectionTimeoutMillis;
 
     PlaywrightElement(
             Locator locator,
@@ -31,11 +30,29 @@ final class PlaywrightElement implements IElement {
             PlaywrightLocatorBackend locatorBackend,
             LocatorScope originatingScope,
             LocatorConfig locatorConfig) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                PlaywrightLocatorBackend.inspectionTimeoutMillis(
+                        locatorConfig.defaultTimeout(), 1));
+    }
+
+    PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            double inspectionTimeoutMillis) {
         this.locator = locator;
         this.knownRole = knownRole;
         this.locatorBackend = locatorBackend;
         this.originatingScope = originatingScope;
         this.locatorConfig = locatorConfig;
+        this.inspectionTimeoutMillis = inspectionTimeoutMillis;
     }
 
     @Override
@@ -98,7 +115,7 @@ final class PlaywrightElement implements IElement {
         try {
             value =
                     locator.textContent(
-                            new Locator.TextContentOptions().setTimeout(INSPECTION_TIMEOUT_MILLIS));
+                            new Locator.TextContentOptions().setTimeout(inspectionTimeoutMillis));
         } catch (TimeoutError failure) {
             if (absentAfter(failure)) {
                 return "";
@@ -210,7 +227,7 @@ final class PlaywrightElement implements IElement {
             return locator.evaluate(
                     expression,
                     null,
-                    new Locator.EvaluateOptions().setTimeout(INSPECTION_TIMEOUT_MILLIS));
+                    new Locator.EvaluateOptions().setTimeout(inspectionTimeoutMillis));
         } catch (TimeoutError failure) {
             if (absentAfter(failure)) {
                 return null;

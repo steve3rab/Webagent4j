@@ -237,7 +237,8 @@ final class PlaywrightScopeResolver {
                 WaitPolicy.pollingEvery(liveContext.baseline().config().pollingInterval());
         policy = stability.map(policy::withStableFor).orElse(policy);
 
-        IWaitProbe<FrameMatch> probe = () -> probeFrameOnce(engine, liveContext, definition, query);
+        IWaitProbe<FrameMatch> probe =
+                () -> probeFrameOnce(engine, liveContext, definition, query, budget);
         WaitResult<FrameMatch> waited;
         try {
             waited = FRAME_WAIT_ENGINE.await(budget, policy, probe);
@@ -269,7 +270,8 @@ final class PlaywrightScopeResolver {
             ILocatorEngine engine,
             ILiveLocatorContext liveContext,
             FrameDefinition definition,
-            LocatorDefinition query) {
+            LocatorDefinition query,
+            WaitBudget budget) {
         LocatorContext context;
         try {
             context = liveContext.resolve();
@@ -279,7 +281,8 @@ final class PlaywrightScopeResolver {
             }
             return WaitSample.pending();
         }
-        List<LocatorCandidate> matches = filterByUrl(engine.locateAll(context, query), definition);
+        List<LocatorCandidate> matches =
+                filterByUrl(engine.locateAll(context, query), definition, budget.remaining());
         if (matches.size() > 1) {
             throw new AmbiguousLocatorException(
                     "Frame query "
@@ -306,14 +309,19 @@ final class PlaywrightScopeResolver {
      * conditions are absorbed as a detachment race versus propagated unchanged.
      */
     private static List<LocatorCandidate> filterByUrl(
-            List<LocatorCandidate> candidates, FrameDefinition definition) {
+            List<LocatorCandidate> candidates,
+            FrameDefinition definition,
+            Duration remainingBudget) {
         if (definition.url().isEmpty()) {
             return candidates;
         }
         TextMatch match = definition.url().orElseThrow();
+        double inspectionTimeoutMillis =
+                PlaywrightLocatorBackend.operationTimeoutMillis(
+                        remainingBudget, Math.max(1, candidates.size()));
         List<LocatorCandidate> filtered = new ArrayList<>();
         for (LocatorCandidate candidate : candidates) {
-            if (matchesUrl(candidate.element(), match)) {
+            if (matchesUrl(candidate.element(), match, inspectionTimeoutMillis)) {
                 filtered.add(candidate);
             }
         }
@@ -431,23 +439,14 @@ final class PlaywrightScopeResolver {
     }
 
     /**
-     * Bound for {@link Locator#elementHandle(Locator.ElementHandleOptions)} when inspecting a
-     * candidate's continued presence - the same short-timeout idiom {@link
-     * PlaywrightLocatorBackend#find} already uses for a candidate that vanishes between {@code
-     * count()} and its own identity check, so a genuinely removed {@code <iframe>} fails this one
-     * lookup fast rather than blocking on Playwright's multi-second default actionability wait.
-     */
-    private static final double URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS = 200;
-
-    /**
      * Evaluates one URL candidate against {@code match}, distinguishing three outcomes rather than
      * treating every exception alike:
      *
      * <ul>
      *   <li>the {@code <iframe>} element itself was removed between discovery and this call - a
-     *       {@link TimeoutError}, bounded here to {@link #URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS},
-     *       is treated as absence only after a fresh count proves it; Playwright's canonical
-     *       frame-detached protocol failure is already a definitive disappearance signal;
+     *       {@link TimeoutError}, bounded to its share of the remaining frame budget, is treated as
+     *       absence only after a fresh count proves it; Playwright's canonical frame-detached
+     *       protocol failure is already a definitive disappearance signal;
      *   <li>the element is present but its content document is not (a fresh iframe not yet loaded,
      *       or one whose frame is {@link Frame#isDetached()}) - also "does not currently match", no
      *       exception involved at all;
@@ -456,14 +455,14 @@ final class PlaywrightScopeResolver {
      *       a closed context - propagates unchanged, never absorbed as "not found".
      * </ul>
      */
-    private static boolean matchesUrl(IElement iframeElement, TextMatch match) {
+    private static boolean matchesUrl(
+            IElement iframeElement, TextMatch match, double inspectionTimeoutMillis) {
         Locator iframeLocator = PlaywrightLocatorBackend.unwrap(iframeElement);
         ElementHandle handle;
         try {
             handle =
                     iframeLocator.elementHandle(
-                            new Locator.ElementHandleOptions()
-                                    .setTimeout(URL_CANDIDATE_INSPECTION_TIMEOUT_MILLIS));
+                            new Locator.ElementHandleOptions().setTimeout(inspectionTimeoutMillis));
         } catch (TimeoutError vanished) {
             if (confirmedAbsent(iframeLocator, vanished)) {
                 return false;

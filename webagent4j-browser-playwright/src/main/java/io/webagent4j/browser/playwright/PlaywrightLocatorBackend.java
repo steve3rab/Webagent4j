@@ -50,14 +50,8 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             """;
 
-    /**
-     * Bound for {@link #identifyOrNull(Locator)}'s candidate-identity evaluation: short enough to
-     * never meaningfully eat into a caller's configured {@link
-     * io.webagent4j.wait.WaitEngine}-driven timeout (frame ITs configure budgets as low as 800ms),
-     * generous enough to absorb ordinary IPC round-trip latency rather than producing false
-     * negatives for a candidate that is genuinely still present.
-     */
-    private static final double EVALUATE_TIMEOUT_MILLIS = 200;
+    private static final int MAXIMUM_INSPECTIONS_PER_CANDIDATE = 8;
+    private static final double MINIMUM_INSPECTION_TIMEOUT_MILLIS = 200;
 
     private final Locator documentRoot;
     private final ILocatorEngine engine;
@@ -109,10 +103,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         Locator resolved = resolve(root, query, config);
         int discoveredCount = countOrZero(resolved);
         int count = Math.min(discoveredCount, candidateLimit);
+        double inspectionTimeoutMillis = inspectionTimeoutMillis(timeout, count);
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
             Locator item = resolved.nth(index);
-            Map<String, Object> identity = identifyOrNull(item);
+            Map<String, Object> identity = identifyOrNull(item, inspectionTimeoutMillis);
             if (identity == null) {
                 // count() confirmed this candidate a moment ago, but it (or, for a frame-scoped
                 // backend, the whole document containing it) was torn down before evaluate()
@@ -127,7 +122,8 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             candidates.add(
                     new LocatorBackendCandidate(
                             String.valueOf(identity.get("identity")),
-                            new PlaywrightElement(item, knownRole, this, scope, config),
+                            new PlaywrightElement(
+                                    item, knownRole, this, scope, config, inspectionTimeoutMillis),
                             ((Number) identity.get("domOrder")).intValue()));
         }
         return new LocatorBackendSearchResult(candidates, discoveredCount, discoveredCount > count);
@@ -157,23 +153,23 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     /**
-     * Evaluates {@link #IDENTITY_SCRIPT} against {@code item}, bounded to a short explicit timeout
-     * so a candidate that vanishes between {@link Locator#count()} and this call fails fast instead
-     * of blocking on Playwright's own multi-second default actionability wait - which would both
-     * silently multiply the caller's configured {@link io.webagent4j.wait.WaitEngine} budget and
-     * leak a raw {@link TimeoutError} across the backend-neutral boundary. Returns {@code null}
-     * only when a timeout is followed by a fresh absence proof or Playwright explicitly reports
-     * that the owning frame was detached. A still-present candidate, a failed recheck, and every
-     * other runtime failure propagate unchanged.
+     * Evaluates {@link #IDENTITY_SCRIPT} against {@code item}, bounded to the candidate's share of
+     * the caller's remaining resolution budget. This avoids both a fixed timeout that is too short
+     * on a loaded host and Playwright's multi-second default actionability wait silently
+     * multiplying the outer budget. Returns {@code null} only when a timeout is followed by a fresh
+     * absence proof or Playwright explicitly reports that the owning frame was detached. A
+     * still-present candidate, a failed recheck, and every other runtime failure propagate
+     * unchanged.
      */
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> identifyOrNull(Locator item) {
+    private static Map<String, Object> identifyOrNull(
+            Locator item, double inspectionTimeoutMillis) {
         try {
             return (Map<String, Object>)
                     item.evaluate(
                             IDENTITY_SCRIPT,
                             null,
-                            new Locator.EvaluateOptions().setTimeout(EVALUATE_TIMEOUT_MILLIS));
+                            new Locator.EvaluateOptions().setTimeout(inspectionTimeoutMillis));
         } catch (TimeoutError vanished) {
             if (confirmedAbsent(item, vanished)) {
                 return null;
@@ -185,6 +181,24 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             throw failure;
         }
+    }
+
+    /**
+     * Reserves an equal bounded share for every possible inspection of every discovered candidate.
+     * The conservative floor keeps internal one-shot discovery usable on a loaded host while larger
+     * caller budgets scale with the amount of candidate work instead of using an unrelated fixed
+     * timeout.
+     */
+    static double inspectionTimeoutMillis(Duration timeout, int candidateCount) {
+        long inspectionCount =
+                Math.max(1L, (long) candidateCount * MAXIMUM_INSPECTIONS_PER_CANDIDATE);
+        return operationTimeoutMillis(timeout, inspectionCount);
+    }
+
+    static double operationTimeoutMillis(Duration timeout, long operationCount) {
+        double totalMillis = timeout.getSeconds() * 1_000.0 + timeout.getNano() / 1_000_000.0;
+        return Math.max(
+                MINIMUM_INSPECTION_TIMEOUT_MILLIS, totalMillis / Math.max(1L, operationCount));
     }
 
     /** Returns true only when a fresh synchronous count proves the timed-out locator is gone. */
