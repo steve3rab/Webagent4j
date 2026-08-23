@@ -26,6 +26,7 @@ final class PlaywrightElement implements IElement {
     private final LocatorConfig locatorConfig;
     private final double inspectionTimeoutMillis;
     private final WaitBudget inspectionBudget;
+    private final Runnable scopeIdentityValidator;
 
     PlaywrightElement(
             Locator locator,
@@ -40,6 +41,7 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 PlaywrightLocatorBackend.inspectionTimeoutMillis(locatorConfig.defaultTimeout(), 1),
+                null,
                 null);
     }
 
@@ -57,6 +59,7 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 inspectionTimeoutMillis,
+                null,
                 null);
     }
 
@@ -74,7 +77,27 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 0.0,
-                inspectionBudget);
+                inspectionBudget,
+                null);
+    }
+
+    PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            WaitBudget inspectionBudget,
+            Runnable scopeIdentityValidator) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                0.0,
+                inspectionBudget,
+                scopeIdentityValidator);
     }
 
     private PlaywrightElement(
@@ -84,7 +107,8 @@ final class PlaywrightElement implements IElement {
             LocatorScope originatingScope,
             LocatorConfig locatorConfig,
             double inspectionTimeoutMillis,
-            WaitBudget inspectionBudget) {
+            WaitBudget inspectionBudget,
+            Runnable scopeIdentityValidator) {
         this.locator = locator;
         this.knownRole = knownRole;
         this.locatorBackend = locatorBackend;
@@ -92,6 +116,7 @@ final class PlaywrightElement implements IElement {
         this.locatorConfig = locatorConfig;
         this.inspectionTimeoutMillis = inspectionTimeoutMillis;
         this.inspectionBudget = inspectionBudget;
+        this.scopeIdentityValidator = scopeIdentityValidator;
     }
 
     @Override
@@ -155,6 +180,7 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public String text() {
+        validateScopeIdentity();
         if (inspectionBudget != null) {
             Object value = evaluateOrNull("element => element.textContent");
             return value == null ? "" : String.valueOf(value).trim().replaceAll("\\s+", " ");
@@ -215,9 +241,8 @@ final class PlaywrightElement implements IElement {
     @Override
     @SuppressWarnings("unchecked")
     public ElementState state() {
-        if (inspectionBudget != null && inspectionBudget.expired()) {
-            return detachedState();
-        }
+        validateScopeIdentity();
+        requireInspectionBudget("Element state inspection");
         try {
             if (locator.count() == 0) {
                 return detachedState();
@@ -230,10 +255,7 @@ final class PlaywrightElement implements IElement {
         }
         Object inspected = evaluateOrNull(PlaywrightDomInspectionScripts.STATE_FUNCTION);
         if (inspected == null) {
-            if ((inspectionBudget != null && inspectionBudget.expired()) || locator.count() == 0) {
-                return detachedState();
-            }
-            throw new IllegalStateException("Element state inspection returned no value");
+            return detachedState();
         }
         Map<String, Object> value = (Map<String, Object>) inspected;
         return new ElementState(
@@ -253,6 +275,7 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public Optional<BoundingBox> boundingBox() {
+        validateScopeIdentity();
         com.microsoft.playwright.options.BoundingBox box = locator.boundingBox();
         if (box == null) {
             return Optional.empty();
@@ -262,6 +285,7 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public void click() {
+        validateScopeIdentity();
         locator.click();
     }
 
@@ -271,26 +295,37 @@ final class PlaywrightElement implements IElement {
     }
 
     Locator locator() {
+        validateScopeIdentity();
         return locator;
     }
 
+    void validateScopeIdentity() {
+        if (scopeIdentityValidator != null) {
+            scopeIdentityValidator.run();
+        }
+    }
+
     private Object evaluateOrNull(String expression) {
+        validateScopeIdentity();
+        if (inspectionBudget != null) {
+            requireInspectionBudget("Element inspection");
+        }
+        Object inspected;
         try {
             if (inspectionBudget != null) {
-                if (inspectionBudget.expired()) {
-                    return null;
-                }
                 String currentInspection =
                         "elements => { const inspect = "
                                 + expression
                                 + "; return elements.length === 0 ? null : inspect(elements[0]); }";
-                return locator.evaluateAll(currentInspection);
+                inspected = locator.evaluateAll(currentInspection);
+            } else {
+                inspected =
+                        locator.evaluate(
+                                expression,
+                                null,
+                                new Locator.EvaluateOptions()
+                                        .setTimeout(inspectionTimeoutMillis("Element inspection")));
             }
-            return locator.evaluate(
-                    expression,
-                    null,
-                    new Locator.EvaluateOptions()
-                            .setTimeout(inspectionTimeoutMillis("Element inspection")));
         } catch (TimeoutError failure) {
             if (absentAfter(failure)) {
                 return null;
@@ -302,6 +337,10 @@ final class PlaywrightElement implements IElement {
             }
             throw failure;
         }
+        if (inspected != null && inspectionBudget != null) {
+            requireInspectionBudget("Element inspection");
+        }
+        return inspected;
     }
 
     private double inspectionTimeoutMillis(String operation) {
@@ -312,6 +351,15 @@ final class PlaywrightElement implements IElement {
                                 inspectionBudget.remaining(), 1);
         return PlaywrightLocatorBackend.requirePositivePlaywrightTimeout(
                 availableMillis, operation);
+    }
+
+    private void requireInspectionBudget(String operation) {
+        if (inspectionBudget != null) {
+            PlaywrightLocatorBackend.requirePositivePlaywrightTimeout(
+                    PlaywrightLocatorBackend.operationTimeoutMillis(
+                            inspectionBudget.remaining(), 1),
+                    operation);
+        }
     }
 
     private boolean absentAfter(TimeoutError originalFailure) {

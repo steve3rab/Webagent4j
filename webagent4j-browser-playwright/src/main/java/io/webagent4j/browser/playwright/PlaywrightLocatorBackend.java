@@ -36,6 +36,8 @@ import java.util.Set;
 /** Playwright-only implementation of the backend-neutral locator discovery port. */
 final class PlaywrightLocatorBackend implements ILocatorBackend {
 
+    private static final String SCOPE_ID_ATTRIBUTE = "data-webagent4j-scope-id";
+
     private static final String IDENTITY_SCRIPT =
             """
             element => {
@@ -110,16 +112,20 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         Locator root = scope.root().map(PlaywrightLocatorBackend::unwrap).orElse(documentRoot);
         Locator resolved = resolve(root, query, config);
         WaitBudget inspectionBudget = WaitBudget.start(timeout, System::nanoTime);
+        requireBudgetAvailable(inspectionBudget, "Candidate discovery");
         int discoveredCount = countOrZero(resolved);
         int count = Math.min(discoveredCount, candidateLimit);
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
+        Runnable scopeIdentityValidator =
+                scope.root()
+                        .filter(PlaywrightElement.class::isInstance)
+                        .map(PlaywrightElement.class::cast)
+                        .<Runnable>map(element -> element::validateScopeIdentity)
+                        .orElse(null);
         for (int index = 0; index < count; index++) {
-            if (inspectionBudget.expired()) {
-                return new LocatorBackendSearchResult(
-                        List.of(), discoveredCount, discoveredCount > 0);
-            }
+            requireBudgetAvailable(inspectionBudget, "Candidate inspection");
             Locator item = resolved.nth(index);
-            Map<String, Object> identity = identifyOrNull(item);
+            Map<String, Object> identity = identifyOrNull(item, inspectionBudget);
             if (identity == null) {
                 // count() confirmed this candidate a moment ago, but it (or, for a frame-scoped
                 // backend, the whole document containing it) was torn down before evaluate()
@@ -135,7 +141,13 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                     new LocatorBackendCandidate(
                             String.valueOf(identity.get("identity")),
                             new PlaywrightElement(
-                                    item, knownRole, this, scope, config, inspectionBudget),
+                                    item,
+                                    knownRole,
+                                    this,
+                                    scope,
+                                    config,
+                                    inspectionBudget,
+                                    scopeIdentityValidator),
                             ((Number) identity.get("domOrder")).intValue()));
         }
         return new LocatorBackendSearchResult(candidates, discoveredCount, discoveredCount > count);
@@ -174,9 +186,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * unchanged.
      */
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> identifyOrNull(Locator item) {
+    private static Map<String, Object> identifyOrNull(Locator item, WaitBudget budget) {
+        requireBudgetAvailable(budget, "Candidate identity inspection");
+        Map<String, Object> identity;
         try {
-            return (Map<String, Object>) item.evaluateAll(CURRENT_IDENTITY_SCRIPT);
+            identity = (Map<String, Object>) item.evaluateAll(CURRENT_IDENTITY_SCRIPT);
         } catch (TimeoutError vanished) {
             if (confirmedAbsent(item, vanished)) {
                 return null;
@@ -188,6 +202,10 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             throw failure;
         }
+        if (identity != null) {
+            requireBudgetAvailable(budget, "Candidate identity inspection");
+        }
+        return identity;
     }
 
     /**
@@ -278,53 +296,70 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             LocatorContext context, String text, LocatorStrategyType strategy, Duration timeout) {
         Locator root =
                 context.scope().root().map(PlaywrightLocatorBackend::unwrap).orElse(documentRoot);
+        Runnable ancestorValidator =
+                context.scope()
+                        .root()
+                        .filter(PlaywrightElement.class::isInstance)
+                        .map(PlaywrightElement.class::cast)
+                        .<Runnable>map(element -> element::validateScopeIdentity)
+                        .orElse(() -> {});
         WaitBudget inspectionBudget = WaitBudget.start(timeout, System::nanoTime);
-        if (inspectionBudget.expired()) {
-            throw new LocatorNotFoundException("Structured-scope resolution budget was exhausted");
-        }
-        List<Integer> matchingIndices =
-                matchingContainerIndices(root, text, strategy, context, inspectionBudget);
-        if (matchingIndices.size() > 1) {
+        requireBudgetAvailable(inspectionBudget, "Structured-scope inspection");
+        List<String> matchingIdentities =
+                matchingContainerIdentities(root, text, strategy, context, inspectionBudget, "");
+        if (matchingIdentities.size() > 1) {
             throw new AmbiguousLocatorException(
                     "Structured scope text \"" + text + "\" matched multiple containers");
         }
-        if (matchingIndices.isEmpty()) {
+        if (matchingIdentities.isEmpty()) {
             throw new LocatorNotFoundException(
                     "No structured-scope container matched \"" + text + "\"");
         }
+        String expectedIdentity = matchingIdentities.get(0);
+        Locator stableContainer =
+                root.locator(attributeSelector(SCOPE_ID_ATTRIBUTE, expectedIdentity));
+        Runnable validator =
+                () -> {
+                    ancestorValidator.run();
+                    requireSameUniqueContainer(
+                            root, text, strategy, context, inspectionBudget, expectedIdentity);
+                };
         return new PlaywrightElement(
-                root.locator("*").nth(matchingIndices.get(0)),
+                stableContainer,
                 ElementRole.UNKNOWN,
                 this,
                 context.scope(),
                 context.config(),
-                inspectionBudget);
+                inspectionBudget,
+                validator);
     }
 
     @SuppressWarnings("unchecked")
-    private static List<Integer> matchingContainerIndices(
+    private static List<String> matchingContainerIdentities(
             Locator root,
             String text,
             LocatorStrategyType strategy,
             LocatorContext context,
-            WaitBudget budget) {
+            WaitBudget budget,
+            String expectedIdentity) {
+        requireBudgetAvailable(budget, "Structured-scope inspection");
+        List<String> identities;
         try {
-            List<Number> raw =
-                    (List<Number>)
+            identities =
+                    (List<String>)
                             root.locator("*")
                                     .evaluateAll(
                                             PlaywrightDomInspectionScripts
-                                                    .MATCHING_CONTAINER_INDICES_FUNCTION,
+                                                    .MATCHING_CONTAINER_IDENTITIES_FUNCTION,
                                             Map.of(
                                                     "text",
                                                     text,
                                                     "locale",
                                                     context.config().locale().toLanguageTag(),
                                                     "accessible",
-                                                    strategy
-                                                            == LocatorStrategyType
-                                                                    .ACCESSIBLE_NAME));
-            return raw.stream().map(Number::intValue).toList();
+                                                    strategy == LocatorStrategyType.ACCESSIBLE_NAME,
+                                                    "expectedIdentity",
+                                                    expectedIdentity));
         } catch (TimeoutError vanished) {
             if (confirmedAbsent(root, vanished)) {
                 throw new LocatorNotFoundException("Structured scope root disappeared");
@@ -336,6 +371,35 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             throw failure;
         }
+        requireBudgetAvailable(budget, "Structured-scope inspection");
+        return List.copyOf(identities);
+    }
+
+    private static void requireSameUniqueContainer(
+            Locator root,
+            String text,
+            LocatorStrategyType strategy,
+            LocatorContext context,
+            WaitBudget budget,
+            String expectedIdentity) {
+        List<String> currentIdentities =
+                matchingContainerIdentities(
+                        root, text, strategy, context, budget, expectedIdentity);
+        if (currentIdentities.size() > 1) {
+            throw new AmbiguousLocatorException(
+                    "Structured scope text \"" + text + "\" became ambiguous before use");
+        }
+        if (currentIdentities.isEmpty()) {
+            throw new LocatorNotFoundException("Structured-scope container disappeared before use");
+        }
+        if (!expectedIdentity.equals(currentIdentities.get(0))) {
+            throw new LocatorNotFoundException(
+                    "Structured-scope container identity changed before use");
+        }
+    }
+
+    private static void requireBudgetAvailable(WaitBudget budget, String operation) {
+        requirePositivePlaywrightTimeout(operationTimeoutMillis(budget.remaining(), 1), operation);
     }
 
     private Locator resolve(Locator root, LocatorBackendQuery query, LocatorConfig config) {

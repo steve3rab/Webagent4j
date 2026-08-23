@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,6 +39,25 @@ import org.junit.jupiter.params.provider.MethodSource;
  * failure propagates unchanged.
  */
 class PlaywrightLocatorBackendTest {
+
+    @Test
+    void anExpiredDiscoveryBudgetFailsBeforeCountingInsteadOfReturningAnEmptyResult() {
+        Locator matches = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ZERO,
+                                                20))
+                .isInstanceOf(TimeoutError.class)
+                .hasMessageContaining("caller timeout");
+        verify(matches, never()).count();
+    }
 
     @Test
     void currentCandidateInspectionsDoNotStartNestedPlaywrightWaits() {
