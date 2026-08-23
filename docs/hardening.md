@@ -17,11 +17,11 @@ Javadoc and examples, and the 70 percent Playwright line-coverage gate at 78.8 p
 | HARD-002 | P1 | A `WaitBudget` crossing the signed `nanoTime()` rollover reported zero remaining time without being expired and could fail to expire | Store the timeout allowance and compare rollover-safe elapsed deltas instead of an absolute saturated deadline | Resolved |
 | HARD-003 | P1 | Locator configuration, candidates, results, diagnostics, evidence, explanations, and events accepted `NaN` values | Require every documented unit-interval value to be finite as well as within `[0.0, 1.0]` | Resolved |
 | HARD-004 | P1 | Per-strategy locator duration used `Instant.now()` and therefore depended on wall-clock adjustment and host load | Measure elapsed strategy time with the injected monotonic clock; retain wall time only for absolute event timestamps | Resolved |
-| HARD-005 | P1 | Playwright candidate, element, and frame-URL inspection used an unrelated fixed 200 ms timeout, causing false failures on loaded hosts | Allocate inspection time from the remaining caller budget and candidate work, with the existing conservative one-shot floor | Resolved |
-| HARD-006 | P1 | A structured scope with multiple text constraints could scan every DOM node under a per-inspection floor, multiply a one-shot lookup past the action deadline, and fail differently as host load changed | Share and cap the one-shot inspection window, reserve a separately capped identity slice, and resolve exact `aria-label` scopes before the general accessible-name and visible-text fallbacks | Resolved |
+| HARD-005 | P1 | Playwright candidate, element, and frame-URL inspection could turn a nearly exhausted caller budget into independent 200 ms or 1,600 ms internal windows | Remove comfort floors, divide the actual remaining budget across identity and candidate inspections, and recalculate the remaining share before each frame-URL inspection | Resolved |
+| HARD-006 | P1 | The exact `aria-label` scope fast path could return one element without checking a second element whose equal accessible name came from `aria-labelledby` or another supported source | Classify every current accessible-name container match as 0/1/N under the shared caller deadline; use visible text only after proven accessible-name absence and propagate ambiguity or backend failure unchanged | Resolved |
 
-Open P0 findings: **0**. Open P1 findings: **0**. No wrong-target, duplicate-side-effect,
-secret-disclosure, resource-ownership, or schema-corruption defect was found.
+Open P0 findings: **0**. Open P1 findings: **0**. Open P2 findings: **0**. No wrong-target,
+duplicate-side-effect, secret-disclosure, resource-ownership, or schema-corruption defect was found.
 
 ## Cross-module matrix
 
@@ -29,7 +29,7 @@ secret-disclosure, resource-ownership, or schema-corruption defect was found.
 | --- | --- | --- |
 | Common and wait | Non-finite factors, conversion overflow, exponential overflow, zero delay, exact deadline, huge timeout, signed clock rollover, interruption | `RetryPolicyTest`, `WaitBudgetTest`, and `WaitEngineTest`; HARD-001 and HARD-002 closed |
 | Locator | Invalid finite ranges, ambiguity, stability reset, backend failure, timeout, wrong-target protection, monotonic elapsed time | `LocatorFiniteValueTest`, `LocatorEngineWaitIntegrationTest`, `LocatorAdvancedEngineTest`, and semantic integration tests; HARD-003 and HARD-004 closed |
-| Playwright browser and frames | Count/evaluate detachment races, still-present timeouts, failed rechecks, opaque backend failures, dynamic frames, cross-origin frames, budget multiplication, multiple ordered text constraints | `PlaywrightLocatorBackendTest`, `PlaywrightScopeResolverTest`, `PlaywrightFrameScopeResolverTest`, `MultipleContainingTextContextIT`, frame integration tests, and `SemanticLocatorIT`; HARD-005 and HARD-006 closed |
+| Playwright browser and frames | Count/evaluate detachment races, still-present timeouts, failed rechecks, opaque backend failures, dynamic frames, cross-origin frames, cross-source accessible-name ambiguity, budget multiplication, multiple ordered text constraints | `PlaywrightLocatorBackendTest`, `PlaywrightScopeResolverTest`, `PlaywrightFrameScopeResolverTest`, `PlaywrightMixedScopeOrderTest`, `ContextWrongTargetProtectionIT`, `MultipleContainingTextContextIT`, frame integration tests, and `SemanticLocatorIT`; HARD-005 and HARD-006 closed |
 | Verification and actions | Shared deadlines, stability, preconditions, dry run, interruption before/after invocation, retry classification, exactly-once execution, secret-safe results | `VerificationSharedBudgetTest`, action pipeline tests, and action integration tests; existing fail-closed contracts preserved |
 | Observation and extraction | Interrupted capture, invalid values, bounded collection shapes, conversion/validation failure, redaction, detached elements | Observation and extraction unit suites plus `ExtractionRobustnessIT`; no open P0/P1 finding |
 | HTTP crawler | Cycles, redirect/retry limits, malformed links, body bounds, interruption, deterministic frontier order, fetcher failures | `HttpCrawlerTest` and crawler integration coverage; no open P0/P1 finding |
@@ -61,11 +61,12 @@ worktree at the exact branch head. CI, CodeQL, and dependency review must report
 - Recording JSON schema V1 is byte-shape compatible; no field, enum, or version was added.
 - No runtime or test dependency was added.
 - No hidden executor, retry, browser action, or workflow side effect was introduced.
-- Playwright one-shot candidate work uses a shared, capped inspection window. Candidate identity
-  receives a separately capped slice, while all other inspections and frame URL checks scale with
-  the remaining budget and bounded work.
-- Structured scopes resolve an exact `aria-label` first, then retain the general accessible-name
-  and visible-text fallbacks. Ambiguity and backend failures still propagate without fallback.
+- Playwright candidate identity and inspection work divides the caller's actual remaining budget;
+  there is no 200 ms, 1,600 ms, or other comfort floor. Frame URL checks recalculate and divide the
+  remaining share before each candidate.
+- Structured scopes prove uniqueness across every supported accessible-name source before accepting
+  a container. An exact `aria-label` cannot bypass an equal `aria-labelledby` match; visible text is
+  used only after proven accessible-name absence, and ambiguity or backend failure never falls back.
 
 See [Cross-module contracts](contracts.md), [API stability policy](api-stability.md),
 [Testing](testing.md), and the [robustness benchmark](robustness.md).
