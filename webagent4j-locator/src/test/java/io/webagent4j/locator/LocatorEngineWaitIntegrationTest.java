@@ -51,11 +51,16 @@ class LocatorEngineWaitIntegrationTest {
     void aNeverSatisfiedWaitTimesOutByFakeTimeInsteadOfBusyLoopingOnRealWallClockTime() {
         // A backend that never has a match: the only way this wait can ever end is the
         // WaitBudget's deadline expiring.
+        AtomicInteger backendCalls = new AtomicInteger();
         ILocatorBackend neverFound =
-                (query, scope, config, timeout, candidateLimit) ->
-                        new LocatorBackendSearchResult(List.of(), 0, false);
+                (query, scope, config, timeout, candidateLimit) -> {
+                    backendCalls.incrementAndGet();
+                    return new LocatorBackendSearchResult(List.of(), 0, false);
+                };
         FakeClock clock = new FakeClock();
-        AdvancingSleeper sleeper = new AdvancingSleeper(clock, () -> {});
+        AtomicInteger callsAtLastSleep = new AtomicInteger();
+        AdvancingSleeper sleeper =
+                new AdvancingSleeper(clock, () -> callsAtLastSleep.set(backendCalls.get()));
         LocatorEngine engine = new LocatorEngine(new WaitEngine(clock, sleeper));
 
         long wallClockStartNanos = System.nanoTime();
@@ -81,6 +86,33 @@ class LocatorEngineWaitIntegrationTest {
         // Every attempt found nothing, so every attempt slept - proving the fake clock's
         // advances (not real elapsed time) are what actually drove this wait to its deadline.
         assertThat(sleeper.sleepCount()).isGreaterThan(1);
+        assertThat(backendCalls).hasValue(callsAtLastSleep.get());
+    }
+
+    @Test
+    void aProvenTransientNotFoundDuringSearchIsRetriedFromAFreshLiveContext() {
+        IElement element = LocatorTestFixtures.element(ElementRole.BUTTON, "Confirm");
+        AtomicInteger calls = new AtomicInteger();
+        ILocatorBackend replacedScope =
+                (query, scope, config, timeout, candidateLimit) -> {
+                    if (calls.getAndIncrement() == 0) {
+                        throw new LocatorNotFoundException(
+                                "Structured-scope container identity changed before use");
+                    }
+                    return new LocatorBackendSearchResult(
+                            candidates("replacement", element), 1, false);
+                };
+        FakeClock clock = new FakeClock();
+        LocatorEngine engine =
+                new LocatorEngine(new WaitEngine(clock, new AdvancingSleeper(clock, () -> {})));
+
+        LocatorResult result =
+                engine.locateSingle(
+                        pageContext(replacedScope),
+                        LocatorDefinition.forRole(ElementRole.BUTTON).named("Confirm"));
+
+        assertThat(result.element()).isSameAs(element);
+        assertThat(calls).hasValueGreaterThanOrEqualTo(2);
     }
 
     @Test

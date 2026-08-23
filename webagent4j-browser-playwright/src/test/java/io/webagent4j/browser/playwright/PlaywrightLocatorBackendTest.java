@@ -6,7 +6,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -67,8 +66,8 @@ class PlaywrightLocatorBackendTest {
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
         when(item.evaluateAll(anyString()))
-                .thenReturn(Map.of("identity", "candidate", "domOrder", 0))
-                .thenReturn(Map.of());
+                .thenReturn(Map.of("identity", "candidate", "domOrder", 0));
+        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class))).thenReturn(Map.of());
 
         LocatorBackendSearchResult result =
                 backend(documentRoot)
@@ -80,7 +79,8 @@ class PlaywrightLocatorBackendTest {
                                 20);
         result.candidates().getFirst().element().attributes();
 
-        verify(item, times(2)).evaluateAll(anyString());
+        verify(item).evaluateAll(anyString());
+        verify(item).evaluate(any(), any(), any(Locator.EvaluateOptions.class));
     }
 
     @ParameterizedTest
@@ -368,7 +368,8 @@ class PlaywrightLocatorBackendTest {
     @Test
     void aCanonicalMissingFrameFailureDuringCurrentElementInspectionProducesADetachedState() {
         Locator item = mock(Locator.class);
-        when(item.evaluateAll(anyString())).thenThrow(frameMissingForSelectorFailure());
+        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
+                .thenThrow(frameMissingForSelectorFailure());
         when(item.count()).thenReturn(1, 0);
 
         ElementState state =
@@ -391,7 +392,7 @@ class PlaywrightLocatorBackendTest {
                 new PlaywrightException(
                         "browser disconnected after Failed to find frame for selector x");
         when(item.count()).thenReturn(1);
-        when(item.evaluateAll(anyString())).thenThrow(failure);
+        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class))).thenThrow(failure);
 
         assertThatThrownBy(
                         () ->

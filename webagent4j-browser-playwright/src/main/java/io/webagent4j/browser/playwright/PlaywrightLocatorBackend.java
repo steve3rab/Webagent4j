@@ -109,12 +109,14 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             LocatorConfig config,
             Duration timeout,
             int candidateLimit) {
-        Locator root = scope.root().map(PlaywrightLocatorBackend::unwrap).orElse(documentRoot);
+        Locator root =
+                scope.root().map(PlaywrightLocatorBackend::unwrapForSearch).orElse(documentRoot);
         Locator resolved = resolve(root, query, config);
         WaitBudget inspectionBudget = WaitBudget.start(timeout, System::nanoTime);
         requireBudgetAvailable(inspectionBudget, "Candidate discovery");
         int discoveredCount = countOrZero(resolved);
         int count = Math.min(discoveredCount, candidateLimit);
+        double candidateInspectionTimeout = operationTimeoutMillis(timeout, count);
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
         Runnable scopeIdentityValidator =
                 scope.root()
@@ -146,7 +148,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                                     this,
                                     scope,
                                     config,
-                                    inspectionBudget,
+                                    candidateInspectionTimeout,
                                     scopeIdentityValidator),
                             ((Number) identity.get("domOrder")).intValue()));
         }
@@ -201,9 +203,6 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 return null;
             }
             throw failure;
-        }
-        if (identity != null) {
-            requireBudgetAvailable(budget, "Candidate identity inspection");
         }
         return identity;
     }
@@ -371,7 +370,6 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             throw failure;
         }
-        requireBudgetAvailable(budget, "Structured-scope inspection");
         return List.copyOf(identities);
     }
 
@@ -523,6 +521,13 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     static Locator unwrap(IElement element) {
         if (element instanceof PlaywrightElement playwrightElement) {
             return playwrightElement.locator();
+        }
+        throw new LocatorException("Locator scope belongs to a different browser backend");
+    }
+
+    private static Locator unwrapForSearch(IElement element) {
+        if (element instanceof PlaywrightElement playwrightElement) {
+            return playwrightElement.locatorWithoutScopeValidation();
         }
         throw new LocatorException("Locator scope belongs to a different browser backend");
     }

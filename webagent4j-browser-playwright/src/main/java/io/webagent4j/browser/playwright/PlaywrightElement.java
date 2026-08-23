@@ -59,8 +59,26 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 inspectionTimeoutMillis,
-                null,
                 null);
+    }
+
+    PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            double inspectionTimeoutMillis,
+            Runnable scopeIdentityValidator) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                inspectionTimeoutMillis,
+                null,
+                scopeIdentityValidator);
     }
 
     PlaywrightElement(
@@ -180,7 +198,6 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public String text() {
-        validateScopeIdentity();
         if (inspectionBudget != null) {
             Object value = evaluateOrNull("element => element.textContent");
             return value == null ? "" : String.valueOf(value).trim().replaceAll("\\s+", " ");
@@ -299,6 +316,10 @@ final class PlaywrightElement implements IElement {
         return locator;
     }
 
+    Locator locatorWithoutScopeValidation() {
+        return locator;
+    }
+
     void validateScopeIdentity() {
         if (scopeIdentityValidator != null) {
             scopeIdentityValidator.run();
@@ -306,26 +327,17 @@ final class PlaywrightElement implements IElement {
     }
 
     private Object evaluateOrNull(String expression) {
-        validateScopeIdentity();
         if (inspectionBudget != null) {
             requireInspectionBudget("Element inspection");
         }
         Object inspected;
         try {
-            if (inspectionBudget != null) {
-                String currentInspection =
-                        "elements => { const inspect = "
-                                + expression
-                                + "; return elements.length === 0 ? null : inspect(elements[0]); }";
-                inspected = locator.evaluateAll(currentInspection);
-            } else {
-                inspected =
-                        locator.evaluate(
-                                expression,
-                                null,
-                                new Locator.EvaluateOptions()
-                                        .setTimeout(inspectionTimeoutMillis("Element inspection")));
-            }
+            inspected =
+                    locator.evaluate(
+                            expression,
+                            null,
+                            new Locator.EvaluateOptions()
+                                    .setTimeout(inspectionTimeoutMillis("Element inspection")));
         } catch (TimeoutError failure) {
             if (absentAfter(failure)) {
                 return null;
@@ -336,9 +348,6 @@ final class PlaywrightElement implements IElement {
                 return null;
             }
             throw failure;
-        }
-        if (inspected != null && inspectionBudget != null) {
-            requireInspectionBudget("Element inspection");
         }
         return inspected;
     }

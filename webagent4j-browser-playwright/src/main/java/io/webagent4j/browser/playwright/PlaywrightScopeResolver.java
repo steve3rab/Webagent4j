@@ -91,7 +91,7 @@ final class PlaywrightScopeResolver {
         if (currentRoot.isPresent()) {
             requireDescendantOrSelf(currentRoot.get(), scope);
         }
-        return context.within(scope);
+        return withinResolvedElement(context, scope, "Explicit element");
     }
 
     /**
@@ -447,8 +447,9 @@ final class PlaywrightScopeResolver {
             LocatorContext baseContext,
             List<IPendingScope> pendingScopes,
             Duration timeout) {
-        WaitBudget budget = WaitBudget.start(timeout, FRAME_WAIT_ENGINE.clock());
         return new ILiveLocatorContext() {
+            private WaitBudget budget;
+
             @Override
             public LocatorContext baseline() {
                 return baseContext;
@@ -456,6 +457,9 @@ final class PlaywrightScopeResolver {
 
             @Override
             public LocatorContext resolve() {
+                if (budget == null) {
+                    budget = WaitBudget.start(timeout, FRAME_WAIT_ENGINE.clock());
+                }
                 return resolvePendingScopes(engine, baseContext, pendingScopes, budget);
             }
         };
@@ -653,9 +657,28 @@ final class PlaywrightScopeResolver {
                 throw new IllegalArgumentException(
                         "scope.containingText() must not contain a null or blank value");
             }
-            next = next.within(resolveContainer(engine, next, text, budget));
+            next =
+                    withinResolvedElement(
+                            next,
+                            resolveContainer(engine, next, text, budget),
+                            "Structured scope \"" + safeScopeText(text) + "\"");
         }
         return next;
+    }
+
+    private static LocatorContext withinResolvedElement(
+            LocatorContext context, IElement element, String description) {
+        if (!(context.backend() instanceof PlaywrightLocatorBackend)
+                || !(element instanceof PlaywrightElement)) {
+            return context.within(element);
+        }
+        return new LocatorContext(
+                context.backend(), context.scope().within(element, description), context.config());
+    }
+
+    private static String safeScopeText(String value) {
+        String normalized = value.replaceAll("[\\r\\n\\t]+", " ").trim();
+        return normalized.length() <= 80 ? normalized : normalized.substring(0, 77) + "...";
     }
 
     /**
