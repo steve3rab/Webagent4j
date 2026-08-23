@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -21,7 +20,6 @@ import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.LocatorStrategyType;
 import io.webagent4j.locator.api.ElementRole;
-import io.webagent4j.wait.WaitBudget;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
@@ -40,22 +38,23 @@ import org.junit.jupiter.params.provider.MethodSource;
 class PlaywrightLocatorBackendTest {
 
     @Test
-    void anExpiredDiscoveryBudgetFailsBeforeCountingInsteadOfReturningAnEmptyResult() {
+    void aZeroRemainingTimeoutStillPerformsOneImmediateCountInsteadOfSkippingIt() {
         Locator matches = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenReturn(0);
 
-        assertThatThrownBy(
-                        () ->
-                                backend(documentRoot)
-                                        .find(
-                                                roleQuery(),
-                                                LocatorScope.page(),
-                                                LocatorConfig.defaults(),
-                                                Duration.ZERO,
-                                                20))
-                .isInstanceOf(TimeoutError.class)
-                .hasMessageContaining("caller timeout");
-        verify(matches, never()).count();
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ZERO,
+                                20);
+
+        verify(matches).count();
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isZero();
     }
 
     @Test
@@ -370,7 +369,7 @@ class PlaywrightLocatorBackendTest {
         Locator item = mock(Locator.class);
         when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
                 .thenThrow(frameMissingForSelectorFailure());
-        when(item.count()).thenReturn(1, 0);
+        when(item.count()).thenReturn(1);
 
         ElementState state =
                 new PlaywrightElement(
@@ -379,7 +378,7 @@ class PlaywrightLocatorBackendTest {
                                 null,
                                 LocatorScope.page(),
                                 LocatorConfig.defaults(),
-                                WaitBudget.start(Duration.ofNanos(1), () -> 0L))
+                                1_000.0)
                         .state();
 
         assertThat(state.detached()).isTrue();
@@ -402,7 +401,7 @@ class PlaywrightLocatorBackendTest {
                                                 null,
                                                 LocatorScope.page(),
                                                 LocatorConfig.defaults(),
-                                                WaitBudget.start(Duration.ofNanos(1), () -> 0L))
+                                                1_000.0)
                                         .state())
                 .isSameAs(failure);
     }

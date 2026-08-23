@@ -1,8 +1,10 @@
 package io.webagent4j.browser.playwright;
 
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
+import io.webagent4j.common.LocatorException;
 import io.webagent4j.dom.BoundingBox;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
@@ -10,23 +12,41 @@ import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.IFind;
-import io.webagent4j.wait.WaitBudget;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
-/** Internal live element adapter; queries are re-resolved at each fluent terminal operation. */
+/**
+ * Internal live element adapter; queries are re-resolved at each fluent terminal operation.
+ *
+ * <p>Backed by exactly one of two Playwright primitives, chosen at construction:
+ *
+ * <ul>
+ *   <li>a re-resolving {@link Locator} (the default) - every operation re-queries the live DOM by
+ *       selector, so an equivalent element recreated after the original one is removed and replaced
+ *       is picked up transparently;
+ *   <li>a fixed {@link ElementHandle} - captured once, immediately upon discovery, for a leaf
+ *       element found within a structured-scope container (see {@link
+ *       PlaywrightLocatorBackend#resolveUniqueContainer}). A structured-scope container cannot be
+ *       re-found later by a native Playwright selector without either a persistent DOM stamp or a
+ *       position-based index, both unsafe against a later sibling insertion or reorder; capturing
+ *       the leaf's handle at the moment it is discovered - before any such later mutation can occur
+ *       - fixes its physical identity in a way a later reorder cannot perturb, and that only the
+ *       node's own actual removal invalidates.
+ * </ul>
+ */
 final class PlaywrightElement implements IElement {
 
     private final Locator locator;
+    private final ElementHandle handle;
     private final ElementRole knownRole;
     private final PlaywrightLocatorBackend locatorBackend;
     private final LocatorScope originatingScope;
     private final LocatorConfig locatorConfig;
     private final double inspectionTimeoutMillis;
-    private final WaitBudget inspectionBudget;
     private final Runnable scopeIdentityValidator;
+    private final boolean structuredScopeContainer;
 
     PlaywrightElement(
             Locator locator,
@@ -41,7 +61,6 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 PlaywrightLocatorBackend.inspectionTimeoutMillis(locatorConfig.defaultTimeout(), 1),
-                null,
                 null);
     }
 
@@ -77,64 +96,51 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 inspectionTimeoutMillis,
-                null,
-                scopeIdentityValidator);
+                scopeIdentityValidator,
+                false);
     }
 
+    /**
+     * Used only by {@link PlaywrightLocatorBackend#resolveUniqueContainer} for a container root.
+     */
     PlaywrightElement(
-            Locator locator,
-            ElementRole knownRole,
-            PlaywrightLocatorBackend locatorBackend,
-            LocatorScope originatingScope,
-            LocatorConfig locatorConfig,
-            WaitBudget inspectionBudget) {
-        this(
-                locator,
-                knownRole,
-                locatorBackend,
-                originatingScope,
-                locatorConfig,
-                0.0,
-                inspectionBudget,
-                null);
-    }
-
-    PlaywrightElement(
-            Locator locator,
-            ElementRole knownRole,
-            PlaywrightLocatorBackend locatorBackend,
-            LocatorScope originatingScope,
-            LocatorConfig locatorConfig,
-            WaitBudget inspectionBudget,
-            Runnable scopeIdentityValidator) {
-        this(
-                locator,
-                knownRole,
-                locatorBackend,
-                originatingScope,
-                locatorConfig,
-                0.0,
-                inspectionBudget,
-                scopeIdentityValidator);
-    }
-
-    private PlaywrightElement(
             Locator locator,
             ElementRole knownRole,
             PlaywrightLocatorBackend locatorBackend,
             LocatorScope originatingScope,
             LocatorConfig locatorConfig,
             double inspectionTimeoutMillis,
-            WaitBudget inspectionBudget,
-            Runnable scopeIdentityValidator) {
+            Runnable scopeIdentityValidator,
+            boolean structuredScopeContainer) {
         this.locator = locator;
+        this.handle = null;
         this.knownRole = knownRole;
         this.locatorBackend = locatorBackend;
         this.originatingScope = originatingScope;
         this.locatorConfig = locatorConfig;
         this.inspectionTimeoutMillis = inspectionTimeoutMillis;
-        this.inspectionBudget = inspectionBudget;
         this.scopeIdentityValidator = scopeIdentityValidator;
+        this.structuredScopeContainer = structuredScopeContainer;
+    }
+
+    /** A leaf element found within a structured-scope container, frozen to its physical handle. */
+    PlaywrightElement(
+            ElementHandle handle,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            double inspectionTimeoutMillis,
+            Runnable scopeIdentityValidator) {
+        this.locator = null;
+        this.handle = handle;
+        this.knownRole = knownRole;
+        this.locatorBackend = locatorBackend;
+        this.originatingScope = originatingScope;
+        this.locatorConfig = locatorConfig;
+        this.inspectionTimeoutMillis = inspectionTimeoutMillis;
+        this.scopeIdentityValidator = scopeIdentityValidator;
+        this.structuredScopeContainer = false;
     }
 
     @Override
@@ -198,23 +204,8 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public String text() {
-        if (inspectionBudget != null) {
-            Object value = evaluateOrNull("element => element.textContent");
-            return value == null ? "" : String.valueOf(value).trim().replaceAll("\\s+", " ");
-        }
-        String value;
-        try {
-            value =
-                    locator.textContent(
-                            new Locator.TextContentOptions()
-                                    .setTimeout(inspectionTimeoutMillis("Text inspection")));
-        } catch (TimeoutError failure) {
-            if (absentAfter(failure)) {
-                return "";
-            }
-            throw failure;
-        }
-        return value == null ? "" : value.trim().replaceAll("\\s+", " ");
+        Object value = evaluateOrNull("element => element.textContent");
+        return value == null ? "" : String.valueOf(value).trim().replaceAll("\\s+", " ");
     }
 
     @Override
@@ -259,16 +250,8 @@ final class PlaywrightElement implements IElement {
     @SuppressWarnings("unchecked")
     public ElementState state() {
         validateScopeIdentity();
-        requireInspectionBudget("Element state inspection");
-        try {
-            if (locator.count() == 0) {
-                return detachedState();
-            }
-        } catch (TimeoutError failure) {
-            if (absentAfter(failure)) {
-                return detachedState();
-            }
-            throw failure;
+        if (isAbsent()) {
+            return detachedState();
         }
         Object inspected = evaluateOrNull(PlaywrightDomInspectionScripts.STATE_FUNCTION);
         if (inspected == null) {
@@ -293,7 +276,8 @@ final class PlaywrightElement implements IElement {
     @Override
     public Optional<BoundingBox> boundingBox() {
         validateScopeIdentity();
-        com.microsoft.playwright.options.BoundingBox box = locator.boundingBox();
+        com.microsoft.playwright.options.BoundingBox box =
+                handle != null ? handle.boundingBox() : locator.boundingBox();
         if (box == null) {
             return Optional.empty();
         }
@@ -303,7 +287,11 @@ final class PlaywrightElement implements IElement {
     @Override
     public void click() {
         validateScopeIdentity();
-        locator.click();
+        if (handle != null) {
+            handle.click();
+        } else {
+            locator.click();
+        }
     }
 
     @Override
@@ -313,10 +301,19 @@ final class PlaywrightElement implements IElement {
 
     Locator locator() {
         validateScopeIdentity();
-        return locator;
+        return requireLocator();
     }
 
     Locator locatorWithoutScopeValidation() {
+        return requireLocator();
+    }
+
+    private Locator requireLocator() {
+        if (locator == null) {
+            throw new LocatorException(
+                    "This element was resolved as a fixed handle and cannot be used as a chainable"
+                            + " scope root");
+        }
         return locator;
     }
 
@@ -326,18 +323,47 @@ final class PlaywrightElement implements IElement {
         }
     }
 
-    private Object evaluateOrNull(String expression) {
-        if (inspectionBudget != null) {
-            requireInspectionBudget("Element inspection");
+    boolean isStructuredScopeContainer() {
+        return structuredScopeContainer;
+    }
+
+    /**
+     * Returns whether this element is currently absent (detached/removed), without starting any
+     * hidden Playwright wait: {@code Locator#count()} never waits, and {@code element.isConnected}
+     * evaluated directly against an already-resolved handle never waits either.
+     */
+    private boolean isAbsent() {
+        if (handle != null) {
+            try {
+                return !Boolean.TRUE.equals(handle.evaluate("element => element.isConnected"));
+            } catch (PlaywrightException failure) {
+                return PlaywrightFailureClassifier.isFrameUnavailable(failure);
+            }
         }
-        Object inspected;
         try {
-            inspected =
-                    locator.evaluate(
-                            expression,
-                            null,
-                            new Locator.EvaluateOptions()
-                                    .setTimeout(inspectionTimeoutMillis("Element inspection")));
+            return locator.count() == 0;
+        } catch (TimeoutError failure) {
+            return absentAfter(failure);
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
+                return true;
+            }
+            throw failure;
+        }
+    }
+
+    private Object evaluateOrNull(String expression) {
+        try {
+            if (handle != null) {
+                return handle.evaluate(expression);
+            }
+            return locator.evaluate(
+                    expression,
+                    null,
+                    new Locator.EvaluateOptions()
+                            .setTimeout(
+                                    PlaywrightLocatorBackend.requirePositivePlaywrightTimeout(
+                                            inspectionTimeoutMillis, "Element inspection")));
         } catch (TimeoutError failure) {
             if (absentAfter(failure)) {
                 return null;
@@ -349,31 +375,14 @@ final class PlaywrightElement implements IElement {
             }
             throw failure;
         }
-        return inspected;
     }
 
-    private double inspectionTimeoutMillis(String operation) {
-        double availableMillis =
-                inspectionBudget == null
-                        ? inspectionTimeoutMillis
-                        : PlaywrightLocatorBackend.operationTimeoutMillis(
-                                inspectionBudget.remaining(), 1);
-        return PlaywrightLocatorBackend.requirePositivePlaywrightTimeout(
-                availableMillis, operation);
-    }
-
-    private void requireInspectionBudget(String operation) {
-        if (inspectionBudget != null) {
-            PlaywrightLocatorBackend.requirePositivePlaywrightTimeout(
-                    PlaywrightLocatorBackend.operationTimeoutMillis(
-                            inspectionBudget.remaining(), 1),
-                    operation);
-        }
-    }
-
+    /** Returns true only when a fresh synchronous recheck proves the timed-out target is gone. */
     private boolean absentAfter(TimeoutError originalFailure) {
         try {
-            return locator.count() == 0;
+            return handle != null
+                    ? !Boolean.TRUE.equals(handle.evaluate("element => element.isConnected"))
+                    : locator.count() == 0;
         } catch (RuntimeException recheckFailure) {
             originalFailure.addSuppressed(recheckFailure);
             throw originalFailure;

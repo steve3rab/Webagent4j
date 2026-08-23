@@ -22,10 +22,21 @@ final class PlaywrightDomInspectionScripts {
     static final String HAS_ELEMENT_DESCENDANT_FUNCTION =
             "element => element.querySelector('*') !== null";
 
+    /**
+     * Classifies every current candidate against one accessible-name/text uniqueness proof and
+     * returns, for each matching element, an opaque physical identity plus its position among
+     * {@code elements} (in DOM order). Identity is tracked purely in-memory via a per-document
+     * {@code WeakMap} keyed by the live DOM node - this function never reads or writes any DOM
+     * attribute, so locator discovery/inspection never mutates application-owned markup and
+     * triggers no {@code MutationObserver}, CSS, or framework side effect. The returned {@code
+     * index} is only ever used to build a Locator for immediate, same-call use (a fresh
+     * classification-to-use seam); it is never retained as a way to re-find the element later,
+     * since a later DOM reorder or insertion would silently retarget a stale positional index to
+     * the wrong node.
+     */
     static final String MATCHING_CONTAINER_IDENTITIES_FUNCTION =
             """
             (elements, options) => {
-              const identityAttribute = 'data-webagent4j-scope-id';
               globalThis.__webagent4jLocatorIds ||= new WeakMap();
               globalThis.__webagent4jLocatorSequence ||= 0;
               const identify = element => {
@@ -35,12 +46,6 @@ final class PlaywrightDomInspectionScripts {
                 }
                 return globalThis.__webagent4jLocatorIds.get(element);
               };
-              for (const element of elements) {
-                const stampedIdentity = element.getAttribute(identityAttribute);
-                if (stampedIdentity && stampedIdentity !== identify(element)) {
-                  element.removeAttribute(identityAttribute);
-                }
-              }
               const normalize = value => (value || '').normalize('NFKC').replace(/\u00a0/g, ' ')
                 .trim().replace(/\s+/g, ' ').toLocaleLowerCase(options.locale);
               const accessibleName = element => {
@@ -57,20 +62,18 @@ final class PlaywrightDomInspectionScripts {
                   || element.getAttribute('title') || element.innerText || element.textContent || '';
               };
               const expected = normalize(options.text);
-              const matches = elements.filter(element => {
-                if (!element.querySelector('*')) return false;
+              const matches = [];
+              for (let index = 0; index < elements.length; index++) {
+                const element = elements[index];
+                if (!element.querySelector('*')) continue;
                 const actual = options.accessible
                   ? accessibleName(element)
                   : element.innerText || element.textContent || '';
-                return normalize(actual) === expected;
-              });
-              const identities = matches.map(identify);
-              if (matches.length === 1
-                  && (!options.expectedIdentity
-                    || identities[0] === options.expectedIdentity)) {
-                matches[0].setAttribute(identityAttribute, identities[0]);
+                if (normalize(actual) === expected) {
+                  matches.push({ identity: identify(element), index });
+                }
               }
-              return identities;
+              return matches;
             }
             """;
 

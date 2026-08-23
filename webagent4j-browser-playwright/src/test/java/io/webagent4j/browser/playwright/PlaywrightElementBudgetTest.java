@@ -1,12 +1,9 @@
 package io.webagent4j.browser.playwright;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.microsoft.playwright.Locator;
@@ -15,52 +12,25 @@ import io.webagent4j.dom.ElementState;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.api.ElementRole;
-import io.webagent4j.wait.WaitBudget;
-import java.time.Duration;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-/** Regression coverage for the one shared deadline used by current element inspections. */
+/**
+ * Regression coverage for the fixed, non-draining, per-call inspection timeout used by current
+ * element inspections. Unlike a shared, monotonically-draining deadline, this value is a plain
+ * millis number handed to each individual Playwright call; it never accumulates elapsed wall-clock
+ * time across separate operations on the same element, so a discovery-time timeout - however small
+ * - can never later cause {@code state()}, {@code role()}, {@code accessibleName()}, or {@code
+ * attributes()} to fail merely because time has passed since the element was discovered.
+ */
 class PlaywrightElementBudgetTest {
-
-    @Test
-    void anAlreadyExpiredBudgetTimesOutBeforeCheckingWhetherTheElementIsPresent() {
-        Locator locator = mock(Locator.class);
-        AtomicLong clock = new AtomicLong();
-        WaitBudget budget = WaitBudget.start(Duration.ofNanos(1), clock::get);
-        clock.set(1);
-
-        assertThatThrownBy(() -> element(locator, budget).state())
-                .isInstanceOf(TimeoutError.class)
-                .hasMessageContaining("caller timeout");
-        verifyNoInteractions(locator);
-    }
-
-    @Test
-    void expirationAfterPresenceWasConfirmedTimesOutBeforeStateEvaluation() {
-        Locator locator = mock(Locator.class);
-        AtomicLong clock = new AtomicLong();
-        WaitBudget budget = WaitBudget.start(Duration.ofNanos(1), clock::get);
-        when(locator.count())
-                .thenAnswer(
-                        invocation -> {
-                            clock.set(1);
-                            return 1;
-                        });
-
-        assertThatThrownBy(() -> element(locator, budget).state())
-                .isInstanceOf(TimeoutError.class)
-                .hasMessageContaining("caller timeout");
-        verify(locator, never()).evaluate(any(), any(), any(Locator.EvaluateOptions.class));
-    }
 
     @Test
     void aCurrentZeroCountIsStillAProvenDetachedElement() {
         Locator locator = mock(Locator.class);
         when(locator.count()).thenReturn(0);
 
-        ElementState state =
-                element(locator, WaitBudget.start(Duration.ofSeconds(1), () -> 0L)).state();
+        ElementState state = element(locator, 1_000.0).state();
 
         assertThat(state.detached()).isTrue();
     }
@@ -70,46 +40,71 @@ class PlaywrightElementBudgetTest {
         Locator locator = mock(Locator.class);
         when(locator.count()).thenThrow(new TimeoutError("count timed out")).thenReturn(0);
 
-        ElementState state =
-                element(locator, WaitBudget.start(Duration.ofSeconds(1), () -> 0L)).state();
+        ElementState state = element(locator, 1_000.0).state();
 
         assertThat(state.detached()).isTrue();
     }
 
+    /**
+     * A minuscule discovery-time inspection timeout must not later cause any of these operations to
+     * fail merely because it is small: it is a fixed per-call Playwright timeout, not a shared
+     * deadline that drains with elapsed wall-clock time.
+     */
     @Test
-    void expiredMetadataInspectionCannotReturnEmptyAttributes() {
-        assertExpiredInspectionFails(elementWithExpiredBudget()::attributes);
+    void aMinusculeInspectionTimeoutNeverFailsStateRoleNameOrAttributes() {
+        Locator locator = mock(Locator.class);
+        when(locator.count()).thenReturn(1);
+        when(locator.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
+                .thenReturn(Map.of());
+
+        PlaywrightElement element = element(locator, 1.0);
+
+        assertThatCode(element::state).doesNotThrowAnyException();
+        assertThatCode(element::role).doesNotThrowAnyException();
+        assertThatCode(element::accessibleName).doesNotThrowAnyException();
+        assertThatCode(element::attributes).doesNotThrowAnyException();
     }
 
+    /**
+     * The same fixed timeout is handed to every one of several successive inspections of the same
+     * element: it never decreases, because it is not tracked against any clock or shared budget.
+     */
     @Test
-    void expiredNameInspectionCannotReturnAnEmptyName() {
-        assertExpiredInspectionFails(elementWithExpiredBudget()::accessibleName);
+    void repeatedInspectionsOnTheSameElementAllSucceedRegardlessOfHowManyPrecededThem() {
+        Locator locator = mock(Locator.class);
+        when(locator.count()).thenReturn(1);
+        when(locator.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
+                .thenReturn(presentStateValue());
+
+        PlaywrightElement element = element(locator, 1.0);
+
+        for (int i = 0; i < 5; i++) {
+            assertThat(element.state().detached()).isFalse();
+        }
     }
 
-    @Test
-    void expiredRoleInspectionCannotReturnUnknown() {
-        assertExpiredInspectionFails(elementWithExpiredBudget()::role);
+    private static Map<String, Object> presentStateValue() {
+        return Map.ofEntries(
+                Map.entry("present", true),
+                Map.entry("visible", true),
+                Map.entry("enabled", true),
+                Map.entry("editable", false),
+                Map.entry("readOnly", false),
+                Map.entry("checked", false),
+                Map.entry("selected", false),
+                Map.entry("focused", false),
+                Map.entry("inViewport", true),
+                Map.entry("clickable", true),
+                Map.entry("covered", false));
     }
 
-    private static void assertExpiredInspectionFails(Runnable inspection) {
-        assertThatThrownBy(inspection::run)
-                .isInstanceOf(TimeoutError.class)
-                .hasMessageContaining("caller timeout");
-    }
-
-    private static PlaywrightElement elementWithExpiredBudget() {
-        AtomicLong clock = new AtomicLong();
-        WaitBudget budget = WaitBudget.start(Duration.ZERO, clock::get);
-        return element(mock(Locator.class), budget);
-    }
-
-    private static PlaywrightElement element(Locator locator, WaitBudget budget) {
+    private static PlaywrightElement element(Locator locator, double inspectionTimeoutMillis) {
         return new PlaywrightElement(
                 locator,
                 ElementRole.UNKNOWN,
                 null,
                 LocatorScope.page(),
                 LocatorConfig.defaults(),
-                budget);
+                inspectionTimeoutMillis);
     }
 }

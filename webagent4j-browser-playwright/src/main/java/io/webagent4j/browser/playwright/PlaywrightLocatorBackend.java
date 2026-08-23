@@ -1,5 +1,6 @@
 package io.webagent4j.browser.playwright;
 
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
@@ -24,7 +25,6 @@ import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.IFind;
 import io.webagent4j.locator.api.TextMatch;
 import io.webagent4j.locator.api.TextMatchType;
-import io.webagent4j.wait.WaitBudget;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -35,8 +35,6 @@ import java.util.Set;
 
 /** Playwright-only implementation of the backend-neutral locator discovery port. */
 final class PlaywrightLocatorBackend implements ILocatorBackend {
-
-    private static final String SCOPE_ID_ATTRIBUTE = "data-webagent4j-scope-id";
 
     private static final String IDENTITY_SCRIPT =
             """
@@ -112,12 +110,21 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         Locator root =
                 scope.root().map(PlaywrightLocatorBackend::unwrapForSearch).orElse(documentRoot);
         Locator resolved = resolve(root, query, config);
-        WaitBudget inspectionBudget = WaitBudget.start(timeout, System::nanoTime);
-        requireBudgetAvailable(inspectionBudget, "Candidate discovery");
+        // count() never starts a hidden Playwright wait, so a caller's remaining timeout - however
+        // small, even exactly zero on WaitEngine's final immediate probe - can never turn this
+        // non-blocking presence check itself into a synthetic timeout: only a genuine,
+        // still-present
+        // node or an unrelated runtime failure may propagate past this point.
         int discoveredCount = countOrZero(resolved);
         int count = Math.min(discoveredCount, candidateLimit);
         double candidateInspectionTimeout = operationTimeoutMillis(timeout, count);
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
+        boolean withinStructuredScopeContainer =
+                scope.root()
+                        .filter(PlaywrightElement.class::isInstance)
+                        .map(PlaywrightElement.class::cast)
+                        .map(PlaywrightElement::isStructuredScopeContainer)
+                        .orElse(false);
         Runnable scopeIdentityValidator =
                 scope.root()
                         .filter(PlaywrightElement.class::isInstance)
@@ -125,9 +132,8 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                         .<Runnable>map(element -> element::validateScopeIdentity)
                         .orElse(null);
         for (int index = 0; index < count; index++) {
-            requireBudgetAvailable(inspectionBudget, "Candidate inspection");
             Locator item = resolved.nth(index);
-            Map<String, Object> identity = identifyOrNull(item, inspectionBudget);
+            Map<String, Object> identity = identifyOrNull(item);
             if (identity == null) {
                 // count() confirmed this candidate a moment ago, but it (or, for a frame-scoped
                 // backend, the whole document containing it) was torn down before evaluate()
@@ -139,20 +145,78 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 continue;
             }
             ElementRole knownRole = knownRole(query);
-            candidates.add(
-                    new LocatorBackendCandidate(
-                            String.valueOf(identity.get("identity")),
-                            new PlaywrightElement(
+            PlaywrightElement element =
+                    withinStructuredScopeContainer
+                            ? handleBackedElementOrNull(
+                                    item,
+                                    knownRole,
+                                    scope,
+                                    config,
+                                    candidateInspectionTimeout,
+                                    scopeIdentityValidator)
+                            : new PlaywrightElement(
                                     item,
                                     knownRole,
                                     this,
                                     scope,
                                     config,
                                     candidateInspectionTimeout,
-                                    scopeIdentityValidator),
+                                    scopeIdentityValidator);
+            if (element == null) {
+                continue;
+            }
+            candidates.add(
+                    new LocatorBackendCandidate(
+                            String.valueOf(identity.get("identity")),
+                            element,
                             ((Number) identity.get("domOrder")).intValue()));
         }
         return new LocatorBackendSearchResult(candidates, discoveredCount, discoveredCount > count);
+    }
+
+    /**
+     * Freezes a candidate discovered within a structured-scope container to an {@link
+     * ElementHandle} at the exact moment of discovery, rather than a re-resolving {@link Locator}
+     * chained off the container. A structured-scope container cannot be re-found later by a native
+     * Playwright selector (its match is proven by custom accessible-name/text logic, not CSS/ARIA
+     * alone) without either a persistent DOM stamp or a position-based index - both unsafe: a later
+     * sibling insertion or reorder must never silently retarget the action to a different node.
+     * Capturing the handle immediately, before any such later mutation can occur, fixes the
+     * candidate's physical identity in a way that survives any later DOM reordering and is
+     * invalidated only by the node's own actual removal - exactly the "opaque physical identity
+     * bound within one classification-to- use seam" this class's structured-scope contract
+     * requires. Returns {@code null} exactly when {@link #identifyOrNull} would: the candidate
+     * vanished between discovery and this handle capture.
+     */
+    private PlaywrightElement handleBackedElementOrNull(
+            Locator item,
+            ElementRole knownRole,
+            LocatorScope scope,
+            LocatorConfig config,
+            double inspectionTimeoutMillis,
+            Runnable scopeIdentityValidator) {
+        ElementHandle handle;
+        try {
+            handle = item.elementHandle();
+        } catch (TimeoutError vanished) {
+            if (confirmedAbsent(item, vanished)) {
+                return null;
+            }
+            throw vanished;
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
+                return null;
+            }
+            throw failure;
+        }
+        return new PlaywrightElement(
+                handle,
+                knownRole,
+                this,
+                scope,
+                config,
+                inspectionTimeoutMillis,
+                scopeIdentityValidator);
     }
 
     /**
@@ -179,17 +243,16 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     /**
-     * Evaluates {@link #IDENTITY_SCRIPT} against {@code item}, bounded to the candidate's share of
-     * the caller's remaining resolution budget. This avoids both a fixed timeout that is too short
-     * on a loaded host and Playwright's multi-second default actionability wait silently
-     * multiplying the outer budget. Returns {@code null} only when a timeout is followed by a fresh
-     * absence proof or Playwright explicitly reports that the owning frame was detached. A
-     * still-present candidate, a failed recheck, and every other runtime failure propagate
-     * unchanged.
+     * Evaluates {@link #IDENTITY_SCRIPT} against {@code item} via the non-waiting {@code
+     * evaluateAll}, which never starts a hidden Playwright wait and therefore never needs - or
+     * tolerates - a preemptive "is there still budget left" gate: WaitEngine's own final immediate
+     * probe must always get one real look at the current DOM, even against an already-exhausted
+     * caller timeout. Returns {@code null} only when a timeout is followed by a fresh absence proof
+     * or Playwright explicitly reports that the owning frame was detached. A still-present
+     * candidate, a failed recheck, and every other runtime failure propagate unchanged.
      */
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> identifyOrNull(Locator item, WaitBudget budget) {
-        requireBudgetAvailable(budget, "Candidate identity inspection");
+    private static Map<String, Object> identifyOrNull(Locator item) {
         Map<String, Object> identity;
         try {
             identity = (Map<String, Object>) item.evaluateAll(CURRENT_IDENTITY_SCRIPT);
@@ -290,6 +353,18 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * nested locator-engine call, this method never starts an independent retry deadline. Every
      * current candidate is inspected so a match from one accessible-name source cannot hide a
      * second match from another source.
+     *
+     * <p>The container's opaque physical identity (an in-memory, per-document {@code WeakMap} entry
+     * - see {@link PlaywrightDomInspectionScripts#MATCHING_CONTAINER_IDENTITIES_FUNCTION}) is bound
+     * only for this one classification-to-use seam: the returned element's {@code validator}
+     * re-proves, immediately before actual use, that the same physical node is still the sole match
+     * - fail closed on a node swap, fail ambiguous on a new duplicate - without ever requiring that
+     * identity to survive into a later, independent poll. A later {@link
+     * io.webagent4j.locator.ILocatorEngine} poll, wait iteration, or action-plan revalidation calls
+     * this method again, fresh, and accepts whatever currently, uniquely matches - a new physical
+     * node with the same semantics is exactly as valid as the original one. No DOM attribute is
+     * ever read or written to make any of this possible - see {@link
+     * PlaywrightDomInspectionScripts#MATCHING_CONTAINER_IDENTITIES_FUNCTION}.
      */
     IElement resolveUniqueContainer(
             LocatorContext context, String text, LocatorStrategyType strategy, Duration timeout) {
@@ -302,50 +377,59 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                         .map(PlaywrightElement.class::cast)
                         .<Runnable>map(element -> element::validateScopeIdentity)
                         .orElse(() -> {});
-        WaitBudget inspectionBudget = WaitBudget.start(timeout, System::nanoTime);
-        requireBudgetAvailable(inspectionBudget, "Structured-scope inspection");
-        List<String> matchingIdentities =
-                matchingContainerIdentities(root, text, strategy, context, inspectionBudget, "");
-        if (matchingIdentities.size() > 1) {
-            throw new AmbiguousLocatorException(
-                    "Structured scope text \"" + text + "\" matched multiple containers");
-        }
-        if (matchingIdentities.isEmpty()) {
-            throw new LocatorNotFoundException(
-                    "No structured-scope container matched \"" + text + "\"");
-        }
-        String expectedIdentity = matchingIdentities.get(0);
-        Locator stableContainer =
-                root.locator(attributeSelector(SCOPE_ID_ATTRIBUTE, expectedIdentity));
+        ContainerMatch match = requireUniqueContainerMatch(root, text, strategy, context);
+        double containerTimeoutMillis = operationTimeoutMillis(timeout, 1);
         Runnable validator =
                 () -> {
                     ancestorValidator.run();
-                    requireSameUniqueContainer(
-                            root, text, strategy, context, inspectionBudget, expectedIdentity);
+                    requireSameUniqueContainer(root, text, strategy, context, match.identity());
                 };
         return new PlaywrightElement(
-                stableContainer,
+                root.locator("*").nth(match.index()),
                 ElementRole.UNKNOWN,
                 this,
                 context.scope(),
                 context.config(),
-                inspectionBudget,
-                validator);
+                containerTimeoutMillis,
+                validator,
+                true);
     }
 
+    /**
+     * One current classification match: its opaque physical identity and its position among {@code
+     * root.locator("*")}, used only to build a Locator for immediate, same-call use - never
+     * retained to re-find the node later.
+     */
+    private record ContainerMatch(String identity, int index) {}
+
+    private static ContainerMatch requireUniqueContainerMatch(
+            Locator root, String text, LocatorStrategyType strategy, LocatorContext context) {
+        List<ContainerMatch> matches = matchingContainers(root, text, strategy, context);
+        if (matches.size() > 1) {
+            throw new AmbiguousLocatorException(
+                    "Structured scope text \"" + text + "\" matched multiple containers");
+        }
+        if (matches.isEmpty()) {
+            throw new LocatorNotFoundException(
+                    "No structured-scope container matched \"" + text + "\"");
+        }
+        return matches.get(0);
+    }
+
+    /**
+     * Evaluates {@link PlaywrightDomInspectionScripts#MATCHING_CONTAINER_IDENTITIES_FUNCTION} via
+     * the non-waiting {@code evaluateAll} - never gated on remaining caller budget, for the same
+     * reason {@link #identifyOrNull} is not: a non-waiting probe can never itself overrun a
+     * deadline, and WaitEngine's final immediate probe must always get one real look at the current
+     * DOM.
+     */
     @SuppressWarnings("unchecked")
-    private static List<String> matchingContainerIdentities(
-            Locator root,
-            String text,
-            LocatorStrategyType strategy,
-            LocatorContext context,
-            WaitBudget budget,
-            String expectedIdentity) {
-        requireBudgetAvailable(budget, "Structured-scope inspection");
-        List<String> identities;
+    private static List<ContainerMatch> matchingContainers(
+            Locator root, String text, LocatorStrategyType strategy, LocatorContext context) {
+        List<Map<String, Object>> raw;
         try {
-            identities =
-                    (List<String>)
+            raw =
+                    (List<Map<String, Object>>)
                             root.locator("*")
                                     .evaluateAll(
                                             PlaywrightDomInspectionScripts
@@ -356,9 +440,9 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                                                     "locale",
                                                     context.config().locale().toLanguageTag(),
                                                     "accessible",
-                                                    strategy == LocatorStrategyType.ACCESSIBLE_NAME,
-                                                    "expectedIdentity",
-                                                    expectedIdentity));
+                                                    strategy
+                                                            == LocatorStrategyType
+                                                                    .ACCESSIBLE_NAME));
         } catch (TimeoutError vanished) {
             if (confirmedAbsent(root, vanished)) {
                 throw new LocatorNotFoundException("Structured scope root disappeared");
@@ -370,7 +454,14 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             throw failure;
         }
-        return List.copyOf(identities);
+        List<ContainerMatch> matches = new ArrayList<>(raw.size());
+        for (Map<String, Object> entry : raw) {
+            matches.add(
+                    new ContainerMatch(
+                            String.valueOf(entry.get("identity")),
+                            ((Number) entry.get("index")).intValue()));
+        }
+        return List.copyOf(matches);
     }
 
     private static void requireSameUniqueContainer(
@@ -378,26 +469,19 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             String text,
             LocatorStrategyType strategy,
             LocatorContext context,
-            WaitBudget budget,
             String expectedIdentity) {
-        List<String> currentIdentities =
-                matchingContainerIdentities(
-                        root, text, strategy, context, budget, expectedIdentity);
-        if (currentIdentities.size() > 1) {
+        List<ContainerMatch> current = matchingContainers(root, text, strategy, context);
+        if (current.size() > 1) {
             throw new AmbiguousLocatorException(
                     "Structured scope text \"" + text + "\" became ambiguous before use");
         }
-        if (currentIdentities.isEmpty()) {
+        if (current.isEmpty()) {
             throw new LocatorNotFoundException("Structured-scope container disappeared before use");
         }
-        if (!expectedIdentity.equals(currentIdentities.get(0))) {
+        if (!expectedIdentity.equals(current.get(0).identity())) {
             throw new LocatorNotFoundException(
                     "Structured-scope container identity changed before use");
         }
-    }
-
-    private static void requireBudgetAvailable(WaitBudget budget, String operation) {
-        requirePositivePlaywrightTimeout(operationTimeoutMillis(budget.remaining(), 1), operation);
     }
 
     private Locator resolve(Locator root, LocatorBackendQuery query, LocatorConfig config) {

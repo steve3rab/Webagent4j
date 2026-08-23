@@ -350,6 +350,14 @@ final class ActionTestApplication implements AutoCloseable {
                             <section id="shipping-original" aria-label="Shipping"><button
                               onclick="fetch('/count-click/shipping-original')">Continue</button></section>
                             """);
+            case "/actions/context-scope-preexisting-attribute" ->
+                    document(
+                            "Context scope pre-existing application attribute",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"
+                              data-webagent4j-scope-id="app-owned-value"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            """);
             case "/actions/context-dynamic-semantic-change" ->
                     document(
                             "Context dynamic semantic change",
