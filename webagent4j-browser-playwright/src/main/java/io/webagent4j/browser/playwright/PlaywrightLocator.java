@@ -192,18 +192,8 @@ final class PlaywrightLocator implements ILocator<IElement> {
      * structured scopes by kind.
      */
     private ILiveLocatorContext liveContext() {
-        return new ILiveLocatorContext() {
-            @Override
-            public LocatorContext baseline() {
-                return baseContext;
-            }
-
-            @Override
-            public LocatorContext resolve() {
-                return PlaywrightScopeResolver.resolvePendingScopes(
-                        engine, baseContext, pendingScopes);
-            }
-        };
+        return PlaywrightScopeResolver.liveContext(
+                engine, baseContext, pendingScopes, baseContext.timeoutFor(definition));
     }
 
     private ILocator<IElement> copy(LocatorDefinition next) {

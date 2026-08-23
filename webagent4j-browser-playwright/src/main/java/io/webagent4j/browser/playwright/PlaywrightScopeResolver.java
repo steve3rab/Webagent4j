@@ -20,6 +20,7 @@ import io.webagent4j.locator.LocatorDiagnosticsLevel;
 import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.locator.LocatorResult;
 import io.webagent4j.locator.LocatorScope;
+import io.webagent4j.locator.LocatorStrategyType;
 import io.webagent4j.locator.api.ILocatorScope;
 import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.locator.api.TextMatch;
@@ -147,6 +148,19 @@ final class PlaywrightScopeResolver {
      */
     static LocatorContext resolvePendingScopes(
             ILocatorEngine engine, LocatorContext base, List<IPendingScope> pending) {
+        return resolvePendingScopes(
+                engine,
+                base,
+                pending,
+                WaitBudget.start(
+                        base.config().resolutionBudget().timeout(), FRAME_WAIT_ENGINE.clock()));
+    }
+
+    static LocatorContext resolvePendingScopes(
+            ILocatorEngine engine,
+            LocatorContext base,
+            List<IPendingScope> pending,
+            WaitBudget budget) {
         LocatorContext resolved = base;
         for (IPendingScope scope : pending) {
             resolved =
@@ -154,19 +168,19 @@ final class PlaywrightScopeResolver {
                         case IPendingScope.Element element ->
                                 resolveElementScope(resolved, element.element());
                         case IPendingScope.Structured structured ->
-                                resolveStructuredScope(engine, resolved, structured.scope());
+                                resolveStructuredScope(
+                                        engine, resolved, structured.scope(), budget);
                         case IPendingScope.Frame frame ->
-                                resolveFrameScope(engine, resolved, frame.definition());
+                                resolveFrameScope(engine, resolved, frame.definition(), budget);
                     };
         }
         return resolved;
     }
 
     /**
-     * Resolves one frame boundary against the current live context, bounded to one immediate lookup
-     * - see {@link #ONE_SHOT_TIMEOUT} - since this is always one hop inside an outer {@link
-     * io.webagent4j.wait.WaitEngine}-driven poll (either another pending-scope resolution or {@link
-     * PlaywrightFrameLocator}'s own retry loop for a later hop), never the wait itself.
+     * Resolves one frame boundary against the current live context with one lookup bounded by the
+     * caller's shared remaining deadline. This is always one prerequisite hop inside an outer
+     * {@link io.webagent4j.wait.WaitEngine}-driven operation, never a new independent deadline.
      *
      * <p>A frame is a separate document boundary, never a descendant DOM element of the page that
      * contains its {@code <iframe>}: the returned context's backend is a brand-new {@link
@@ -175,9 +189,26 @@ final class PlaywrightScopeResolver {
      */
     static LocatorContext resolveFrameScope(
             ILocatorEngine engine, LocatorContext context, FrameDefinition definition) {
+        WaitBudget budget =
+                WaitBudget.start(
+                        context.config().resolutionBudget().timeout(), FRAME_WAIT_ENGINE.clock());
+        return resolveFrameScope(engine, context, definition, budget);
+    }
+
+    private static LocatorContext resolveFrameScope(
+            ILocatorEngine engine,
+            LocatorContext context,
+            FrameDefinition definition,
+            WaitBudget budget) {
+        LocatorDefinition query = LocatorDefinition.css(frameElementSelector(definition));
+        WaitSample<FrameMatch> sample =
+                probeFrameOnce(
+                        engine, ILiveLocatorContext.fixed(context), definition, query, budget);
+        if (sample.status() != WaitSample.Status.SATISFIED) {
+            throw new LocatorNotFoundException("No frame matched " + describeFrame(definition));
+        }
         LocatorResult iframe =
-                resolveFrameElement(
-                        engine, ILiveLocatorContext.fixed(context), definition, ONE_SHOT_TIMEOUT);
+                toLocatorResult(query, sample.value().orElseThrow(), budget.elapsed());
         return descendIntoFrame(engine, iframe, definition, context);
     }
 
@@ -215,12 +246,11 @@ final class PlaywrightScopeResolver {
      *
      * <p>Reuses the same {@link io.webagent4j.wait.WaitEngine} coordinator every other domain in
      * this codebase already polls through (see {@link #FRAME_WAIT_ENGINE}) rather than a parallel
-     * resolution engine: each poll performs one immediate, non-retrying {@link
-     * ILocatorEngine#locateAll} lookup for the id/name/title criteria - the exact one-shot idiom
-     * {@link #resolveContainer} already uses for a structured scope's container lookup - filters
-     * the result by the url criterion, and classifies what remains. Ambiguity found on any single
-     * poll ends the wait immediately, exactly like {@link ILocatorEngine#locateSingle} already does
-     * at the element level: it is a fail-safe condition, never a transient state to retry through.
+     * resolution engine: each poll performs one {@link ILocatorEngine#locateAll} lookup for the
+     * id/name/title criteria, bounded by the outer budget's current remainder, filters the result
+     * by the url criterion, and classifies what remains. Ambiguity found on any single poll ends
+     * the wait immediately, exactly like {@link ILocatorEngine#locateSingle} already does at the
+     * element level: it is a fail-safe condition, never a transient state to retry through.
      */
     private static LocatorResult resolveFrameElement(
             ILocatorEngine engine,
@@ -230,7 +260,7 @@ final class PlaywrightScopeResolver {
             Optional<Duration> stability) {
         Objects.requireNonNull(definition, "definition");
         String selector = frameElementSelector(definition);
-        LocatorDefinition query = LocatorDefinition.css(selector).withTimeout(ONE_SHOT_TIMEOUT);
+        LocatorDefinition query = LocatorDefinition.css(selector);
 
         WaitBudget budget = WaitBudget.start(timeout, FRAME_WAIT_ENGINE.clock());
         WaitPolicy policy =
@@ -281,8 +311,9 @@ final class PlaywrightScopeResolver {
             }
             return WaitSample.pending();
         }
+        LocatorDefinition boundedQuery = query.withTimeout(atLeastOneNano(budget.remaining()));
         List<LocatorCandidate> matches =
-                filterByUrl(engine.locateAll(context, query), definition, budget.remaining());
+                filterByUrl(engine.locateAll(context, boundedQuery), definition, budget);
         if (matches.size() > 1) {
             throw new AmbiguousLocatorException(
                     "Frame query "
@@ -309,23 +340,29 @@ final class PlaywrightScopeResolver {
      * conditions are absorbed as a detachment race versus propagated unchanged.
      */
     private static List<LocatorCandidate> filterByUrl(
-            List<LocatorCandidate> candidates,
-            FrameDefinition definition,
-            Duration remainingBudget) {
+            List<LocatorCandidate> candidates, FrameDefinition definition, WaitBudget budget) {
         if (definition.url().isEmpty()) {
             return candidates;
         }
         TextMatch match = definition.url().orElseThrow();
-        double inspectionTimeoutMillis =
-                PlaywrightLocatorBackend.operationTimeoutMillis(
-                        remainingBudget, Math.max(1, candidates.size()));
         List<LocatorCandidate> filtered = new ArrayList<>();
-        for (LocatorCandidate candidate : candidates) {
+        for (int index = 0; index < candidates.size(); index++) {
+            LocatorCandidate candidate = candidates.get(index);
+            double inspectionTimeoutMillis =
+                    PlaywrightLocatorBackend.operationTimeoutMillis(
+                            atLeastOneNano(budget.remaining()), candidates.size() - index);
             if (matchesUrl(candidate.element(), match, inspectionTimeoutMillis)) {
                 filtered.add(candidate);
             }
         }
         return List.copyOf(filtered);
+    }
+
+    /**
+     * Preserves WaitEngine's existing final immediate-probe granularity without a comfort floor.
+     */
+    private static Duration atLeastOneNano(Duration duration) {
+        return duration.isZero() ? Duration.ofNanos(1) : duration;
     }
 
     /** Builds the {@link LocatorResult} a successful {@link #resolveFrameElement} call returns. */
@@ -383,7 +420,7 @@ final class PlaywrightScopeResolver {
             Duration timeout) {
         return resolveFrameElement(
                 engine,
-                liveContext(engine, baseContext, parentPendingScopes),
+                liveContext(engine, baseContext, parentPendingScopes, timeout),
                 definition,
                 timeout,
                 definition.stability());
@@ -398,6 +435,19 @@ final class PlaywrightScopeResolver {
      */
     static ILiveLocatorContext liveContext(
             ILocatorEngine engine, LocatorContext baseContext, List<IPendingScope> pendingScopes) {
+        return liveContext(
+                engine,
+                baseContext,
+                pendingScopes,
+                baseContext.config().resolutionBudget().timeout());
+    }
+
+    static ILiveLocatorContext liveContext(
+            ILocatorEngine engine,
+            LocatorContext baseContext,
+            List<IPendingScope> pendingScopes,
+            Duration timeout) {
+        WaitBudget budget = WaitBudget.start(timeout, FRAME_WAIT_ENGINE.clock());
         return new ILiveLocatorContext() {
             @Override
             public LocatorContext baseline() {
@@ -406,7 +456,7 @@ final class PlaywrightScopeResolver {
 
             @Override
             public LocatorContext resolve() {
-                return resolvePendingScopes(engine, baseContext, pendingScopes);
+                return resolvePendingScopes(engine, baseContext, pendingScopes, budget);
             }
         };
     }
@@ -460,16 +510,21 @@ final class PlaywrightScopeResolver {
         Locator iframeLocator = PlaywrightLocatorBackend.unwrap(iframeElement);
         ElementHandle handle;
         try {
-            handle =
-                    iframeLocator.elementHandle(
-                            new Locator.ElementHandleOptions().setTimeout(inspectionTimeoutMillis));
+            if (!(inspectionTimeoutMillis > 0.0)) {
+                return false;
+            }
+            List<ElementHandle> handles = iframeLocator.elementHandles();
+            if (handles.isEmpty()) {
+                return false;
+            }
+            handle = handles.getFirst();
         } catch (TimeoutError vanished) {
             if (confirmedAbsent(iframeLocator, vanished)) {
                 return false;
             }
             throw vanished;
         } catch (PlaywrightException failure) {
-            if (PlaywrightFailureClassifier.isFrameDetached(failure)) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return false;
             }
             throw failure;
@@ -497,7 +552,7 @@ final class PlaywrightScopeResolver {
         try {
             return locator.count() == 0;
         } catch (PlaywrightException recheckFailure) {
-            if (PlaywrightFailureClassifier.isFrameDetached(recheckFailure)) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(recheckFailure)) {
                 return true;
             }
             original.addSuppressed(recheckFailure);
@@ -575,6 +630,17 @@ final class PlaywrightScopeResolver {
      */
     static LocatorContext resolveStructuredScope(
             ILocatorEngine engine, LocatorContext context, ILocatorScope<IElement> scope) {
+        WaitBudget budget =
+                WaitBudget.start(
+                        context.config().resolutionBudget().timeout(), FRAME_WAIT_ENGINE.clock());
+        return resolveStructuredScope(engine, context, scope, budget);
+    }
+
+    private static LocatorContext resolveStructuredScope(
+            ILocatorEngine engine,
+            LocatorContext context,
+            ILocatorScope<IElement> scope,
+            WaitBudget budget) {
         Objects.requireNonNull(scope, "scope");
         LocatorContext next = context;
         if (scope.scopeElement().isPresent()) {
@@ -587,43 +653,54 @@ final class PlaywrightScopeResolver {
                 throw new IllegalArgumentException(
                         "scope.containingText() must not contain a null or blank value");
             }
-            next = next.within(resolveContainer(engine, next, text));
+            next = next.within(resolveContainer(engine, next, text, budget));
         }
         return next;
     }
 
     /**
-     * The timeout every container lookup here is bounded to: exactly one immediate DOM check, no
-     * internal retrying of its own. A structured scope is always resolved from inside an outer
-     * {@code WaitEngine}-driven poll (see {@code PlaywrightLocator}'s live context), which already
-     * supplies the retry cadence for the whole logical wait; a container lookup that retried on its
-     * own too would start a second, nested full-timeout wait inside a single outer poll attempt and
-     * silently multiply the caller's configured timeout. {@link ILocatorEngine#locateSingle} still
-     * guarantees exactly one immediate probe even against an already-expired budget, so a
-     * momentarily-absent or newly-ambiguous container is still detected on this one attempt.
+     * Minimal timeout used only by the backend-neutral compatibility path below. The Playwright
+     * backend uses one direct 0/1/N probe against the shared caller budget instead of starting a
+     * nested locator-engine deadline.
      */
     private static final Duration ONE_SHOT_TIMEOUT = Duration.ofNanos(1);
 
     /**
-     * Resolves one unambiguous container matching {@code text}, preferring an exact {@code
-     * aria-label} lookup before the general accessible-name strategy (aria-labelledby, labels,
-     * content, etc.) and falling back to visible text only when accessible-name resolution
-     * demonstrably reports a safe "not found" outcome. The direct attribute lookup avoids scanning
-     * every DOM node for the most common structured-scope representation.
+     * Resolves one unambiguous container matching {@code text}. The Playwright path checks every
+     * current container's accessible name so {@code aria-label}, {@code aria-labelledby}, labels,
+     * and content all participate in the same uniqueness proof. Visible text is used only when
+     * accessible-name resolution demonstrably reports a safe "not found" outcome.
      *
      * <p>The fallback is never triggered by ambiguity or by a genuine backend/runtime failure: both
      * are hard constraints that must propagate unchanged rather than being silently retried under a
      * different strategy.
      */
     private static IElement resolveContainer(
-            ILocatorEngine engine, LocatorContext context, String text) {
+            ILocatorEngine engine, LocatorContext context, String text, WaitBudget budget) {
+        if (context.backend() instanceof PlaywrightLocatorBackend backend) {
+            try {
+                return backend.resolveUniqueContainer(
+                        context,
+                        text,
+                        LocatorStrategyType.ACCESSIBLE_NAME,
+                        atLeastOneNano(budget.remaining()));
+            } catch (RuntimeException accessibleFailure) {
+                if (!LocatorFailureClassifier.isNotFound(accessibleFailure)) {
+                    throw accessibleFailure;
+                }
+                return backend.resolveUniqueContainer(
+                        context,
+                        text,
+                        LocatorStrategyType.VISIBLE_TEXT,
+                        atLeastOneNano(budget.remaining()));
+            }
+        }
         try {
-            return engine.locateSingle(
-                            context,
-                            LocatorDefinition.element()
-                                    .withAttribute("aria-label", text)
-                                    .withTimeout(ONE_SHOT_TIMEOUT))
-                    .element();
+            engine.locateSingle(
+                    context,
+                    LocatorDefinition.element()
+                            .withAttribute("aria-label", text)
+                            .withTimeout(ONE_SHOT_TIMEOUT));
         } catch (RuntimeException directLabelFailure) {
             if (!LocatorFailureClassifier.isNotFound(directLabelFailure)) {
                 throw directLabelFailure;

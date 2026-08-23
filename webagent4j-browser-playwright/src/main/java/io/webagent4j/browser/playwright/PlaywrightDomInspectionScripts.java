@@ -19,6 +19,38 @@ final class PlaywrightDomInspectionScripts {
             }
             """;
 
+    static final String HAS_ELEMENT_DESCENDANT_FUNCTION =
+            "element => element.querySelector('*') !== null";
+
+    static final String MATCHING_CONTAINER_INDICES_FUNCTION =
+            """
+            (elements, options) => {
+              const normalize = value => (value || '').normalize('NFKC').replace(/\u00a0/g, ' ')
+                .trim().replace(/\s+/g, ' ').toLocaleLowerCase(options.locale);
+              const accessibleName = element => {
+                const labels = element.labels
+                  ? Array.from(element.labels)
+                    .map(label => label.innerText || label.textContent || '').join(' ')
+                  : '';
+                const labelledBy = (element.getAttribute('aria-labelledby') || '')
+                  .split(/\s+/).filter(Boolean)
+                  .map(id => element.ownerDocument.getElementById(id)).filter(Boolean)
+                  .map(item => item.innerText || item.textContent || '').join(' ');
+                return labelledBy || element.getAttribute('aria-label') || labels
+                  || element.getAttribute('alt') || element.getAttribute('placeholder')
+                  || element.getAttribute('title') || element.innerText || element.textContent || '';
+              };
+              const expected = normalize(options.text);
+              return elements.flatMap((element, index) => {
+                if (!element.querySelector('*')) return [];
+                const actual = options.accessible
+                  ? accessibleName(element)
+                  : element.innerText || element.textContent || '';
+                return normalize(actual) === expected ? [index] : [];
+              });
+            }
+            """;
+
     static final String ROLE_FUNCTION =
             """
             (element) => {

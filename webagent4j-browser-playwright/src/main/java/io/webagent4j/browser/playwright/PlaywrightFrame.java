@@ -26,6 +26,7 @@ import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationEngine;
 import io.webagent4j.observation.ObservationOptions;
 import io.webagent4j.observation.spi.PageSnapshot;
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 
@@ -122,32 +123,48 @@ final class PlaywrightFrame implements IFrame {
     @Override
     public LocatorResult locate(LocatorDefinition definition) {
         return engine.locate(
-                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes),
+                PlaywrightScopeResolver.liveContext(
+                        engine, baseContext, pendingScopes, baseContext.timeoutFor(definition)),
                 definition);
     }
 
     @Override
     public LocatorResult locate(LocatorDefinition definition, LocatorConfig overrideConfig) {
         Objects.requireNonNull(overrideConfig, "config");
-        return engine.locate(liveContext(overrideConfig), definition);
+        LocatorContext overriddenBase =
+                new LocatorContext(baseContext.backend(), baseContext.scope(), overrideConfig);
+        return engine.locate(
+                liveContext(overrideConfig, overriddenBase.timeoutFor(definition)), definition);
     }
 
     @Override
     public <T> ExtractionResult<T> extract(ExtractionRequest<T> request) {
         return extractionEngine.extract(
-                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes), request);
+                PlaywrightScopeResolver.liveContext(
+                        engine,
+                        baseContext,
+                        pendingScopes,
+                        baseContext.timeoutFor(request.source())),
+                request);
     }
 
     @Override
     public <T> ExtractionResult<List<T>> extractList(ExtractionRequest<T> request) {
         return extractionEngine.extractList(
-                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes), request);
+                PlaywrightScopeResolver.liveContext(
+                        engine,
+                        baseContext,
+                        pendingScopes,
+                        baseContext.timeoutFor(request.source())),
+                request);
     }
 
     @Override
     public ExtractionResult<ExtractedTable> extractTable(LocatorDefinition source) {
         return extractionEngine.extractTable(
-                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes), source);
+                PlaywrightScopeResolver.liveContext(
+                        engine, baseContext, pendingScopes, baseContext.timeoutFor(source)),
+                source);
     }
 
     @Override
@@ -174,7 +191,9 @@ final class PlaywrightFrame implements IFrame {
      * becomes ambiguous mid-wait is caught on the very next poll rather than only when the wait
      * begins.
      */
-    private ILiveLocatorContext liveContext(LocatorConfig overrideConfig) {
+    private ILiveLocatorContext liveContext(LocatorConfig overrideConfig, Duration timeout) {
+        ILiveLocatorContext pendingContext =
+                PlaywrightScopeResolver.liveContext(engine, baseContext, pendingScopes, timeout);
         return new ILiveLocatorContext() {
             @Override
             public LocatorContext baseline() {
@@ -184,9 +203,7 @@ final class PlaywrightFrame implements IFrame {
 
             @Override
             public LocatorContext resolve() {
-                LocatorContext resolved =
-                        PlaywrightScopeResolver.resolvePendingScopes(
-                                engine, baseContext, pendingScopes);
+                LocatorContext resolved = pendingContext.resolve();
                 return new LocatorContext(resolved.backend(), resolved.scope(), overrideConfig);
             }
         };

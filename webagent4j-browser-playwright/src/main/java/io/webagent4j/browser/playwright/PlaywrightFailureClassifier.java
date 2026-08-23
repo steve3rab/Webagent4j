@@ -8,6 +8,9 @@ final class PlaywrightFailureClassifier {
     private static final String FRAME_DETACHED = "Frame was detached";
     private static final String PROTOCOL_FRAME_DETACHED =
             "Error {\n  message='" + FRAME_DETACHED + "\n";
+    private static final String FRAME_MISSING_FOR_SELECTOR = "Failed to find frame for selector \"";
+    private static final String PROTOCOL_FRAME_MISSING_FOR_SELECTOR =
+            "Error {\n  message='" + FRAME_MISSING_FOR_SELECTOR;
 
     private PlaywrightFailureClassifier() {}
 
@@ -28,5 +31,26 @@ final class PlaywrightFailureClassifier {
         }
         String normalized = message.replace("\r\n", "\n");
         return normalized.equals(FRAME_DETACHED) || normalized.startsWith(PROTOCOL_FRAME_DETACHED);
+    }
+
+    /**
+     * Returns whether Playwright definitively reported that the frame required to resolve a lazy
+     * selector no longer exists.
+     *
+     * <p>The selector suffix is intentionally not matched in arbitrary text. Only Playwright's bare
+     * canonical message or the first protocol-envelope field qualifies, so a disconnected browser
+     * error that merely mentions the phrase remains an opaque backend failure.
+     */
+    static boolean isFrameUnavailable(PlaywrightException failure) {
+        if (isFrameDetached(failure)) {
+            return true;
+        }
+        String message = failure.getMessage();
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.replace("\r\n", "\n");
+        return normalized.startsWith(FRAME_MISSING_FOR_SELECTOR)
+                || normalized.startsWith(PROTOCOL_FRAME_MISSING_FOR_SELECTOR);
     }
 }

@@ -7,6 +7,7 @@ import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.AriaRole;
 import io.webagent4j.common.LocatorException;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.ILocatorBackend;
 import io.webagent4j.locator.ILocatorEngine;
 import io.webagent4j.locator.LocatorBackendCandidate;
@@ -16,17 +17,20 @@ import io.webagent4j.locator.LocatorBackendQuery;
 import io.webagent4j.locator.LocatorBackendSearchResult;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorContext;
+import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.LocatorStrategyType;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.IFind;
 import io.webagent4j.locator.api.TextMatch;
 import io.webagent4j.locator.api.TextMatchType;
+import io.webagent4j.wait.WaitBudget;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /** Playwright-only implementation of the backend-neutral locator discovery port. */
@@ -50,12 +54,12 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             """;
 
+    private static final String CURRENT_IDENTITY_SCRIPT =
+            "elements => { const identify = "
+                    + IDENTITY_SCRIPT
+                    + "; return elements.length === 0 ? null : identify(elements[0]); }";
+
     private static final int MAXIMUM_INSPECTIONS_PER_CANDIDATE = 8;
-    private static final double MINIMUM_INSPECTION_WINDOW_MILLIS = 1_600;
-    private static final double MAXIMUM_MINIMUM_INSPECTION_WINDOW_MILLIS = 5_000;
-    private static final double TARGET_OPERATION_TIMEOUT_MILLIS = 25;
-    private static final double TARGET_IDENTITY_TIMEOUT_MILLIS = 200;
-    private static final double MINIMUM_OPERATION_TIMEOUT_MILLIS = 1;
 
     private final Locator documentRoot;
     private final ILocatorEngine engine;
@@ -105,14 +109,17 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             int candidateLimit) {
         Locator root = scope.root().map(PlaywrightLocatorBackend::unwrap).orElse(documentRoot);
         Locator resolved = resolve(root, query, config);
+        WaitBudget inspectionBudget = WaitBudget.start(timeout, System::nanoTime);
         int discoveredCount = countOrZero(resolved);
         int count = Math.min(discoveredCount, candidateLimit);
-        double inspectionTimeoutMillis = inspectionTimeoutMillis(timeout, count);
-        double identityTimeoutMillis = identityTimeoutMillis(timeout, count);
         List<LocatorBackendCandidate> candidates = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
+            if (inspectionBudget.expired()) {
+                return new LocatorBackendSearchResult(
+                        List.of(), discoveredCount, discoveredCount > 0);
+            }
             Locator item = resolved.nth(index);
-            Map<String, Object> identity = identifyOrNull(item, identityTimeoutMillis);
+            Map<String, Object> identity = identifyOrNull(item);
             if (identity == null) {
                 // count() confirmed this candidate a moment ago, but it (or, for a frame-scoped
                 // backend, the whole document containing it) was torn down before evaluate()
@@ -128,7 +135,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                     new LocatorBackendCandidate(
                             String.valueOf(identity.get("identity")),
                             new PlaywrightElement(
-                                    item, knownRole, this, scope, config, inspectionTimeoutMillis),
+                                    item, knownRole, this, scope, config, inspectionBudget),
                             ((Number) identity.get("domOrder")).intValue()));
         }
         return new LocatorBackendSearchResult(candidates, discoveredCount, discoveredCount > count);
@@ -150,7 +157,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             }
             throw vanishedFrameRoot;
         } catch (PlaywrightException failure) {
-            if (PlaywrightFailureClassifier.isFrameDetached(failure)) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return 0;
             }
             throw failure;
@@ -167,21 +174,16 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * unchanged.
      */
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> identifyOrNull(
-            Locator item, double inspectionTimeoutMillis) {
+    private static Map<String, Object> identifyOrNull(Locator item) {
         try {
-            return (Map<String, Object>)
-                    item.evaluate(
-                            IDENTITY_SCRIPT,
-                            null,
-                            new Locator.EvaluateOptions().setTimeout(inspectionTimeoutMillis));
+            return (Map<String, Object>) item.evaluateAll(CURRENT_IDENTITY_SCRIPT);
         } catch (TimeoutError vanished) {
             if (confirmedAbsent(item, vanished)) {
                 return null;
             }
             throw vanished;
         } catch (PlaywrightException failure) {
-            if (PlaywrightFailureClassifier.isFrameDetached(failure)) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return null;
             }
             throw failure;
@@ -189,38 +191,38 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     /**
-     * Reserves an equal bounded share for every possible inspection of every discovered candidate.
-     * The conservative window keeps internal one-shot discovery usable on a loaded host while being
-     * shared by all possible inspections. Applying the window to each inspection would multiply a
-     * one-shot lookup into a multi-second nested wait.
+     * Reserves an equal share for identity evaluation and every possible inspection of every
+     * discovered candidate. The sum of all internal Playwright timeouts therefore cannot exceed the
+     * caller's remaining budget.
      */
     static double inspectionTimeoutMillis(Duration timeout, int candidateCount) {
-        long inspectionCount =
-                Math.max(1L, (long) candidateCount * MAXIMUM_INSPECTIONS_PER_CANDIDATE);
-        return operationTimeoutMillis(timeout, inspectionCount);
+        return operationTimeoutMillis(timeout, candidateOperationCount(candidateCount));
     }
 
     static double identityTimeoutMillis(Duration timeout, int candidateCount) {
-        long boundedCandidateCount = Math.max(1L, candidateCount);
-        double cumulativeIdentityFloor =
-                MAXIMUM_MINIMUM_INSPECTION_WINDOW_MILLIS / boundedCandidateCount;
-        return Math.max(
-                inspectionTimeoutMillis(timeout, candidateCount),
-                Math.min(TARGET_IDENTITY_TIMEOUT_MILLIS, cumulativeIdentityFloor));
+        return operationTimeoutMillis(timeout, candidateOperationCount(candidateCount));
     }
 
     static double operationTimeoutMillis(Duration timeout, long operationCount) {
+        Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must not be negative");
+        }
         double totalMillis = timeout.getSeconds() * 1_000.0 + timeout.getNano() / 1_000_000.0;
         long boundedOperationCount = Math.max(1L, operationCount);
-        double minimumWindow =
-                Math.min(
-                        MAXIMUM_MINIMUM_INSPECTION_WINDOW_MILLIS,
-                        Math.max(
-                                MINIMUM_INSPECTION_WINDOW_MILLIS,
-                                boundedOperationCount * TARGET_OPERATION_TIMEOUT_MILLIS));
-        return Math.max(
-                MINIMUM_OPERATION_TIMEOUT_MILLIS,
-                Math.max(minimumWindow, totalMillis) / boundedOperationCount);
+        return totalMillis / boundedOperationCount;
+    }
+
+    static double requirePositivePlaywrightTimeout(double timeoutMillis, String operation) {
+        if (!(timeoutMillis > 0.0)) {
+            throw new TimeoutError(operation + " exhausted the caller timeout");
+        }
+        return timeoutMillis;
+    }
+
+    private static long candidateOperationCount(int candidateCount) {
+        long boundedCandidateCount = Math.max(1L, candidateCount);
+        return boundedCandidateCount * (MAXIMUM_INSPECTIONS_PER_CANDIDATE + 1L);
     }
 
     /** Returns true only when a fresh synchronous count proves the timed-out locator is gone. */
@@ -228,7 +230,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         try {
             return locator.count() == 0;
         } catch (PlaywrightException recheckFailure) {
-            if (PlaywrightFailureClassifier.isFrameDetached(recheckFailure)) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(recheckFailure)) {
                 return true;
             }
             original.addSuppressed(recheckFailure);
@@ -264,6 +266,76 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
 
     LocatorContext context() {
         return rootContext;
+    }
+
+    /**
+     * Performs one caller-bounded 0/1/N classification for a structured-scope container. Unlike a
+     * nested locator-engine call, this method never starts an independent retry deadline. Every
+     * current candidate is inspected so a match from one accessible-name source cannot hide a
+     * second match from another source.
+     */
+    IElement resolveUniqueContainer(
+            LocatorContext context, String text, LocatorStrategyType strategy, Duration timeout) {
+        Locator root =
+                context.scope().root().map(PlaywrightLocatorBackend::unwrap).orElse(documentRoot);
+        WaitBudget inspectionBudget = WaitBudget.start(timeout, System::nanoTime);
+        if (inspectionBudget.expired()) {
+            throw new LocatorNotFoundException("Structured-scope resolution budget was exhausted");
+        }
+        List<Integer> matchingIndices =
+                matchingContainerIndices(root, text, strategy, context, inspectionBudget);
+        if (matchingIndices.size() > 1) {
+            throw new AmbiguousLocatorException(
+                    "Structured scope text \"" + text + "\" matched multiple containers");
+        }
+        if (matchingIndices.isEmpty()) {
+            throw new LocatorNotFoundException(
+                    "No structured-scope container matched \"" + text + "\"");
+        }
+        return new PlaywrightElement(
+                root.locator("*").nth(matchingIndices.get(0)),
+                ElementRole.UNKNOWN,
+                this,
+                context.scope(),
+                context.config(),
+                inspectionBudget);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Integer> matchingContainerIndices(
+            Locator root,
+            String text,
+            LocatorStrategyType strategy,
+            LocatorContext context,
+            WaitBudget budget) {
+        try {
+            List<Number> raw =
+                    (List<Number>)
+                            root.locator("*")
+                                    .evaluateAll(
+                                            PlaywrightDomInspectionScripts
+                                                    .MATCHING_CONTAINER_INDICES_FUNCTION,
+                                            Map.of(
+                                                    "text",
+                                                    text,
+                                                    "locale",
+                                                    context.config().locale().toLanguageTag(),
+                                                    "accessible",
+                                                    strategy
+                                                            == LocatorStrategyType
+                                                                    .ACCESSIBLE_NAME));
+            return raw.stream().map(Number::intValue).toList();
+        } catch (TimeoutError vanished) {
+            if (confirmedAbsent(root, vanished)) {
+                throw new LocatorNotFoundException("Structured scope root disappeared");
+            }
+            throw vanished;
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
+                throw new LocatorNotFoundException("Structured scope frame disappeared");
+            }
+            throw failure;
+        }
     }
 
     private Locator resolve(Locator root, LocatorBackendQuery query, LocatorConfig config) {

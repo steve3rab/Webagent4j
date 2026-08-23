@@ -257,6 +257,16 @@ final class ActionTestApplication implements AutoCloseable {
                             <section aria-label="Shipping"><button
                               onclick="fetch('/count-click/shipping-2')">Continue</button></section>
                             """);
+            case "/actions/context-cross-source-ambiguous" ->
+                    document(
+                            "Context cross-source ambiguous",
+                            """
+                            <section aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-1')">Continue</button></section>
+                            <h2 id="shipping-title">Shipping</h2>
+                            <section aria-labelledby="shipping-title"><button
+                              onclick="fetch('/count-click/shipping-2')">Continue</button></section>
+                            """);
             case "/actions/context-dynamic-ambiguous" ->
                     document(
                             "Context dynamic ambiguous",

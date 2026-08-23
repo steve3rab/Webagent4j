@@ -37,8 +37,7 @@ class PlaywrightFrameLocatorTest {
                 LocatorContext.page(throwingBackend(), LocatorConfig.builder().build());
         Locator iframeLocator = mock(Locator.class);
         RuntimeException backendFailure = new IllegalStateException("browser disconnected");
-        when(iframeLocator.elementHandle(any(Locator.ElementHandleOptions.class)))
-                .thenThrow(backendFailure);
+        when(iframeLocator.elementHandles()).thenThrow(backendFailure);
         IElement iframe =
                 new PlaywrightElement(
                         iframeLocator,

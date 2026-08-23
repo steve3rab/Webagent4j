@@ -3,6 +3,7 @@ package io.webagent4j.browser.playwright;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -20,11 +21,14 @@ import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.LocatorStrategyType;
 import io.webagent4j.locator.api.ElementRole;
+import io.webagent4j.wait.WaitBudget;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Proves {@link PlaywrightLocatorBackend#find} distinguishes a candidate that genuinely vanished
@@ -36,13 +40,13 @@ import org.mockito.ArgumentCaptor;
 class PlaywrightLocatorBackendTest {
 
     @Test
-    void derivesCandidateInspectionTimeoutFromTheRemainingResolutionBudget() {
+    void currentCandidateInspectionsDoNotStartNestedPlaywrightWaits() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
-        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
+        when(item.evaluateAll(anyString()))
                 .thenReturn(Map.of("identity", "candidate", "domOrder", 0))
                 .thenReturn(Map.of());
 
@@ -56,24 +60,61 @@ class PlaywrightLocatorBackendTest {
                                 20);
         result.candidates().getFirst().element().attributes();
 
-        ArgumentCaptor<Locator.EvaluateOptions> options =
-                ArgumentCaptor.forClass(Locator.EvaluateOptions.class);
-        verify(item, times(2)).evaluate(any(), any(), options.capture());
-        assertThat(options.getAllValues())
-                .extracting(value -> value.timeout)
-                .containsExactly(500.0, 500.0);
+        verify(item, times(2)).evaluateAll(anyString());
+    }
+
+    @ParameterizedTest
+    @MethodSource("positiveTimeoutBudgets")
+    void internalTimeoutsNeverExceedTheRemainingCallerBudget(Duration budget) {
+        double budgetMillis = toMillis(budget);
+
+        for (int candidateCount : new int[] {1, 4, 1_000}) {
+            assertThat(PlaywrightLocatorBackend.operationTimeoutMillis(budget, candidateCount))
+                    .isPositive()
+                    .isLessThanOrEqualTo(budgetMillis);
+            assertThat(PlaywrightLocatorBackend.inspectionTimeoutMillis(budget, candidateCount))
+                    .isPositive()
+                    .isLessThanOrEqualTo(budgetMillis);
+            assertThat(PlaywrightLocatorBackend.identityTimeoutMillis(budget, candidateCount))
+                    .isPositive()
+                    .isLessThanOrEqualTo(budgetMillis);
+        }
     }
 
     @Test
-    void sharesTheOneShotFloorAcrossAllPossibleCandidateInspections() {
-        assertThat(PlaywrightLocatorBackend.inspectionTimeoutMillis(Duration.ofNanos(1), 1))
-                .isEqualTo(200.0);
-        assertThat(PlaywrightLocatorBackend.inspectionTimeoutMillis(Duration.ofNanos(1), 21))
-                .isEqualTo(25.0);
-        assertThat(PlaywrightLocatorBackend.identityTimeoutMillis(Duration.ofNanos(1), 21))
-                .isEqualTo(200.0);
-        assertThat(PlaywrightLocatorBackend.identityTimeoutMillis(Duration.ofSeconds(4), 1))
-                .isEqualTo(500.0);
+    void zeroBudgetNeverCreatesAnUnboundedPlaywrightTimeout() {
+        assertThat(PlaywrightLocatorBackend.operationTimeoutMillis(Duration.ZERO, 1)).isZero();
+        assertThat(PlaywrightLocatorBackend.inspectionTimeoutMillis(Duration.ZERO, 1)).isZero();
+        assertThat(PlaywrightLocatorBackend.identityTimeoutMillis(Duration.ZERO, 1)).isZero();
+    }
+
+    @Test
+    void identityAndCandidateInspectionsShareOneCallerBudget() {
+        Duration budget = Duration.ofMillis(800);
+        int candidateCount = 5;
+        double identityTimeout =
+                PlaywrightLocatorBackend.identityTimeoutMillis(budget, candidateCount);
+        double inspectionTimeout =
+                PlaywrightLocatorBackend.inspectionTimeoutMillis(budget, candidateCount);
+
+        double maximumAllocated = candidateCount * (identityTimeout + 8 * inspectionTimeout);
+
+        assertThat(maximumAllocated).isLessThanOrEqualTo(toMillis(budget));
+    }
+
+    private static Stream<Duration> positiveTimeoutBudgets() {
+        return Stream.of(
+                Duration.ofNanos(1),
+                Duration.ofMillis(1),
+                Duration.ofMillis(10),
+                Duration.ofMillis(100),
+                Duration.ofMillis(800),
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(4));
+    }
+
+    private static double toMillis(Duration duration) {
+        return duration.getSeconds() * 1_000.0 + duration.getNano() / 1_000_000.0;
     }
 
     @Test
@@ -261,7 +302,7 @@ class PlaywrightLocatorBackendTest {
         Locator documentRoot = rootLocatingAll(matches);
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
-        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
+        when(item.evaluateAll(anyString()))
                 .thenThrow(
                         new TimeoutError("Timeout exceeded while evaluating candidate identity"));
         when(item.count()).thenReturn(0);
@@ -289,8 +330,7 @@ class PlaywrightLocatorBackendTest {
         Locator documentRoot = rootLocatingAll(matches);
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
-        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
-                .thenThrow(frameDetachedFailure());
+        when(item.evaluateAll(anyString())).thenThrow(frameDetachedFailure());
 
         LocatorBackendSearchResult result =
                 backend(documentRoot)
@@ -303,6 +343,47 @@ class PlaywrightLocatorBackendTest {
 
         assertThat(result.candidates()).isEmpty();
         assertThat(result.discoveredCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aCanonicalMissingFrameFailureDuringCurrentElementInspectionProducesADetachedState() {
+        Locator item = mock(Locator.class);
+        when(item.evaluateAll(anyString())).thenThrow(frameMissingForSelectorFailure());
+        when(item.count()).thenReturn(1, 0);
+
+        ElementState state =
+                new PlaywrightElement(
+                                item,
+                                ElementRole.UNKNOWN,
+                                null,
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                WaitBudget.start(Duration.ofNanos(1), () -> 0L))
+                        .state();
+
+        assertThat(state.detached()).isTrue();
+    }
+
+    @Test
+    void anOpaqueElementFailureThatOnlyMentionsAMissingFramePropagatesUnchanged() {
+        Locator item = mock(Locator.class);
+        PlaywrightException failure =
+                new PlaywrightException(
+                        "browser disconnected after Failed to find frame for selector x");
+        when(item.count()).thenReturn(1);
+        when(item.evaluateAll(anyString())).thenThrow(failure);
+
+        assertThatThrownBy(
+                        () ->
+                                new PlaywrightElement(
+                                                item,
+                                                ElementRole.UNKNOWN,
+                                                null,
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                WaitBudget.start(Duration.ofNanos(1), () -> 0L))
+                                        .state())
+                .isSameAs(failure);
     }
 
     @Test
@@ -333,7 +414,7 @@ class PlaywrightLocatorBackendTest {
         TimeoutError timeout = new TimeoutError("Identity evaluation exceeded its bound");
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
-        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class))).thenThrow(timeout);
+        when(item.evaluateAll(anyString())).thenThrow(timeout);
         when(item.count()).thenReturn(1);
 
         assertThatThrownBy(
@@ -357,8 +438,7 @@ class PlaywrightLocatorBackendTest {
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
         RuntimeException backendFailure = new IllegalStateException("browser disconnected");
-        when(item.evaluate(any(), any(), any(Locator.EvaluateOptions.class)))
-                .thenThrow(backendFailure);
+        when(item.evaluateAll(anyString())).thenThrow(backendFailure);
 
         assertThatThrownBy(
                         () ->
@@ -399,5 +479,13 @@ class PlaywrightLocatorBackendTest {
 
     private static PlaywrightException frameDetachedFailure() {
         return new PlaywrightException("Error {\n  message='Frame was detached\n  name='Error\n}");
+    }
+
+    private static PlaywrightException frameMissingForSelectorFailure() {
+        return new PlaywrightException(
+                "Error {\n"
+                        + "  message='Failed to find frame for selector \"html >> iframe\"\n"
+                        + "  name='Error\n"
+                        + "}");
     }
 }

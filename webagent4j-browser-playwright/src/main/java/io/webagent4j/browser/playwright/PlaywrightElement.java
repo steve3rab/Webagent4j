@@ -1,6 +1,7 @@
 package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
 import io.webagent4j.dom.BoundingBox;
 import io.webagent4j.dom.ElementState;
@@ -9,6 +10,7 @@ import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.IFind;
+import io.webagent4j.wait.WaitBudget;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -23,6 +25,7 @@ final class PlaywrightElement implements IElement {
     private final LocatorScope originatingScope;
     private final LocatorConfig locatorConfig;
     private final double inspectionTimeoutMillis;
+    private final WaitBudget inspectionBudget;
 
     PlaywrightElement(
             Locator locator,
@@ -36,8 +39,8 @@ final class PlaywrightElement implements IElement {
                 locatorBackend,
                 originatingScope,
                 locatorConfig,
-                PlaywrightLocatorBackend.inspectionTimeoutMillis(
-                        locatorConfig.defaultTimeout(), 1));
+                PlaywrightLocatorBackend.inspectionTimeoutMillis(locatorConfig.defaultTimeout(), 1),
+                null);
     }
 
     PlaywrightElement(
@@ -47,12 +50,48 @@ final class PlaywrightElement implements IElement {
             LocatorScope originatingScope,
             LocatorConfig locatorConfig,
             double inspectionTimeoutMillis) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                inspectionTimeoutMillis,
+                null);
+    }
+
+    PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            WaitBudget inspectionBudget) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                0.0,
+                inspectionBudget);
+    }
+
+    private PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            double inspectionTimeoutMillis,
+            WaitBudget inspectionBudget) {
         this.locator = locator;
         this.knownRole = knownRole;
         this.locatorBackend = locatorBackend;
         this.originatingScope = originatingScope;
         this.locatorConfig = locatorConfig;
         this.inspectionTimeoutMillis = inspectionTimeoutMillis;
+        this.inspectionBudget = inspectionBudget;
     }
 
     @Override
@@ -109,13 +148,23 @@ final class PlaywrightElement implements IElement {
         return value == null ? "" : String.valueOf(value);
     }
 
+    boolean hasElementDescendant() {
+        return Boolean.TRUE.equals(
+                evaluateOrNull(PlaywrightDomInspectionScripts.HAS_ELEMENT_DESCENDANT_FUNCTION));
+    }
+
     @Override
     public String text() {
+        if (inspectionBudget != null) {
+            Object value = evaluateOrNull("element => element.textContent");
+            return value == null ? "" : String.valueOf(value).trim().replaceAll("\\s+", " ");
+        }
         String value;
         try {
             value =
                     locator.textContent(
-                            new Locator.TextContentOptions().setTimeout(inspectionTimeoutMillis));
+                            new Locator.TextContentOptions()
+                                    .setTimeout(inspectionTimeoutMillis("Text inspection")));
         } catch (TimeoutError failure) {
             if (absentAfter(failure)) {
                 return "";
@@ -166,6 +215,9 @@ final class PlaywrightElement implements IElement {
     @Override
     @SuppressWarnings("unchecked")
     public ElementState state() {
+        if (inspectionBudget != null && inspectionBudget.expired()) {
+            return detachedState();
+        }
         try {
             if (locator.count() == 0) {
                 return detachedState();
@@ -178,7 +230,7 @@ final class PlaywrightElement implements IElement {
         }
         Object inspected = evaluateOrNull(PlaywrightDomInspectionScripts.STATE_FUNCTION);
         if (inspected == null) {
-            if (locator.count() == 0) {
+            if ((inspectionBudget != null && inspectionBudget.expired()) || locator.count() == 0) {
                 return detachedState();
             }
             throw new IllegalStateException("Element state inspection returned no value");
@@ -224,16 +276,42 @@ final class PlaywrightElement implements IElement {
 
     private Object evaluateOrNull(String expression) {
         try {
+            if (inspectionBudget != null) {
+                if (inspectionBudget.expired()) {
+                    return null;
+                }
+                String currentInspection =
+                        "elements => { const inspect = "
+                                + expression
+                                + "; return elements.length === 0 ? null : inspect(elements[0]); }";
+                return locator.evaluateAll(currentInspection);
+            }
             return locator.evaluate(
                     expression,
                     null,
-                    new Locator.EvaluateOptions().setTimeout(inspectionTimeoutMillis));
+                    new Locator.EvaluateOptions()
+                            .setTimeout(inspectionTimeoutMillis("Element inspection")));
         } catch (TimeoutError failure) {
             if (absentAfter(failure)) {
                 return null;
             }
             throw failure;
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
+                return null;
+            }
+            throw failure;
         }
+    }
+
+    private double inspectionTimeoutMillis(String operation) {
+        double availableMillis =
+                inspectionBudget == null
+                        ? inspectionTimeoutMillis
+                        : PlaywrightLocatorBackend.operationTimeoutMillis(
+                                inspectionBudget.remaining(), 1);
+        return PlaywrightLocatorBackend.requirePositivePlaywrightTimeout(
+                availableMillis, operation);
     }
 
     private boolean absentAfter(TimeoutError originalFailure) {

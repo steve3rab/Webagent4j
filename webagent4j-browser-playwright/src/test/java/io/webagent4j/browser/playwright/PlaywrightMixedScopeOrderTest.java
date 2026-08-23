@@ -60,6 +60,7 @@ class PlaywrightMixedScopeOrderTest {
         LocatorContext afterA = base.within(regionA.element());
         LocatorContext afterB = afterA.within(elementB.element());
         when(engine.locateSingle(eq(base), byAriaLabel("Product A"))).thenReturn(result(regionA));
+        when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
         stubTerminalResolution(engine, afterB, target);
 
         IElement resolved =
@@ -74,6 +75,7 @@ class PlaywrightMixedScopeOrderTest {
         // scopeA resolved from the untouched base context - not from a context already narrowed
         // by elementB, which is what the previous (buggy) eager-element implementation produced.
         verify(engine).locateSingle(eq(base), byAriaLabel("Product A"));
+        verify(engine).locateSingle(eq(base), byAccessibleName());
         // the final target is resolved inside base -> Product A -> outer-container, in that order,
         // and only after outer-container was proven to be inside Product A - checked by
         // stubTerminalResolution() itself, re-resolving the live context exactly as the real engine
@@ -91,6 +93,7 @@ class PlaywrightMixedScopeOrderTest {
         LocatorContext afterA = base.within(elementA.element());
         LocatorContext afterB = afterA.within(regionB.element());
         when(engine.locateSingle(eq(afterA), byAriaLabel("Available"))).thenReturn(result(regionB));
+        when(engine.locateSingle(eq(afterA), byAccessibleName())).thenReturn(result(regionB));
         stubTerminalResolution(engine, afterB, target);
 
         IElement resolved =
@@ -106,6 +109,7 @@ class PlaywrightMixedScopeOrderTest {
         // base context: elementA is applied first, exactly as declared. elementA is the first
         // scope in the chain (nothing narrowed it yet), so it needs no containment proof.
         verify(engine).locateSingle(eq(afterA), byAriaLabel("Available"));
+        verify(engine).locateSingle(eq(afterA), byAccessibleName());
         verify(engine, never()).locateSingle(eq(base), byAriaLabel("Available"));
     }
 
@@ -123,7 +127,9 @@ class PlaywrightMixedScopeOrderTest {
         LocatorContext afterB = afterA.within(elementB.element());
         LocatorContext afterC = afterB.within(regionC.element());
         when(engine.locateSingle(eq(base), byAriaLabel("Product A"))).thenReturn(result(regionA));
+        when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
         when(engine.locateSingle(eq(afterB), byAriaLabel("Available"))).thenReturn(result(regionC));
+        when(engine.locateSingle(eq(afterB), byAccessibleName())).thenReturn(result(regionC));
         stubTerminalResolution(engine, afterC, target);
 
         IElement resolved =
@@ -137,7 +143,9 @@ class PlaywrightMixedScopeOrderTest {
 
         assertThat(resolved).isSameAs(target.element());
         verify(engine).locateSingle(eq(base), byAriaLabel("Product A"));
+        verify(engine).locateSingle(eq(base), byAccessibleName());
         verify(engine).locateSingle(eq(afterB), byAriaLabel("Available"));
+        verify(engine).locateSingle(eq(afterB), byAccessibleName());
     }
 
     @Test
@@ -154,6 +162,7 @@ class PlaywrightMixedScopeOrderTest {
         LocatorContext afterA = base.within(regionA.element());
         LocatorContext afterB = afterA.within(elementB.element());
         when(engine.locateSingle(eq(base), byAriaLabel("Product A"))).thenReturn(result(regionA));
+        when(engine.locateSingle(eq(base), byAccessibleName())).thenReturn(result(regionA));
         stubTerminalResolution(engine, afterB, target);
 
         IElement resolved =
@@ -166,6 +175,7 @@ class PlaywrightMixedScopeOrderTest {
 
         assertThat(resolved).isSameAs(target.element());
         verify(engine).locateSingle(eq(base), byAriaLabel("Product A"));
+        verify(engine).locateSingle(eq(base), byAccessibleName());
     }
 
     @Test
@@ -233,6 +243,10 @@ class PlaywrightMixedScopeOrderTest {
 
     static LocatorDefinition byAriaLabel(String value) {
         return argThat(definition -> value.equals(definition.attributes().get("aria-label")));
+    }
+
+    static LocatorDefinition byAccessibleName() {
+        return argThat(definition -> definition.accessibleName().isPresent());
     }
 
     static LocatorContext pageContext() {
