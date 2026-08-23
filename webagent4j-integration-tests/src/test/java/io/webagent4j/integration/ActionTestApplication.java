@@ -320,6 +320,36 @@ final class ActionTestApplication implements AutoCloseable {
                               old.replaceWith(fresh);
                             }, 150)</script>
                             """);
+            case "/actions/context-scope-insert-before-use" ->
+                    document(
+                            "Context scope insertion race",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            """);
+            case "/actions/context-scope-replace-before-use" ->
+                    document(
+                            "Context scope replacement race",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            """);
+            case "/actions/context-scope-reorder-before-use" ->
+                    document(
+                            "Context scope reorder race",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            <section id="billing-existing" aria-label="Billing"><button
+                              onclick="fetch('/count-click/billing-existing')">Continue</button></section>
+                            """);
+            case "/actions/context-scope-duplicate-before-use" ->
+                    document(
+                            "Context scope ambiguity race",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            """);
             case "/actions/context-dynamic-semantic-change" ->
                     document(
                             "Context dynamic semantic change",
