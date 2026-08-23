@@ -67,7 +67,7 @@ class PlaywrightLocatorBackendTest {
     @Test
     void sharesTheOneShotFloorAcrossAllPossibleCandidateInspections() {
         assertThat(PlaywrightLocatorBackend.inspectionTimeoutMillis(Duration.ofNanos(1), 1))
-                .isEqualTo(25.0);
+                .isEqualTo(200.0);
         assertThat(PlaywrightLocatorBackend.inspectionTimeoutMillis(Duration.ofNanos(1), 21))
                 .isEqualTo(25.0);
         assertThat(PlaywrightLocatorBackend.identityTimeoutMillis(Duration.ofNanos(1), 21))

@@ -51,9 +51,10 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             """;
 
     private static final int MAXIMUM_INSPECTIONS_PER_CANDIDATE = 8;
-    private static final double MINIMUM_INSPECTION_WINDOW_MILLIS = 200;
+    private static final double MINIMUM_INSPECTION_WINDOW_MILLIS = 1_600;
     private static final double MAXIMUM_MINIMUM_INSPECTION_WINDOW_MILLIS = 5_000;
     private static final double TARGET_OPERATION_TIMEOUT_MILLIS = 25;
+    private static final double TARGET_IDENTITY_TIMEOUT_MILLIS = 200;
     private static final double MINIMUM_OPERATION_TIMEOUT_MILLIS = 1;
 
     private final Locator documentRoot;
@@ -205,7 +206,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 MAXIMUM_MINIMUM_INSPECTION_WINDOW_MILLIS / boundedCandidateCount;
         return Math.max(
                 inspectionTimeoutMillis(timeout, candidateCount),
-                Math.min(MINIMUM_INSPECTION_WINDOW_MILLIS, cumulativeIdentityFloor));
+                Math.min(TARGET_IDENTITY_TIMEOUT_MILLIS, cumulativeIdentityFloor));
     }
 
     static double operationTimeoutMillis(Duration timeout, long operationCount) {
