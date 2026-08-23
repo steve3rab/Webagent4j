@@ -467,16 +467,11 @@ public final class LocatorEngine implements ILocatorEngine {
                 diagnostics.limit(BudgetLimit.CANDIDATES);
                 break;
             }
-            Optional<RejectionReason> rejection;
-            try {
-                rejection =
-                        filter.rejectionReason(
-                                definition,
-                                backendCandidate.element(),
-                                context.config().testIdAttribute());
-            } catch (RuntimeException detached) {
-                rejection = Optional.of(RejectionReason.OUTSIDE_SCOPE);
-            }
+            Optional<RejectionReason> rejection =
+                    filter.rejectionReason(
+                            definition,
+                            backendCandidate.element(),
+                            context.config().testIdAttribute());
             if (rejection.isPresent()) {
                 hardConstraintRejected = true;
                 diagnostics.rejected(
