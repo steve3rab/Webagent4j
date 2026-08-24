@@ -15,6 +15,10 @@ final class PlaywrightFailureClassifier {
             "Unable to adopt element handle from a different document";
     private static final String PROTOCOL_DIFFERENT_DOCUMENT_ADOPTION =
             "Error {\n  message='" + DIFFERENT_DOCUMENT_ADOPTION + "\n";
+    private static final String DESCRIBE_NODE_CONTEXT_MISSING =
+            "Protocol error (DOM.describeNode): Cannot find context with specified id";
+    private static final String PROTOCOL_DESCRIBE_NODE_CONTEXT_MISSING =
+            "Error {\n  message='" + DESCRIBE_NODE_CONTEXT_MISSING + "\n";
 
     private PlaywrightFailureClassifier() {}
 
@@ -59,12 +63,18 @@ final class PlaywrightFailureClassifier {
     }
 
     /**
-     * Returns whether Playwright reported the narrow cross-document adoption race produced when a
-     * document changes between selector resolution and handle adoption.
+     * Returns whether Playwright reported a narrow handle-adoption race produced when the owning
+     * document/execution context changes between selector resolution and handle adoption.
      *
-     * <p>This signal is <strong>not</strong> absence by itself. Callers must perform a fresh
-     * synchronous recheck and may convert it to absence only when that recheck proves zero matches
-     * or reports a canonical unavailable-frame condition.
+     * <p>Chromium can surface this race either as Playwright's explicit "different document"
+     * message or as a CDP {@code DOM.describeNode} failure because the execution context vanished
+     * while the element handle was being adopted. Neither signal is absence by itself. Callers must
+     * perform a fresh synchronous recheck and may convert it to absence only when that recheck
+     * proves zero matches or reports a canonical unavailable-frame condition.
+     *
+     * <p>Matching remains deliberately narrow: only the bare canonical message or the canonical
+     * first field of Playwright's protocol error envelope qualifies. An opaque backend failure that
+     * merely mentions either phrase elsewhere does not qualify.
      */
     static boolean isDifferentDocumentAdoptionRace(PlaywrightException failure) {
         String message = failure.getMessage();
@@ -73,6 +83,8 @@ final class PlaywrightFailureClassifier {
         }
         String normalized = message.replace("\r\n", "\n");
         return normalized.equals(DIFFERENT_DOCUMENT_ADOPTION)
-                || normalized.startsWith(PROTOCOL_DIFFERENT_DOCUMENT_ADOPTION);
+                || normalized.startsWith(PROTOCOL_DIFFERENT_DOCUMENT_ADOPTION)
+                || normalized.equals(DESCRIBE_NODE_CONTEXT_MISSING)
+                || normalized.startsWith(PROTOCOL_DESCRIBE_NODE_CONTEXT_MISSING);
     }
 }

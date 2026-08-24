@@ -74,6 +74,14 @@ final class PlaywrightBrowser implements IBrowser {
                     browser.newContext(
                             new Browser.NewContextOptions()
                                     .setLocale(options.locale().toLanguageTag()));
+
+            /*
+             * Candidate identity is security-relevant: LocatorEngine uses it for deduplication and
+             * stability. Install its closure-private registry before any page/application script
+             * can run in this context.
+             */
+            PlaywrightCandidateIdentityBridge.install(context);
+
             context.setDefaultTimeout(options.timeouts().action().toMillis());
             context.setDefaultNavigationTimeout(options.timeouts().navigation().toMillis());
             return new PlaywrightBrowser(playwright, browser, context, options);

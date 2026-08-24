@@ -15,6 +15,7 @@ import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
+import io.webagent4j.common.LocatorException;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
@@ -75,8 +76,8 @@ class PlaywrightLocatorBackendTest {
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
         when(item.elementHandles()).thenReturn(List.of(identityHandle), List.of(attributeHandle));
-        when(identityHandle.evaluate(anyString(), isNull()))
-                .thenReturn(Map.of("identity", "candidate", "domOrder", 0));
+        when(identityHandle.evaluate(anyString(), any()))
+                .thenReturn(Map.of("identity", "webagent4j-test-candidate", "domOrder", 0));
         when(attributeHandle.evaluate(anyString(), isNull())).thenReturn(Map.of("id", "confirm"));
 
         LocatorBackendSearchResult result =
@@ -96,6 +97,32 @@ class PlaywrightLocatorBackendTest {
         verify(item, never()).evaluate(anyString(), any(), any(Locator.EvaluateOptions.class));
         verify(identityHandle).dispose();
         verify(attributeHandle).dispose();
+    }
+
+    @Test
+    void aMissingCandidateIdentityBridgeFailsClosedInsteadOfFabricatingAbsence() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        ElementHandle identityHandle = mock(ElementHandle.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenReturn(List.of(identityHandle));
+        when(identityHandle.evaluate(anyString(), any())).thenReturn(Map.of("bridgeMissing", true));
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isInstanceOf(LocatorException.class)
+                .hasMessageContaining("identity bridge");
+
+        verify(identityHandle).dispose();
     }
 
     @ParameterizedTest
@@ -318,6 +345,80 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
+    void aMissingExecutionContextRaceDuringIdentityIsExcludedOnlyWhenARecheckProvesAbsence() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        PlaywrightException contextLoss = describeNodeContextMissingFailure();
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenThrow(contextLoss);
+        when(item.count()).thenReturn(0);
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aMissingExecutionContextRaceDuringIdentityForAStillPresentCandidatePropagates() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        PlaywrightException contextLoss = describeNodeContextMissingFailure();
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenThrow(contextLoss);
+        when(item.count()).thenReturn(1);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isSameAs(contextLoss);
+    }
+
+    @Test
+    void anOpaqueFailureOnlyMentioningMissingContextDoesNotTriggerAnAbsenceRecheck() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        PlaywrightException failure =
+                new PlaywrightException(
+                        "browser disconnected after Protocol error (DOM.describeNode): "
+                                + "Cannot find context with specified id");
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenThrow(failure);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isSameAs(failure);
+
+        verify(item, never()).count();
+    }
+
+    @Test
     void aGenuineBackendFailureDuringIdentityResolutionPropagatesUnchanged() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
@@ -348,7 +449,7 @@ class PlaywrightLocatorBackendTest {
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
         when(item.elementHandles()).thenReturn(List.of(handle));
-        when(handle.evaluate(anyString(), isNull())).thenReturn(null);
+        when(handle.evaluate(anyString(), any())).thenReturn(Map.of("absent", true));
 
         LocatorBackendSearchResult result =
                 backend(documentRoot)
@@ -610,6 +711,15 @@ class PlaywrightLocatorBackendTest {
         return new PlaywrightException(
                 "Error {\n"
                         + "  message='Unable to adopt element handle from a different document\n"
+                        + "  name='Error\n"
+                        + "}");
+    }
+
+    private static PlaywrightException describeNodeContextMissingFailure() {
+        return new PlaywrightException(
+                "Error {\n"
+                        + "  message='Protocol error (DOM.describeNode): "
+                        + "Cannot find context with specified id\n"
                         + "  name='Error\n"
                         + "}");
     }

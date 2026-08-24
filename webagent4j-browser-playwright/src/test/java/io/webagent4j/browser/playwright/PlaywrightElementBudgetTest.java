@@ -161,6 +161,58 @@ class PlaywrightElementBudgetTest {
     }
 
     @Test
+    void aMissingExecutionContextRaceBecomesDetachedOnlyWhenARecheckProvesAbsence() {
+        Locator locator = mock(Locator.class);
+        PlaywrightException contextLoss = describeNodeContextMissingFailure();
+        when(locator.elementHandles()).thenThrow(contextLoss);
+        when(locator.count()).thenReturn(0);
+
+        ElementState state = element(locator, 1.0).state();
+
+        assertThat(state.detached()).isTrue();
+        assertThat(state.present()).isFalse();
+    }
+
+    @Test
+    void aMissingExecutionContextRaceForAStillPresentElementPropagatesUnchanged() {
+        Locator locator = mock(Locator.class);
+        PlaywrightException contextLoss = describeNodeContextMissingFailure();
+        when(locator.elementHandles()).thenThrow(contextLoss);
+        when(locator.count()).thenReturn(1);
+
+        assertThatThrownBy(() -> element(locator, 1.0).state()).isSameAs(contextLoss);
+    }
+
+    @Test
+    void aMissingExecutionContextRaceWithOpaqueRecheckFailurePreservesOriginalFailure() {
+        Locator locator = mock(Locator.class);
+        PlaywrightException contextLoss = describeNodeContextMissingFailure();
+        RuntimeException recheckFailure = new IllegalStateException("browser disconnected");
+        when(locator.elementHandles()).thenThrow(contextLoss);
+        when(locator.count()).thenThrow(recheckFailure);
+
+        assertThatThrownBy(() -> element(locator, 1.0).state())
+                .isSameAs(contextLoss)
+                .satisfies(
+                        failure ->
+                                assertThat(failure.getSuppressed())
+                                        .containsExactly(recheckFailure));
+    }
+
+    @Test
+    void anOpaqueFailureThatOnlyMentionsTheMissingContextSignatureStillPropagates() {
+        Locator locator = mock(Locator.class);
+        PlaywrightException failure =
+                new PlaywrightException(
+                        "browser disconnected after Protocol error (DOM.describeNode): "
+                                + "Cannot find context with specified id");
+        when(locator.elementHandles()).thenThrow(failure);
+
+        assertThatThrownBy(() -> element(locator, 1.0).state()).isSameAs(failure);
+        verify(locator, never()).count();
+    }
+
+    @Test
     void aCanonicalMissingFrameFailureProducesDetachedState() {
         Locator locator = mock(Locator.class);
         when(locator.elementHandles()).thenThrow(frameMissingForSelectorFailure());
@@ -211,6 +263,15 @@ class PlaywrightElementBudgetTest {
         return new PlaywrightException(
                 "Error {\n"
                         + "  message='Unable to adopt element handle from a different document\n"
+                        + "  name='Error\n"
+                        + "}");
+    }
+
+    private static PlaywrightException describeNodeContextMissingFailure() {
+        return new PlaywrightException(
+                "Error {\n"
+                        + "  message='Protocol error (DOM.describeNode): "
+                        + "Cannot find context with specified id\n"
                         + "  name='Error\n"
                         + "}");
     }

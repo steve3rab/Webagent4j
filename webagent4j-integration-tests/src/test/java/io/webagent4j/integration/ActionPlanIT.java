@@ -89,6 +89,50 @@ class ActionPlanIT {
     }
 
     @Test
+    void pageControlledCandidateIdentityStateCannotHideNewAmbiguity() throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/plan-ambiguity")) {
+            var target = page.find().button().named("Confirm").reference();
+
+            IActionPlan<Void> plan = page.action().click(target).plan();
+            assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
+
+            /*
+             * Reproduce the exact old trust-boundary defect. The vulnerable implementation kept
+             * its identity WeakMap directly on application globalThis, allowing the page to make
+             * two physical nodes appear to have the same opaque backend identity.
+             */
+            page.evaluate(
+                    """
+                    (() => {
+                      const original = document.querySelector("#host button");
+                      const originalIdentity =
+                        globalThis.__webagent4jLocatorIds?.get(original)
+                          ?? "forged-collision";
+
+                      addDuplicateConfirmButton();
+
+                      const candidates =
+                        document.querySelectorAll("#host button");
+                      const forged = new WeakMap();
+                      forged.set(candidates[0], originalIdentity);
+                      forged.set(candidates[1], originalIdentity);
+
+                      globalThis.__webagent4jLocatorIds = forged;
+                      globalThis.__webagent4jLocatorSequence = 1;
+                    })()
+                    """);
+
+            ActionResult<Void> result = plan.execute();
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.TARGET_AMBIGUOUS);
+            assertThat(support.clickCount()).isZero();
+        }
+    }
+
+    @Test
     void revalidationBlocksExecutionWhenThePreconditionStopsHolding() throws Exception {
         try (var support = Phase4TestSupport.start();
                 var page = support.open("/actions/plan-precondition-invalidates")) {

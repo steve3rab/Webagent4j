@@ -40,23 +40,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class PlaywrightLocatorBackend implements ILocatorBackend {
 
     private static final String IDENTITY_SCRIPT =
-            """
-            element => {
-              if (!element.isConnected) return null;
-              globalThis.__webagent4jLocatorIds ||= new WeakMap();
-              globalThis.__webagent4jLocatorSequence ||= 0;
-              if (!globalThis.__webagent4jLocatorIds.has(element)) {
-                globalThis.__webagent4jLocatorIds.set(
-                  element, `webagent4j-${++globalThis.__webagent4jLocatorSequence}`);
-              }
-              const order = Array.prototype.indexOf.call(
-                document.querySelectorAll('*'), element);
-              return {
-                identity: globalThis.__webagent4jLocatorIds.get(element),
-                domOrder: Math.max(0, order)
-              };
-            }
-            """;
+            PlaywrightCandidateIdentityBridge.identityScript();
 
     private static final int MAXIMUM_INSPECTIONS_PER_CANDIDATE = 8;
     private static final AtomicLong STRUCTURED_SCOPE_BINDING_SEQUENCE = new AtomicLong();
@@ -165,7 +149,6 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * Playwright's main world. The selector engine establishes the physical match first; identity
      * is then inspected on that exact node. No nested locator wait is introduced.
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> identifyOrNull(Locator item) {
         List<ElementHandle> handles = List.of();
         try {
@@ -177,7 +160,12 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 throw new AmbiguousLocatorException(
                         "Candidate locator became ambiguous during current-DOM identity inspection");
             }
-            return (Map<String, Object>) handles.getFirst().evaluate(IDENTITY_SCRIPT, null);
+            Object inspected =
+                    handles.getFirst()
+                            .evaluate(
+                                    IDENTITY_SCRIPT,
+                                    PlaywrightCandidateIdentityBridge.bridgeName());
+            return validatedIdentityOrNull(inspected);
         } catch (PlaywrightException failure) {
             if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return null;
@@ -190,6 +178,49 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         } finally {
             dispose(handles);
         }
+    }
+
+    /**
+     * Validates the complete browser-side identity envelope before it can influence deduplication,
+     * ambiguity, or stability.
+     */
+    private static Map<String, Object> validatedIdentityOrNull(Object inspected) {
+        if (inspected == null) {
+            throw new LocatorException("Candidate identity inspection returned null");
+        }
+        if (!(inspected instanceof Map<?, ?> raw)) {
+            throw new LocatorException("Candidate identity inspection returned an invalid result");
+        }
+        if (Boolean.TRUE.equals(raw.get("bridgeMissing"))) {
+            throw new LocatorException("Playwright candidate identity bridge is unavailable");
+        }
+        if (Boolean.TRUE.equals(raw.get("documentMismatch"))) {
+            throw new LocatorException(
+                    "Candidate identity inspection observed a different document");
+        }
+        if (Boolean.TRUE.equals(raw.get("absent"))) {
+            return null;
+        }
+
+        Object identityValue = raw.get("identity");
+        Object domOrderValue = raw.get("domOrder");
+        if (!(identityValue instanceof String identity)
+                || identity.isBlank()
+                || !identity.startsWith("webagent4j-")
+                || !(domOrderValue instanceof Number number)) {
+            throw new LocatorException("Candidate identity inspection returned malformed data");
+        }
+
+        double rawOrder = number.doubleValue();
+        if (!Double.isFinite(rawOrder)
+                || rawOrder < 0.0
+                || rawOrder != Math.rint(rawOrder)
+                || rawOrder > Integer.MAX_VALUE) {
+            throw new LocatorException(
+                    "Candidate identity inspection returned an invalid DOM order");
+        }
+
+        return Map.of("identity", identity, "domOrder", (int) rawOrder);
     }
 
     private static void dispose(List<ElementHandle> handles) {
