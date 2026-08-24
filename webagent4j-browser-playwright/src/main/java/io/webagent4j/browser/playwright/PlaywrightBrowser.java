@@ -47,6 +47,17 @@ final class PlaywrightBrowser implements IBrowser {
                 options.headless());
         Playwright playwright = Playwright.create();
         try {
+            /*
+             * Registration must happen before any page is created. The engine intentionally uses
+             * the normal page JavaScript realm because its bound locator and the atomic binding
+             * evaluateAll() call share one ephemeral WeakMap. No DOM attribute is written.
+             */
+            playwright
+                    .selectors()
+                    .register(
+                            PlaywrightDomInspectionScripts.STRUCTURED_SCOPE_SELECTOR_ENGINE,
+                            PlaywrightDomInspectionScripts.STRUCTURED_SCOPE_SELECTOR_ENGINE_SCRIPT);
+
             LaunchOptions launchOptions =
                     new LaunchOptions()
                             .setHeadless(options.headless())

@@ -3,15 +3,17 @@ package io.webagent4j.browser.playwright;
 /** Shared DOM inspection functions used by both Phase 2 locators and Phase 3 batch observation. */
 final class PlaywrightDomInspectionScripts {
 
+    static final String STRUCTURED_SCOPE_SELECTOR_ENGINE = "webagent4j_scope";
+
     static final String ACCESSIBLE_NAME_FUNCTION =
             """
             (element) => {
-              const normalize = value => (value || '').trim().replace(/\s+/g, ' ');
+              const normalize = value => (value || '').trim().replace(/\\s+/g, ' ');
               const labels = element.labels
                 ? Array.from(element.labels).map(label => label.innerText || label.textContent || '').join(' ')
                 : '';
               const labelledBy = (element.getAttribute('aria-labelledby') || '')
-                .split(/\s+/).filter(Boolean).map(id => document.getElementById(id))
+                .split(/\\s+/).filter(Boolean).map(id => document.getElementById(id))
                 .filter(Boolean).map(item => item.innerText || item.textContent || '').join(' ');
               return normalize(labelledBy || element.getAttribute('aria-label') || labels
                 || element.getAttribute('alt') || element.getAttribute('placeholder')
@@ -23,16 +25,110 @@ final class PlaywrightDomInspectionScripts {
             "element => element.querySelector('*') !== null";
 
     /**
-     * Classifies every current candidate against one accessible-name/text uniqueness proof and
-     * returns, for each matching element, an opaque physical identity plus its position among
-     * {@code elements} (in DOM order). Identity is tracked purely in-memory via a per-document
-     * {@code WeakMap} keyed by the live DOM node - this function never reads or writes any DOM
-     * attribute, so locator discovery/inspection never mutates application-owned markup and
-     * triggers no {@code MutationObserver}, CSS, or framework side effect. The returned {@code
-     * index} is only ever used to build a Locator for immediate, same-call use (a fresh
-     * classification-to-use seam); it is never retained as a way to re-find the element later,
-     * since a later DOM reorder or insertion would silently retarget a stale positional index to
-     * the wrong node.
+     * Internal live selector engine for structured scopes.
+     *
+     * <p>The selector body has four dot-separated fields:
+     *
+     * <pre>
+     * mode.localeBase64.textBase64.bindingBase64
+     * </pre>
+     *
+     * <p>{@code mode} is {@code a} for accessible-name matching or {@code t} for visible text. The
+     * optional binding is stored out-of-band in a {@link WeakMap}; no DOM attribute is ever added
+     * or removed. An unbound selector is semantic and live. A bound selector additionally requires
+     * the exact physical node that was bound during the current classification-to-use seam.
+     */
+    static final String STRUCTURED_SCOPE_SELECTOR_ENGINE_SCRIPT =
+            """
+            (() => {
+              const decode = value => {
+                if (!value) return '';
+                const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+                const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+                const binary = atob(padded);
+                const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+                return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+              };
+
+              const normalize = (value, locale) =>
+                (value || '').normalize('NFKC').replace(/\\u00a0/g, ' ')
+                  .trim().replace(/\\s+/g, ' ').toLocaleLowerCase(locale);
+
+              const accessibleName = element => {
+                const labels = element.labels
+                  ? Array.from(element.labels)
+                    .map(label => label.innerText || label.textContent || '').join(' ')
+                  : '';
+                const labelledBy = (element.getAttribute('aria-labelledby') || '')
+                  .split(/\\s+/).filter(Boolean)
+                  .map(id => element.ownerDocument.getElementById(id)).filter(Boolean)
+                  .map(item => item.innerText || item.textContent || '').join(' ');
+                return labelledBy || element.getAttribute('aria-label') || labels
+                  || element.getAttribute('alt') || element.getAttribute('placeholder')
+                  || element.getAttribute('title') || element.innerText || element.textContent || '';
+              };
+
+              const parse = selector => {
+                const parts = selector.split('.');
+                if (parts.length !== 4 || (parts[0] !== 'a' && parts[0] !== 't')) {
+                  throw new Error('Invalid WebAgent4j structured-scope selector');
+                }
+                return {
+                  accessible: parts[0] === 'a',
+                  locale: decode(parts[1]),
+                  text: decode(parts[2]),
+                  binding: decode(parts[3])
+                };
+              };
+
+              const matches = (root, selector) => {
+                const options = parse(selector);
+                const expected = normalize(options.text, options.locale);
+                const bindings = globalThis.__webagent4jStructuredScopeBindings;
+                const result = [];
+                for (const element of root.querySelectorAll('*')) {
+                  if (!element.querySelector('*')) continue;
+                  const actual = options.accessible
+                    ? accessibleName(element)
+                    : element.innerText || element.textContent || '';
+                  if (normalize(actual, options.locale) !== expected) continue;
+                  if (options.binding) {
+                    if (!bindings || bindings.get(element) !== options.binding) continue;
+                  }
+                  result.push(element);
+                }
+                return result;
+              };
+
+              return {
+                query(root, selector) {
+                  const result = matches(root, selector);
+                  return result.length === 0 ? null : result[0];
+                },
+                queryAll(root, selector) {
+                  return matches(root, selector);
+                }
+              };
+            })()
+            """;
+
+    /**
+     * Atomically binds one opaque token to the sole current semantic match. If there are zero or
+     * multiple current matches, no binding is created and the current cardinality is returned.
+     */
+    static final String BIND_UNIQUE_CONTAINER_FUNCTION =
+            """
+            (elements, binding) => {
+              if (elements.length !== 1) return elements.length;
+              globalThis.__webagent4jStructuredScopeBindings ||= new WeakMap();
+              globalThis.__webagent4jStructuredScopeBindings.set(elements[0], binding);
+              return 1;
+            }
+            """;
+
+    /**
+     * Legacy/current-DOM classification helper retained for focused regression tests and
+     * diagnostics. It never mutates application markup.
      */
     static final String MATCHING_CONTAINER_IDENTITIES_FUNCTION =
             """
@@ -46,15 +142,15 @@ final class PlaywrightDomInspectionScripts {
                 }
                 return globalThis.__webagent4jLocatorIds.get(element);
               };
-              const normalize = value => (value || '').normalize('NFKC').replace(/\u00a0/g, ' ')
-                .trim().replace(/\s+/g, ' ').toLocaleLowerCase(options.locale);
+              const normalize = value => (value || '').normalize('NFKC').replace(/\\u00a0/g, ' ')
+                .trim().replace(/\\s+/g, ' ').toLocaleLowerCase(options.locale);
               const accessibleName = element => {
                 const labels = element.labels
                   ? Array.from(element.labels)
                     .map(label => label.innerText || label.textContent || '').join(' ')
                   : '';
                 const labelledBy = (element.getAttribute('aria-labelledby') || '')
-                  .split(/\s+/).filter(Boolean)
+                  .split(/\\s+/).filter(Boolean)
                   .map(id => element.ownerDocument.getElementById(id)).filter(Boolean)
                   .map(item => item.innerText || item.textContent || '').join(' ');
                 return labelledBy || element.getAttribute('aria-label') || labels
@@ -80,7 +176,7 @@ final class PlaywrightDomInspectionScripts {
     static final String ROLE_FUNCTION =
             """
             (element) => {
-              const explicit = (element.getAttribute('role') || '').trim().split(/\s+/)[0];
+              const explicit = (element.getAttribute('role') || '').trim().split(/\\s+/)[0];
               if (explicit) return explicit.toLowerCase();
               const tag = element.tagName.toLowerCase();
               const type = (element.getAttribute('type') || 'text').toLowerCase();
@@ -129,12 +225,6 @@ final class PlaywrightDomInspectionScripts {
               const style = getComputedStyle(element);
               const rect = element.getBoundingClientRect();
               const ariaHiddenAncestor = element.closest('[aria-hidden="true"], [hidden]');
-              // <area> is exempt from the display/rect checks below: the HTML default UA
-              // stylesheet gives every <area> "display: none" even though it is a genuinely
-              // clickable image-map hotspot (browsers hit-test it independently of that nominal
-              // display value), so requiring display !== 'none' or a non-empty
-              // getBoundingClientRect() would make every <area> permanently invisible here
-              // regardless of whether its image map is actually shown on the page.
               const visible = element.tagName.toLowerCase() === 'area'
                 ? style.visibility !== 'hidden' && style.visibility !== 'collapse'
                   && Number(style.opacity) > 0 && !ariaHiddenAncestor
