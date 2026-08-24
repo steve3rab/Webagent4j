@@ -506,10 +506,9 @@ class PlaywrightLocatorBackendTest {
 
     @Test
     void structuredScopeInitialZeroIsNotFound() {
-        Locator bindingLocator = mock(Locator.class);
-        Locator guardedLocator = mock(Locator.class);
-        Locator documentRoot = structuredScopeRoot(bindingLocator, guardedLocator);
-        when(bindingLocator.count()).thenReturn(0);
+        StructuredScopeLocators locators = structuredScopeLocators();
+        Locator documentRoot = structuredScopeRoot(locators);
+        when(locators.binding().count()).thenReturn(0);
 
         PlaywrightLocatorBackend backend = playwrightBackend(documentRoot);
 
@@ -525,10 +524,9 @@ class PlaywrightLocatorBackendTest {
 
     @Test
     void structuredScopeInitialMultipleMatchesAreAmbiguous() {
-        Locator bindingLocator = mock(Locator.class);
-        Locator guardedLocator = mock(Locator.class);
-        Locator documentRoot = structuredScopeRoot(bindingLocator, guardedLocator);
-        when(bindingLocator.count()).thenReturn(2);
+        StructuredScopeLocators locators = structuredScopeLocators();
+        Locator documentRoot = structuredScopeRoot(locators);
+        when(locators.binding().count()).thenReturn(2);
 
         PlaywrightLocatorBackend backend = playwrightBackend(documentRoot);
 
@@ -544,13 +542,11 @@ class PlaywrightLocatorBackendTest {
 
     @Test
     void aGuardedStructuredScopeNeverHidesNewAmbiguity() {
-        Locator bindingLocator = mock(Locator.class);
-        Locator guardedLocator = mock(Locator.class);
-        Locator documentRoot = structuredScopeRoot(bindingLocator, guardedLocator);
-        when(bindingLocator.count()).thenReturn(1);
-        when(guardedLocator.count()).thenReturn(2);
+        StructuredScopeLocators locators = structuredScopeLocators();
+        ElementHandle identityHandle = successfulStructuredScopeHandshake(locators);
+        when(locators.guarded().count()).thenReturn(1, 2);
 
-        PlaywrightLocatorBackend backend = playwrightBackend(documentRoot);
+        PlaywrightLocatorBackend backend = playwrightBackend(structuredScopeRoot(locators));
         IElement scope =
                 backend.resolveUniqueContainer(
                         backend.context(),
@@ -559,39 +555,43 @@ class PlaywrightLocatorBackendTest {
                         Duration.ofSeconds(1));
 
         assertThatThrownBy(scope::state).isInstanceOf(AmbiguousLocatorException.class);
+        verify(identityHandle).dispose();
     }
 
     @Test
-    void aGuardedStructuredScopeRejectsPhysicalIdentityReplacementInsideTheSameSeam() {
-        Locator bindingLocator = mock(Locator.class);
-        Locator guardedLocator = mock(Locator.class);
-        Locator documentRoot = structuredScopeRoot(bindingLocator, guardedLocator);
-        when(bindingLocator.count()).thenReturn(1);
-        when(guardedLocator.count()).thenReturn(0);
+    void aStructuredScopeRejectsPhysicalIdentityReplacementDuringPromotion() {
+        StructuredScopeLocators locators = structuredScopeLocators();
+        ElementHandle identityHandle = mock(ElementHandle.class);
+        when(locators.binding().count()).thenReturn(1);
+        when(locators.leased().elementHandles()).thenReturn(List.of(identityHandle));
+        when(identityHandle.evaluate(anyString(), any()))
+                .thenReturn(Map.of("identity", "webagent4j-scope-identity", "domOrder", 0));
+        when(locators.promotion().count()).thenReturn(0);
 
-        PlaywrightLocatorBackend backend = playwrightBackend(documentRoot);
-        IElement scope =
-                backend.resolveUniqueContainer(
-                        backend.context(),
-                        "Shipping",
-                        LocatorStrategyType.ACCESSIBLE_NAME,
-                        Duration.ofSeconds(1));
+        PlaywrightLocatorBackend backend = playwrightBackend(structuredScopeRoot(locators));
 
-        assertThatThrownBy(scope::state).isInstanceOf(LocatorNotFoundException.class);
+        assertThatThrownBy(
+                        () ->
+                                backend.resolveUniqueContainer(
+                                        backend.context(),
+                                        "Shipping",
+                                        LocatorStrategyType.ACCESSIBLE_NAME,
+                                        Duration.ofSeconds(1)))
+                .isInstanceOf(LocatorNotFoundException.class);
+
+        verify(identityHandle).dispose();
     }
 
     @Test
-    void aUniqueGuardedStructuredScopeRemainsUsableAsALiveElement() {
-        Locator bindingLocator = mock(Locator.class);
-        Locator guardedLocator = mock(Locator.class);
+    void aUniqueStableStructuredScopeRemainsUsableAsALiveElement() {
+        StructuredScopeLocators locators = structuredScopeLocators();
+        ElementHandle identityHandle = successfulStructuredScopeHandshake(locators);
         ElementHandle stateHandle = mock(ElementHandle.class);
-        Locator documentRoot = structuredScopeRoot(bindingLocator, guardedLocator);
-        when(bindingLocator.count()).thenReturn(1);
-        when(guardedLocator.count()).thenReturn(1);
-        when(guardedLocator.elementHandles()).thenReturn(List.of(stateHandle));
+        when(locators.guarded().count()).thenReturn(1);
+        when(locators.guarded().elementHandles()).thenReturn(List.of(stateHandle));
         when(stateHandle.evaluate(anyString(), isNull())).thenReturn(presentStateValue());
 
-        PlaywrightLocatorBackend backend = playwrightBackend(documentRoot);
+        PlaywrightLocatorBackend backend = playwrightBackend(structuredScopeRoot(locators));
         IElement scope =
                 backend.resolveUniqueContainer(
                         backend.context(),
@@ -600,16 +600,17 @@ class PlaywrightLocatorBackendTest {
                         Duration.ofSeconds(1));
 
         assertThat(scope.state().present()).isTrue();
+        verify(identityHandle).dispose();
         verify(stateHandle).dispose();
     }
 
     @Test
-    void structuredScopeUsesBindAndGuardedSelectorModesInsteadOfSavedIndexes() {
-        Locator bindingLocator = mock(Locator.class);
-        Locator guardedLocator = mock(Locator.class);
-        Locator documentRoot = structuredScopeRoot(bindingLocator, guardedLocator);
-        when(bindingLocator.count()).thenReturn(1);
+    void structuredScopeUsesAtomicLeasePromotionAndStableGuardInsteadOfSavedIndexes() {
+        StructuredScopeLocators locators = structuredScopeLocators();
+        ElementHandle identityHandle = successfulStructuredScopeHandshake(locators);
+        when(locators.guarded().count()).thenReturn(1);
 
+        Locator documentRoot = structuredScopeRoot(locators);
         PlaywrightLocatorBackend backend = playwrightBackend(documentRoot);
         backend.resolveUniqueContainer(
                 backend.context(),
@@ -621,7 +622,14 @@ class PlaywrightLocatorBackendTest {
                 .locator(
                         org.mockito.ArgumentMatchers.<String>argThat(
                                 selector -> selector.startsWith("webagent4j_scope=a.b.")));
-
+        verify(documentRoot)
+                .locator(
+                        org.mockito.ArgumentMatchers.<String>argThat(
+                                selector -> selector.startsWith("webagent4j_scope=a.l.")));
+        verify(documentRoot)
+                .locator(
+                        org.mockito.ArgumentMatchers.<String>argThat(
+                                selector -> selector.startsWith("webagent4j_scope=a.p.")));
         verify(documentRoot)
                 .locator(
                         org.mockito.ArgumentMatchers.<String>argThat(
@@ -631,6 +639,7 @@ class PlaywrightLocatorBackendTest {
                 .locator(
                         org.mockito.ArgumentMatchers.<String>argThat(
                                 selector -> selector.contains("nth(")));
+        verify(identityHandle).dispose();
     }
 
     private static Stream<Duration> positiveTimeoutBudgets() {
@@ -654,22 +663,47 @@ class PlaywrightLocatorBackendTest {
         return documentRoot;
     }
 
-    private static Locator structuredScopeRoot(Locator bindingLocator, Locator guardedLocator) {
+    private static StructuredScopeLocators structuredScopeLocators() {
+        return new StructuredScopeLocators(
+                mock(Locator.class), mock(Locator.class), mock(Locator.class), mock(Locator.class));
+    }
+
+    private static Locator structuredScopeRoot(StructuredScopeLocators locators) {
         Locator documentRoot = mock(Locator.class);
         when(documentRoot.locator(anyString()))
                 .thenAnswer(
                         invocation -> {
                             String selector = invocation.getArgument(0);
                             if (selector.startsWith("webagent4j_scope=a.b.")) {
-                                return bindingLocator;
+                                return locators.binding();
+                            }
+                            if (selector.startsWith("webagent4j_scope=a.l.")) {
+                                return locators.leased();
+                            }
+                            if (selector.startsWith("webagent4j_scope=a.p.")) {
+                                return locators.promotion();
                             }
                             if (selector.startsWith("webagent4j_scope=a.g.")) {
-                                return guardedLocator;
+                                return locators.guarded();
                             }
                             throw new AssertionError("Unexpected selector: " + selector);
                         });
         return documentRoot;
     }
+
+    private static ElementHandle successfulStructuredScopeHandshake(
+            StructuredScopeLocators locators) {
+        ElementHandle identityHandle = mock(ElementHandle.class);
+        when(locators.binding().count()).thenReturn(1);
+        when(locators.leased().elementHandles()).thenReturn(List.of(identityHandle));
+        when(identityHandle.evaluate(anyString(), any()))
+                .thenReturn(Map.of("identity", "webagent4j-scope-identity", "domOrder", 0));
+        when(locators.promotion().count()).thenReturn(1);
+        return identityHandle;
+    }
+
+    private record StructuredScopeLocators(
+            Locator binding, Locator leased, Locator promotion, Locator guarded) {}
 
     private static PlaywrightLocatorBackend playwrightBackend(Locator documentRoot) {
         return new PlaywrightLocatorBackend(

@@ -5,15 +5,6 @@ final class PlaywrightDomInspectionScripts {
 
     static final String STRUCTURED_SCOPE_SELECTOR_ENGINE = "webagent4j_scope";
 
-    /**
-     * Maximum number of recent physical-scope leases retained for one live DOM element.
-     *
-     * <p>The bindings are only TOCTOU guards. Evicting an old lease is fail-closed: a stale guarded
-     * locator stops matching, while semantic ambiguity is still reported before the binding is
-     * consulted.
-     */
-    static final int MAX_STRUCTURED_SCOPE_BINDINGS_PER_ELEMENT = 256;
-
     static final String ACCESSIBLE_NAME_FUNCTION =
             """
             (element) => {
@@ -50,10 +41,10 @@ final class PlaywrightDomInspectionScripts {
      * deliberately shared across selector-engine evaluations in the same isolated frame realm so a
      * BIND locator and its later GUARDED locator observe the same physical identity state.
      *
-     * <p>Binding retention is strictly bounded per live physical element. Only the most recent
-     * {@link #MAX_STRUCTURED_SCOPE_BINDINGS_PER_ELEMENT} leases are retained. Eviction is
-     * deliberately fail-closed: an expired guarded locator stops matching; it can never make an
-     * ambiguous semantic result unique.
+     * <p>Each live physical element owns constant-size state: one stable physical identity and at
+     * most one transient bind lease. Re-resolution overwrites only the transient lease and never
+     * accumulates historical tokens, so an old still-valid scope cannot expire because unrelated
+     * later resolutions exceeded an arbitrary retention limit.
      *
      * <p>A guarded lookup never hides semantic ambiguity: zero semantic matches stay zero and two
      * or more semantic matches stay multiple. The binding is consulted only when the current
@@ -74,35 +65,46 @@ final class PlaywrightDomInspectionScripts {
                 });
               }
 
-              const maxBindingsPerElement = __MAX_BINDINGS_PER_ELEMENT__;
-
-              const rememberBinding = (element, binding) => {
-                let tokens = bindings.get(element);
-                if (!tokens) {
-                  // Map preserves deterministic insertion order for bounded eviction.
-                  tokens = new Map();
-                  bindings.set(element, tokens);
+              const stateFor = element => {
+                let state = bindings.get(element);
+                if (!state) {
+                  state = { identity: null, lease: null };
+                  bindings.set(element, state);
                 }
-
-                // Refresh without increasing cardinality when the same lease is observed again.
-                if (tokens.has(binding)) {
-                  tokens.delete(binding);
-                }
-                tokens.set(binding, true);
-
-                // Keep only the most recent leases. Eviction can only make a stale guard fail.
-                while (tokens.size > maxBindingsPerElement) {
-                  const oldest = tokens.keys().next();
-                  if (oldest.done) {
-                    break;
-                  }
-                  tokens.delete(oldest.value);
-                }
+                return state;
               };
 
-              const hasBinding = (element, binding) => {
-                const tokens = bindings.get(element);
-                return Boolean(tokens && tokens.has(binding));
+              const rememberLease = (element, lease) => {
+                const state = stateFor(element);
+                state.lease = lease;
+              };
+
+              const hasLease = (element, lease) => {
+                const state = bindings.get(element);
+                return Boolean(state && state.lease === lease);
+              };
+
+              const promoteLease = (element, payload) => {
+                const separator = payload.indexOf('\u0000');
+                if (separator <= 0 || separator === payload.length - 1) {
+                  throw new Error('Invalid WebAgent4j structured-scope promotion payload');
+                }
+
+                const lease = payload.slice(0, separator);
+                const identity = payload.slice(separator + 1);
+                const state = bindings.get(element);
+                if (!state || state.lease !== lease) {
+                  return false;
+                }
+
+                state.identity = identity;
+                state.lease = null;
+                return true;
+              };
+
+              const hasIdentity = (element, identity) => {
+                const state = bindings.get(element);
+                return Boolean(state && state.identity === identity);
               };
 
               const decode = value => {
@@ -136,7 +138,7 @@ final class PlaywrightDomInspectionScripts {
                 const parts = selector.split('.');
                 if (parts.length !== 5
                     || (parts[0] !== 'a' && parts[0] !== 't')
-                    || !['s', 'b', 'g'].includes(parts[1])) {
+                    || !['s', 'b', 'l', 'p', 'g'].includes(parts[1])) {
                   throw new Error('Invalid WebAgent4j structured-scope selector');
                 }
                 return {
@@ -173,18 +175,24 @@ final class PlaywrightDomInspectionScripts {
 
                 if (options.operation === 'b') {
                   if (semantic.length === 1) {
-                    rememberBinding(semantic[0], options.binding);
+                    rememberLease(semantic[0], options.binding);
                   }
                   return semantic;
                 }
 
-                // Guarded mode preserves semantic 0/N cardinality. The physical binding can only
-                // accept or reject the sole semantic match; it can never select one element from
-                // an ambiguous set.
+                // Every guard preserves semantic 0/N cardinality before consulting physical state.
+                // A lease/identity can reject the sole semantic match, never choose one from N.
                 if (semantic.length !== 1) {
                   return semantic;
                 }
-                return hasBinding(semantic[0], options.binding) ? semantic : [];
+
+                if (options.operation === 'l') {
+                  return hasLease(semantic[0], options.binding) ? semantic : [];
+                }
+                if (options.operation === 'p') {
+                  return promoteLease(semantic[0], options.binding) ? semantic : [];
+                }
+                return hasIdentity(semantic[0], options.binding) ? semantic : [];
               };
 
               return {
@@ -197,10 +205,7 @@ final class PlaywrightDomInspectionScripts {
                 }
               };
             })()
-            """
-                    .replace(
-                            "__MAX_BINDINGS_PER_ELEMENT__",
-                            Integer.toString(MAX_STRUCTURED_SCOPE_BINDINGS_PER_ELEMENT));
+            """;
 
     /**
      * Legacy/current-DOM classification helper retained for focused regression tests and
@@ -333,7 +338,7 @@ final class PlaywrightDomInspectionScripts {
             """;
 
     static final String DESCENDANT_OR_SELF_FUNCTION =
-            "(element, ancestorOrSelf) => ancestorOrSelf.contains(element)";
+            PlaywrightCandidateIdentityBridge.descendantOrSelfScript();
 
     private PlaywrightDomInspectionScripts() {}
 }

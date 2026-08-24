@@ -73,15 +73,30 @@ final class PlaywrightScopeResolver {
             throw new LocatorNotFoundException(
                     "Explicit element scope is detached from the document");
         }
+
         ElementHandle parentHandle = parentLocator.elementHandle();
-        Object descendantOrSelf =
-                childLocator.evaluate(
-                        PlaywrightDomInspectionScripts.DESCENDANT_OR_SELF_FUNCTION, parentHandle);
-        if (!Boolean.TRUE.equals(descendantOrSelf)) {
+        if (parentHandle == null) {
             throw new LocatorNotFoundException(
-                    "Explicit element scope does not belong to the current scope: within(...)"
-                            + " narrows the previous scope, an unrelated element cannot be"
-                            + " substituted for it");
+                    "The current scope element detached before containment validation");
+        }
+
+        try {
+            Object descendantOrSelf =
+                    childLocator.evaluate(
+                            PlaywrightDomInspectionScripts.DESCENDANT_OR_SELF_FUNCTION,
+                            parentHandle);
+            if (!Boolean.TRUE.equals(descendantOrSelf)) {
+                throw new LocatorNotFoundException(
+                        "Explicit element scope does not belong to the current scope: within(...)"
+                                + " narrows the previous scope, an unrelated element cannot be"
+                                + " substituted for it");
+            }
+        } finally {
+            try {
+                parentHandle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup must never replace the containment result/failure.
+            }
         }
     }
 
@@ -347,44 +362,62 @@ final class PlaywrightScopeResolver {
     private static boolean matchesUrl(
             IElement iframeElement, TextMatch match, double inspectionTimeoutMillis) {
         Locator iframeLocator = PlaywrightLocatorBackend.unwrap(iframeElement);
-        ElementHandle handle;
+        List<ElementHandle> handles = List.of();
         try {
-            if (!(inspectionTimeoutMillis > 0.0)) {
-                return false;
+            try {
+                if (!(inspectionTimeoutMillis > 0.0)) {
+                    return false;
+                }
+                handles = iframeLocator.elementHandles();
+                if (handles.isEmpty()) {
+                    return false;
+                }
+                if (handles.size() > 1) {
+                    throw new AmbiguousLocatorException(
+                            "Frame candidate became ambiguous during current-DOM URL inspection");
+                }
+            } catch (TimeoutError vanished) {
+                if (confirmedAbsent(iframeLocator, vanished)) {
+                    return false;
+                }
+                throw vanished;
+            } catch (PlaywrightException failure) {
+                if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
+                    return false;
+                }
+                throw failure;
             }
-            List<ElementHandle> handles = iframeLocator.elementHandles();
-            if (handles.isEmpty()) {
-                return false;
-            }
-            handle = handles.getFirst();
-        } catch (TimeoutError vanished) {
-            if (confirmedAbsent(iframeLocator, vanished)) {
-                return false;
-            }
-            throw vanished;
-        } catch (PlaywrightException failure) {
-            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
-                return false;
-            }
-            throw failure;
-        }
 
-        Frame frame = handle.contentFrame();
-        if (frame == null || frame.isDetached()) {
-            return false;
+            Frame frame = handles.getFirst().contentFrame();
+            if (frame == null || frame.isDetached()) {
+                return false;
+            }
+            String url = frame.url();
+            return switch (match.type()) {
+                case EXACT -> url.equals(match.value());
+                case CASE_INSENSITIVE_EXACT -> url.equalsIgnoreCase(match.value());
+                case CONTAINS ->
+                        url.toLowerCase(java.util.Locale.ROOT)
+                                .contains(match.value().toLowerCase(java.util.Locale.ROOT));
+                case STARTS_WITH -> url.startsWith(match.value());
+                case ENDS_WITH -> url.endsWith(match.value());
+                case REGEX -> url.matches(match.value());
+                case FUZZY ->
+                        throw new LocatorException("Frame URL matching does not support FUZZY");
+            };
+        } finally {
+            dispose(handles);
         }
-        String url = frame.url();
-        return switch (match.type()) {
-            case EXACT -> url.equals(match.value());
-            case CASE_INSENSITIVE_EXACT -> url.equalsIgnoreCase(match.value());
-            case CONTAINS ->
-                    url.toLowerCase(java.util.Locale.ROOT)
-                            .contains(match.value().toLowerCase(java.util.Locale.ROOT));
-            case STARTS_WITH -> url.startsWith(match.value());
-            case ENDS_WITH -> url.endsWith(match.value());
-            case REGEX -> url.matches(match.value());
-            case FUZZY -> throw new LocatorException("Frame URL matching does not support FUZZY");
-        };
+    }
+
+    private static void dispose(List<ElementHandle> handles) {
+        for (ElementHandle handle : handles) {
+            try {
+                handle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup must never replace the URL inspection result/failure.
+            }
+        }
     }
 
     private static boolean confirmedAbsent(Locator locator, TimeoutError original) {

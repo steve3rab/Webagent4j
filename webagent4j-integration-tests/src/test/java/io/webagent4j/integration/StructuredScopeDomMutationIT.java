@@ -74,30 +74,32 @@ class StructuredScopeDomMutationIT {
     }
 
     @Test
-    void repeatedResolutionBeyondThePerElementBindingLimitKeepsTheNewestScopeUsable()
+    void repeatedResolutionDoesNotExpireAnEarlierLiveScopeOrMutateApplicationDom()
             throws Exception {
         try (var support = Phase4TestSupport.start();
                 var page = support.open("/actions/context-scope-preexisting-attribute")) {
-            // Exercise beyond the production per-element bound (256) without exposing it publicly.
-            int repetitions = 272;
-
-            IElement latest = null;
-            for (int attempt = 0; attempt < repetitions; attempt++) {
-                latest =
-                        page.find(InteractionContext.context().containingText("Shipping"))
-                                .button()
-                                .named("Continue")
-                                .timeout(Duration.ofSeconds(5))
-                                .single();
-            }
-
-            assertThat(latest).isNotNull();
-            assertThat(latest.state().present()).isTrue();
+            IElement first =
+                    page.find(InteractionContext.context().containingText("Shipping"))
+                            .button()
+                            .named("Continue")
+                            .timeout(Duration.ofSeconds(5))
+                            .single();
 
             /*
-             * The resource-ownership correction remains fully in-memory and must not regress into
-             * application-DOM stamping while exercising the eviction path.
+             * This deliberately exceeds the former 256-token retention policy. The first resolved
+             * element must remain usable because later resolutions of the same physical scope no
+             * longer own or evict historical leases.
              */
+            for (int attempt = 0; attempt < 300; attempt++) {
+                page.find(InteractionContext.context().containingText("Shipping"))
+                        .button()
+                        .named("Continue")
+                        .timeout(Duration.ofSeconds(5))
+                        .single();
+            }
+
+            assertThat(first.state().present()).isTrue();
+
             assertThat(
                             page.evaluate(
                                     "() => document.getElementById('shipping-original')"

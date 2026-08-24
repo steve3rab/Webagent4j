@@ -5,16 +5,12 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Installs a tamper-resistant per-document registry for opaque Playwright candidate identities.
+ * Installs tamper-resistant per-document DOM primitives used by Playwright safety checks.
  *
- * <p>The application realm can discover and even invoke the immutable bridge entry point, but it
- * cannot read or replace the closure-private {@code WeakMap} state used by the browser script.
- * Invoking the bridge early can only allocate a unique identity for a node; it cannot choose,
- * collide, replace, or delete identities.
- *
- * <p>A fresh random document token is generated before application JavaScript executes. This keeps
- * the first candidate in two different documents from accidentally receiving the same stability
- * identity across navigation or replacement.
+ * <p>The application realm can discover and invoke the immutable bridge entry point, but it cannot
+ * read or replace the closure-private state used by the browser script. Candidate identities remain
+ * unique per physical node, and DOM containment uses pristine primitives captured before
+ * application JavaScript can monkey-patch them.
  */
 final class PlaywrightCandidateIdentityBridge {
 
@@ -37,6 +33,7 @@ final class PlaywrightCandidateIdentityBridge {
               const weakMapSet = WeakMap.prototype.set;
               const querySelectorAll = Document.prototype.querySelectorAll;
               const arrayIndexOf = Array.prototype.indexOf;
+              const nodeContains = Node.prototype.contains;
               const isConnectedGetter =
                 getOwnPropertyDescriptor(Node.prototype, "isConnected").get;
               const ownerDocumentGetter =
@@ -86,8 +83,42 @@ final class PlaywrightCandidateIdentityBridge {
                 };
               };
 
+              const contains = (ancestorOrSelf, element) => {
+                if (ancestorOrSelf == null || element == null) {
+                  return { absent: true };
+                }
+
+                const ancestorDocument =
+                  apply(ownerDocumentGetter, ancestorOrSelf, []);
+                const elementDocument =
+                  apply(ownerDocumentGetter, element, []);
+                if (ancestorDocument !== currentDocument
+                    || elementDocument !== currentDocument) {
+                  return { documentMismatch: true };
+                }
+
+                if (!apply(isConnectedGetter, ancestorOrSelf, [])
+                    || !apply(isConnectedGetter, element, [])) {
+                  return { absent: true };
+                }
+
+                return {
+                  contains: apply(nodeContains, ancestorOrSelf, [element])
+                };
+              };
+
+              const invoke = (operation, first, second) => {
+                if (operation === "identity") {
+                  return identify(first);
+                }
+                if (operation === "contains") {
+                  return contains(first, second);
+                }
+                return { unsupported: true };
+              };
+
               defineProperty(globalThis, bridgeName, {
-                value: identify,
+                value: invoke,
                 enumerable: false,
                 writable: false,
                 configurable: false
@@ -99,13 +130,42 @@ final class PlaywrightCandidateIdentityBridge {
     private static final String IDENTITY_SCRIPT =
             """
             (element, bridgeName) => {
-              const identify = globalThis[bridgeName];
-              if (typeof identify !== "function") {
+              const bridge = globalThis[bridgeName];
+              if (typeof bridge !== "function") {
                 return { bridgeMissing: true };
               }
-              return identify(element);
+              return bridge("identity", element, null);
             }
             """;
+
+    private static final String DESCENDANT_OR_SELF_SCRIPT =
+            """
+            (element, ancestorOrSelf) => {
+              const bridge = globalThis["%s"];
+              if (typeof bridge !== "function") {
+                throw new Error("WebAgent4j DOM trust bridge is unavailable");
+              }
+
+              const inspected = bridge("contains", ancestorOrSelf, element);
+              if (inspected == null || typeof inspected !== "object") {
+                throw new Error("WebAgent4j DOM containment inspection returned invalid data");
+              }
+              if (inspected.documentMismatch === true) {
+                throw new Error("WebAgent4j DOM containment crossed a document boundary");
+              }
+              if (inspected.unsupported === true) {
+                throw new Error("WebAgent4j DOM containment operation is unsupported");
+              }
+              if (inspected.absent === true) {
+                return false;
+              }
+              if (typeof inspected.contains !== "boolean") {
+                throw new Error("WebAgent4j DOM containment inspection returned malformed data");
+              }
+              return inspected.contains;
+            }
+            """
+                    .formatted(PROPERTY_NAME);
 
     private PlaywrightCandidateIdentityBridge() {}
 
@@ -116,9 +176,14 @@ final class PlaywrightCandidateIdentityBridge {
         Objects.requireNonNull(context, "context").addInitScript(INIT_SCRIPT);
     }
 
-    /** Returns the browser-side probe used on the already-resolved physical element handle. */
+    /** Returns the browser-side probe used on an already-resolved physical element handle. */
     static String identityScript() {
         return IDENTITY_SCRIPT;
+    }
+
+    /** Returns the trusted DOM containment probe. */
+    static String descendantOrSelfScript() {
+        return DESCENDANT_OR_SELF_SCRIPT;
     }
 
     /** Returns the process-local bridge property name passed to the identity probe. */

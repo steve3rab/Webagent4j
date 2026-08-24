@@ -139,6 +139,30 @@ class ContextScopeIdentityMutationIT {
         }
     }
 
+    @Test
+    void anOldResolvedElementRemainsUsableAfterManyLaterStructuredScopeResolutions()
+            throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/context-scope-insert-before-use")) {
+            IElementReference<IElement> reference =
+                    page.find(InteractionContext.context().containingText("Shipping"))
+                            .button()
+                            .named("Continue")
+                            .timeout(Duration.ofSeconds(5))
+                            .reference();
+
+            IElement first = reference.resolve();
+            for (int index = 0; index < 300; index++) {
+                reference.resolve();
+            }
+
+            first.click();
+
+            assertThat(support.clickCount("shipping-original")).isEqualTo(1);
+            assertThat(support.clickCount("billing-inserted")).isZero();
+        }
+    }
+
     private static IElementReference<IElement> target(IPage page, String mutation) {
         IElementReference<IElement> delegate =
                 page.find(InteractionContext.context().containingText("Shipping"))

@@ -43,7 +43,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             PlaywrightCandidateIdentityBridge.identityScript();
 
     private static final int MAXIMUM_INSPECTIONS_PER_CANDIDATE = 8;
-    private static final AtomicLong STRUCTURED_SCOPE_BINDING_SEQUENCE = new AtomicLong();
+    private static final AtomicLong STRUCTURED_SCOPE_LEASE_SEQUENCE = new AtomicLong();
 
     private final Locator documentRoot;
     private final ILocatorEngine engine;
@@ -310,13 +310,15 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     }
 
     /**
-     * Resolves one structured-scope container with a strict 0/1/N semantic classification.
+     * Resolves one structured-scope container with strict semantic 0/1/N classification and stable
+     * physical identity.
      *
-     * <p>The selector engine performs the classification and physical binding in its own isolated
-     * execution state. The returned element stays a live, chainable {@link Locator}; the binding is
-     * only an ephemeral guard for this resolution seam. A later poll/revalidation calls this method
-     * again, receives a fresh token, and may therefore accept a replacement node with the same
-     * semantics.
+     * <p>The isolated selector engine keeps constant-size state per live DOM element: {@code
+     * {stableIdentity, transientLease}}. A fresh lease is bound atomically to the sole semantic
+     * match, identity is inspected on the lease-guarded physical node, and the lease is atomically
+     * promoted to that stable identity. Existing stable identity is never overwritten by a
+     * competing bind lease, so old scopes remain usable while later resolutions cannot retarget
+     * them to a replacement node.
      */
     IElement resolveUniqueContainer(
             LocatorContext context, String text, LocatorStrategyType strategy, Duration timeout) {
@@ -332,13 +334,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
 
         ancestorValidator.run();
 
-        String binding =
-                "scope-"
-                        + Long.toUnsignedString(
-                                STRUCTURED_SCOPE_BINDING_SEQUENCE.incrementAndGet());
+        String lease = nextStructuredScopeLease();
+
         Locator bindingLocator =
                 structuredScopeLocator(
-                        root, text, strategy, context, StructuredScopeOperation.BIND, binding);
+                        root, text, strategy, context, StructuredScopeOperation.BIND, lease);
         int currentCount = countOrZero(bindingLocator);
         if (currentCount > 1) {
             throw new AmbiguousLocatorException(
@@ -349,9 +349,47 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                     "No structured-scope container matched \"" + text + "\"");
         }
 
+        Locator leasedLocator =
+                structuredScopeLocator(
+                        root,
+                        text,
+                        strategy,
+                        context,
+                        StructuredScopeOperation.LEASE_GUARDED,
+                        lease);
+        Map<String, Object> inspected = identifyOrNull(leasedLocator);
+        if (inspected == null) {
+            throw new LocatorNotFoundException(
+                    "Structured-scope container changed before physical identity capture");
+        }
+        String stableIdentity = String.valueOf(inspected.get("identity"));
+
+        String promotion = lease + "\u0000" + stableIdentity;
+        Locator promotionLocator =
+                structuredScopeLocator(
+                        root, text, strategy, context, StructuredScopeOperation.PROMOTE, promotion);
+        int promotionCount = countOrZero(promotionLocator);
+        if (promotionCount > 1) {
+            throw new AmbiguousLocatorException(
+                    "Structured scope text \""
+                            + text
+                            + "\" became ambiguous during identity binding");
+        }
+        if (promotionCount == 0) {
+            throw new LocatorNotFoundException(
+                    "Structured-scope container changed during physical identity binding");
+        }
+
         Locator guardedLocator =
                 structuredScopeLocator(
-                        root, text, strategy, context, StructuredScopeOperation.GUARDED, binding);
+                        root,
+                        text,
+                        strategy,
+                        context,
+                        StructuredScopeOperation.GUARDED,
+                        stableIdentity);
+        requireSameUniqueContainer(guardedLocator, text);
+
         Runnable validator =
                 () -> {
                     ancestorValidator.run();
@@ -366,6 +404,14 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 context.config(),
                 operationTimeoutMillis(timeout, 1),
                 validator);
+    }
+
+    private static String nextStructuredScopeLease() {
+        long sequence = STRUCTURED_SCOPE_LEASE_SEQUENCE.incrementAndGet();
+        if (sequence == 0L) {
+            throw new LocatorException("Structured-scope lease sequence exhausted");
+        }
+        return "scope-lease-" + Long.toUnsignedString(sequence);
     }
 
     private static void requireSameUniqueContainer(Locator guardedLocator, String text) {
@@ -412,6 +458,8 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
 
     private enum StructuredScopeOperation {
         BIND("b"),
+        LEASE_GUARDED("l"),
+        PROMOTE("p"),
         GUARDED("g");
 
         private final String code;

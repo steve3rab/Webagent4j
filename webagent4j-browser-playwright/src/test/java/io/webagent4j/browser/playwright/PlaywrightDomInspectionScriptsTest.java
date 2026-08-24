@@ -4,37 +4,39 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.Test;
 
-/** Regression coverage for structured-scope binding resource ownership. */
+/** Regression coverage for structured-scope identity resource ownership. */
 class PlaywrightDomInspectionScriptsTest {
 
     @Test
-    void structuredScopeBindingStoreIsExplicitlyBoundedAndFailClosed() {
+    void structuredScopeIdentityStoreUsesConstantSpaceAndPreservesAmbiguity() {
         String script = PlaywrightDomInspectionScripts.STRUCTURED_SCOPE_SELECTOR_ENGINE_SCRIPT;
 
-        assertThat(PlaywrightDomInspectionScripts.MAX_STRUCTURED_SCOPE_BINDINGS_PER_ELEMENT)
-                .isPositive();
-
         assertThat(script)
-                .contains(
-                        "const maxBindingsPerElement = "
-                                + PlaywrightDomInspectionScripts
-                                        .MAX_STRUCTURED_SCOPE_BINDINGS_PER_ELEMENT)
-                .contains("tokens = new Map()")
-                .contains("while (tokens.size > maxBindingsPerElement)")
-                .contains("tokens.delete(oldest.value)");
+                .contains("state = { identity: null, lease: null }")
+                .contains("state.lease = lease")
+                .contains("state.identity = identity")
+                .contains("state.lease !== lease")
+                .contains("return hasIdentity(semantic[0], options.binding) ? semantic : [];")
+                .doesNotContain("maxBindingsPerElement")
+                .doesNotContain("tokens = new Map()")
+                .doesNotContain("while (tokens.size");
 
-        /*
-         * Cardinality must be checked before consulting the physical lease. Do not make this
-         * assertion depend on text-block indentation: Spotless/JDK text-block normalization can
-         * legitimately change whitespace without changing selector semantics.
-         */
         int ambiguityGuard = script.indexOf("if (semantic.length !== 1)");
         int ambiguityReturn = script.indexOf("return semantic;", ambiguityGuard);
-        int bindingCheck =
-                script.indexOf("return hasBinding(semantic[0], options.binding) ? semantic : [];");
+        int identityCheck =
+                script.indexOf("return hasIdentity(semantic[0], options.binding) ? semantic : [];");
 
         assertThat(ambiguityGuard).isGreaterThanOrEqualTo(0);
         assertThat(ambiguityReturn).isGreaterThan(ambiguityGuard);
-        assertThat(bindingCheck).isGreaterThan(ambiguityReturn);
+        assertThat(identityCheck).isGreaterThan(ambiguityReturn);
+    }
+
+    @Test
+    void explicitScopeContainmentUsesThePreinstalledTrustedBridge() {
+        String script = PlaywrightDomInspectionScripts.DESCENDANT_OR_SELF_FUNCTION;
+
+        assertThat(script)
+                .contains("bridge(\"contains\", ancestorOrSelf, element)")
+                .doesNotContain("ancestorOrSelf.contains(element)");
     }
 }
