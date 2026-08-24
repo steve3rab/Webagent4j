@@ -1,29 +1,41 @@
 package io.webagent4j.browser.playwright;
 
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
-import com.microsoft.playwright.TimeoutError;
+import com.microsoft.playwright.PlaywrightException;
 import io.webagent4j.dom.BoundingBox;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.IFind;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
-/** Internal live element adapter; queries are re-resolved at each fluent terminal operation. */
+/**
+ * Internal live element adapter. Every element stays backed by a Playwright {@link Locator}, so it
+ * can always be reused as a chainable scope root and re-resolved against the live DOM.
+ *
+ * <p>Read-only inspection first resolves the locator with {@link Locator#elementHandles()}, which
+ * is a current-DOM query and does not start the locator wait used by {@link Locator#evaluate}. The
+ * actual inspection then runs on the one already-resolved physical {@link ElementHandle}. This is
+ * important for custom selector engines registered in an isolated content-script world: the
+ * selector is resolved exactly once in its own world and is not re-resolved through {@link
+ * Locator#evaluateAll(String)} in the main world.
+ */
 final class PlaywrightElement implements IElement {
-
-    private static final double INSPECTION_TIMEOUT_MILLIS = 200;
 
     private final Locator locator;
     private final ElementRole knownRole;
     private final PlaywrightLocatorBackend locatorBackend;
     private final LocatorScope originatingScope;
     private final LocatorConfig locatorConfig;
+    private final Runnable scopeIdentityValidator;
 
     PlaywrightElement(
             Locator locator,
@@ -31,11 +43,50 @@ final class PlaywrightElement implements IElement {
             PlaywrightLocatorBackend locatorBackend,
             LocatorScope originatingScope,
             LocatorConfig locatorConfig) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                PlaywrightLocatorBackend.inspectionTimeoutMillis(locatorConfig.defaultTimeout(), 1),
+                null);
+    }
+
+    PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            double inspectionTimeoutMillis) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                inspectionTimeoutMillis,
+                null);
+    }
+
+    PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            double inspectionTimeoutMillis,
+            Runnable scopeIdentityValidator) {
+        if (Double.isNaN(inspectionTimeoutMillis) || inspectionTimeoutMillis < 0.0) {
+            throw new IllegalArgumentException("inspectionTimeoutMillis must not be negative");
+        }
         this.locator = locator;
         this.knownRole = knownRole;
         this.locatorBackend = locatorBackend;
         this.originatingScope = originatingScope;
         this.locatorConfig = locatorConfig;
+        this.scopeIdentityValidator = scopeIdentityValidator;
     }
 
     @Override
@@ -92,20 +143,15 @@ final class PlaywrightElement implements IElement {
         return value == null ? "" : String.valueOf(value);
     }
 
+    boolean hasElementDescendant() {
+        return Boolean.TRUE.equals(
+                evaluateOrNull(PlaywrightDomInspectionScripts.HAS_ELEMENT_DESCENDANT_FUNCTION));
+    }
+
     @Override
     public String text() {
-        String value;
-        try {
-            value =
-                    locator.textContent(
-                            new Locator.TextContentOptions().setTimeout(INSPECTION_TIMEOUT_MILLIS));
-        } catch (TimeoutError failure) {
-            if (absentAfter(failure)) {
-                return "";
-            }
-            throw failure;
-        }
-        return value == null ? "" : value.trim().replaceAll("\\s+", " ");
+        Object value = evaluateOrNull("element => element.textContent");
+        return value == null ? "" : String.valueOf(value).trim().replaceAll("\\s+", " ");
     }
 
     @Override
@@ -149,22 +195,11 @@ final class PlaywrightElement implements IElement {
     @Override
     @SuppressWarnings("unchecked")
     public ElementState state() {
-        try {
-            if (locator.count() == 0) {
-                return detachedState();
-            }
-        } catch (TimeoutError failure) {
-            if (absentAfter(failure)) {
-                return detachedState();
-            }
-            throw failure;
-        }
-        Object inspected = evaluateOrNull(PlaywrightDomInspectionScripts.STATE_FUNCTION);
+        validateScopeIdentity();
+        Object inspected =
+                evaluateWithoutAdditionalValidation(PlaywrightDomInspectionScripts.STATE_FUNCTION);
         if (inspected == null) {
-            if (locator.count() == 0) {
-                return detachedState();
-            }
-            throw new IllegalStateException("Element state inspection returned no value");
+            return detachedState();
         }
         Map<String, Object> value = (Map<String, Object>) inspected;
         return new ElementState(
@@ -184,6 +219,7 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public Optional<BoundingBox> boundingBox() {
+        validateScopeIdentity();
         com.microsoft.playwright.options.BoundingBox box = locator.boundingBox();
         if (box == null) {
             return Optional.empty();
@@ -193,6 +229,7 @@ final class PlaywrightElement implements IElement {
 
     @Override
     public void click() {
+        validateScopeIdentity();
         locator.click();
     }
 
@@ -202,29 +239,78 @@ final class PlaywrightElement implements IElement {
     }
 
     Locator locator() {
+        validateScopeIdentity();
         return locator;
     }
 
-    private Object evaluateOrNull(String expression) {
-        try {
-            return locator.evaluate(
-                    expression,
-                    null,
-                    new Locator.EvaluateOptions().setTimeout(INSPECTION_TIMEOUT_MILLIS));
-        } catch (TimeoutError failure) {
-            if (absentAfter(failure)) {
-                return null;
-            }
-            throw failure;
+    Locator locatorWithoutScopeValidation() {
+        return locator;
+    }
+
+    void validateScopeIdentity() {
+        if (scopeIdentityValidator != null) {
+            scopeIdentityValidator.run();
         }
     }
 
-    private boolean absentAfter(TimeoutError originalFailure) {
+    private Object evaluateOrNull(String elementFunction) {
+        validateScopeIdentity();
+        return evaluateWithoutAdditionalValidation(elementFunction);
+    }
+
+    private Object evaluateWithoutAdditionalValidation(String elementFunction) {
+        List<ElementHandle> handles = List.of();
+        try {
+            handles = locator.elementHandles();
+            if (handles.isEmpty()) {
+                return null;
+            }
+            if (handles.size() > 1) {
+                throw new AmbiguousLocatorException(
+                        "Live element became ambiguous during current-DOM inspection");
+            }
+            return handles.getFirst().evaluate(elementFunction, null);
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
+                return null;
+            }
+            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)
+                    && confirmedAbsent(locator, failure)) {
+                return null;
+            }
+            throw failure;
+        } finally {
+            dispose(handles);
+        }
+    }
+
+    /**
+     * Converts a cross-document handle-adoption race to absence only after a fresh synchronous
+     * recheck proves that the live locator is now gone. A still-present element or any opaque
+     * recheck failure preserves the original Playwright failure.
+     */
+    private static boolean confirmedAbsent(Locator locator, PlaywrightException original) {
         try {
             return locator.count() == 0;
+        } catch (PlaywrightException recheckFailure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(recheckFailure)) {
+                return true;
+            }
+            original.addSuppressed(recheckFailure);
+            throw original;
         } catch (RuntimeException recheckFailure) {
-            originalFailure.addSuppressed(recheckFailure);
-            throw originalFailure;
+            original.addSuppressed(recheckFailure);
+            throw original;
+        }
+    }
+
+    private static void dispose(List<ElementHandle> handles) {
+        for (ElementHandle handle : handles) {
+            try {
+                handle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup only. Never replace the semantic result/failure of the probe.
+            }
         }
     }
 

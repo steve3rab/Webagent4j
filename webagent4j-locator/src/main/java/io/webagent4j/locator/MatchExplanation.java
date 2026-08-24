@@ -19,7 +19,7 @@ public record MatchExplanation(
         criterion = Objects.requireNonNull(criterion, "criterion");
         requested = Objects.requireNonNull(requested, "requested");
         actual = Objects.requireNonNull(actual, "actual");
-        if (contribution < 0.0 || contribution > 1.0) {
+        if (!Double.isFinite(contribution) || contribution < 0.0 || contribution > 1.0) {
             throw new IllegalArgumentException("contribution must be between zero and one");
         }
     }

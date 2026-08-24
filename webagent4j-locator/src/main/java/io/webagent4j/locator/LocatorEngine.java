@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -215,15 +216,20 @@ public final class LocatorEngine implements ILocatorEngine {
         Duration timeout = baseline.timeoutFor(definition);
         WaitBudget budget = WaitBudget.start(timeout, waitEngine.clock());
         WaitPolicy policy = policyFor(baseline, definition);
+        AtomicBoolean firstProbe = new AtomicBoolean(true);
         IWaitProbe<List<LocatorCandidate>> probe =
-                () ->
-                        probeOnce(
-                                context,
-                                definition,
-                                budget,
-                                waitForCandidates,
-                                failOnAmbiguity,
-                                diagnostics);
+                () -> {
+                    if (!firstProbe.getAndSet(false) && budget.expired()) {
+                        return WaitSample.pending();
+                    }
+                    return probeOnce(
+                            context,
+                            definition,
+                            budget,
+                            waitForCandidates,
+                            failOnAmbiguity,
+                            diagnostics);
+                };
         WaitResult<List<LocatorCandidate>> waited;
         try {
             waited = waitEngine.await(budget, policy, probe);
@@ -291,9 +297,20 @@ public final class LocatorEngine implements ILocatorEngine {
             }
             return waitForCandidates ? WaitSample.pending() : WaitSample.satisfied(List.of());
         }
+        if (budget.expired()) {
+            return waitForCandidates ? WaitSample.pending() : WaitSample.satisfied(List.of());
+        }
         diagnostics.scope(context.scope());
         Duration remaining = atLeastOneNano(budget.remaining());
-        List<LocatorCandidate> latest = searchOnce(context, definition, remaining, diagnostics);
+        List<LocatorCandidate> latest;
+        try {
+            latest = searchOnce(context, definition, remaining, diagnostics);
+        } catch (RuntimeException searchFailure) {
+            if (!LocatorFailureClassifier.isNotFound(searchFailure)) {
+                throw searchFailure;
+            }
+            return waitForCandidates ? WaitSample.pending() : WaitSample.satisfied(List.of());
+        }
         if (failOnAmbiguity && ambiguous(latest, context.config().ambiguityMargin())) {
             throw ambiguousException(diagnostics, latest, context.config().ambiguityMargin());
         }
@@ -388,7 +405,7 @@ public final class LocatorEngine implements ILocatorEngine {
                 break;
             }
             int candidateLimit = candidateLimit(context.config(), unit.strategy().phase());
-            Instant strategyStarted = Instant.now();
+            long strategyStartedNanos = waitEngine.clock().nanoTime();
             LocatorBackendSearchResult discovered =
                     unit.strategy()
                             .discover(
@@ -408,7 +425,9 @@ public final class LocatorEngine implements ILocatorEngine {
                             || (unit.strategy().phase() == LocatorStrategyPhase.DETERMINISTIC
                                     && unit.step().query().text().isPresent()
                                     && acceptance.hardConstraintRejected());
-            Duration strategyDuration = Duration.between(strategyStarted, Instant.now());
+            Duration strategyDuration =
+                    Duration.ofNanos(
+                            Math.max(0L, waitEngine.clock().nanoTime() - strategyStartedNanos));
             diagnostics.executed(type, strategyDuration, discovered, accepted);
             if (discovered.truncated()
                     && unit.strategy().phase() == LocatorStrategyPhase.FALLBACK) {
@@ -465,16 +484,11 @@ public final class LocatorEngine implements ILocatorEngine {
                 diagnostics.limit(BudgetLimit.CANDIDATES);
                 break;
             }
-            Optional<RejectionReason> rejection;
-            try {
-                rejection =
-                        filter.rejectionReason(
-                                definition,
-                                backendCandidate.element(),
-                                context.config().testIdAttribute());
-            } catch (RuntimeException detached) {
-                rejection = Optional.of(RejectionReason.OUTSIDE_SCOPE);
-            }
+            Optional<RejectionReason> rejection =
+                    filter.rejectionReason(
+                            definition,
+                            backendCandidate.element(),
+                            context.config().testIdAttribute());
             if (rejection.isPresent()) {
                 hardConstraintRejected = true;
                 diagnostics.rejected(

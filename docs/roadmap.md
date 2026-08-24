@@ -52,9 +52,12 @@ Javadoc, user documentation, and a green `clean verify` build.
   rendering across the stabilized candidate surface. The maintained matrix is
   [docs/contracts.md](contracts.md). This phase adds no product capability, schema change, or new
   extension point.
-- **1.0-C Hardening and adversarial testing (next):** validate the consistent contracts under
-  broader failure and boundary conditions. Not started.
-- **1.0-D Release readiness:** final release engineering and publication readiness. Not started.
+- **1.0-C Hardening and adversarial testing (completed):** validated the consistent contracts under
+  hostile numeric, timing, lifecycle, backend-failure, schema, and extension conditions. All P0/P1
+  findings are closed in the [hardening matrix](hardening.md); no product feature, public signature,
+  dependency, or recording schema V1 field was added.
+- **1.0-D Release readiness (next):** final release engineering and publication readiness. Not
+  started.
 
 Post-1.0 candidates include MCP and agent adapters, distributed crawling, more browser backends,
 advanced observation, and opt-in self-healing. These remain optional consumers of the non-AI core.

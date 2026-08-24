@@ -44,6 +44,8 @@ class PlaywrightScopeResolverTest {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext context = pageContext();
         IElement byVisibleText = element("Available");
+        when(engine.locateSingle(eq(context), byAriaLabel("Available")))
+                .thenThrow(new LocatorNotFoundException("no direct aria-label match"));
         when(engine.locateSingle(eq(context), byAccessibleName()))
                 .thenThrow(new LocatorNotFoundException("no accessible-name match"));
         when(engine.locateSingle(eq(context), byVisibleText())).thenReturn(result(byVisibleText));
@@ -55,11 +57,65 @@ class PlaywrightScopeResolverTest {
     }
 
     @Test
+    void aSingleExactAriaLabelSucceedsAfterAccessibleNameUniquenessIsProven() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        IElement shipping = element("Shipping");
+        when(engine.locateSingle(eq(context), byAriaLabel("Shipping")))
+                .thenReturn(result(shipping));
+        when(engine.locateSingle(eq(context), byAccessibleName())).thenReturn(result(shipping));
+
+        LocatorContext resolved =
+                PlaywrightScopeResolver.resolveStructuredScope(engine, context, scope("Shipping"));
+
+        assertThat(resolved.scope().root()).contains(shipping);
+        verify(engine, never()).locateSingle(eq(context), byVisibleText());
+    }
+
+    @Test
+    void anAccessibleNameCanResolveUniquelyWhenNoExactAriaLabelExists() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        IElement shipping = element("Shipping");
+        when(engine.locateSingle(eq(context), byAriaLabel("Shipping")))
+                .thenThrow(new LocatorNotFoundException("no direct aria-label match"));
+        when(engine.locateSingle(eq(context), byAccessibleName())).thenReturn(result(shipping));
+
+        LocatorContext resolved =
+                PlaywrightScopeResolver.resolveStructuredScope(engine, context, scope("Shipping"));
+
+        assertThat(resolved.scope().root()).contains(shipping);
+        verify(engine, never()).locateSingle(eq(context), byVisibleText());
+    }
+
+    @Test
     void neverFallsBackWhenAccessibleNameResolutionIsAmbiguous() {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext context = pageContext();
         AmbiguousLocatorException ambiguous =
                 new AmbiguousLocatorException("two \"Shipping\" regions");
+        when(engine.locateSingle(eq(context), byAriaLabel("Shipping"))).thenThrow(ambiguous);
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveStructuredScope(
+                                        engine, context, scope("Shipping")))
+                .isSameAs(ambiguous);
+        verify(engine, never()).locateSingle(eq(context), byAccessibleName());
+        verify(engine, never()).locateSingle(eq(context), byVisibleText());
+    }
+
+    @Test
+    void anExactAriaLabelStillRequiresSemanticUniquenessAcrossNameSources() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        IElement directlyLabelled = element("Shipping");
+        AmbiguousLocatorException ambiguous =
+                new AmbiguousLocatorException(
+                        "aria-label and aria-labelledby both expose Shipping");
+        when(engine.locateSingle(eq(context), byAriaLabel("Shipping")))
+                .thenReturn(result(directlyLabelled));
         when(engine.locateSingle(eq(context), byAccessibleName())).thenThrow(ambiguous);
 
         assertThatRuntimeException()
@@ -76,7 +132,7 @@ class PlaywrightScopeResolverTest {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext context = pageContext();
         RuntimeException backendFailure = new IllegalStateException("browser disconnected");
-        when(engine.locateSingle(eq(context), byAccessibleName())).thenThrow(backendFailure);
+        when(engine.locateSingle(eq(context), byAriaLabel("Shipping"))).thenThrow(backendFailure);
 
         assertThatRuntimeException()
                 .isThrownBy(
@@ -84,6 +140,7 @@ class PlaywrightScopeResolverTest {
                                 PlaywrightScopeResolver.resolveStructuredScope(
                                         engine, context, scope("Shipping")))
                 .isSameAs(backendFailure);
+        verify(engine, never()).locateSingle(eq(context), byAccessibleName());
         verify(engine, never()).locateSingle(eq(context), byVisibleText());
     }
 
@@ -93,8 +150,11 @@ class PlaywrightScopeResolverTest {
         LocatorContext context = pageContext();
         IElement laptopB = element("Laptop B region");
         IElement available = element("Available row");
+        when(engine.locateSingle(eq(context), byAriaLabel("Laptop B"))).thenReturn(result(laptopB));
         when(engine.locateSingle(eq(context), byAccessibleName())).thenReturn(result(laptopB));
         LocatorContext narrowedToLaptopB = context.within(laptopB);
+        when(engine.locateSingle(eq(narrowedToLaptopB), byAriaLabel("Available")))
+                .thenReturn(result(available));
         when(engine.locateSingle(eq(narrowedToLaptopB), byAccessibleName()))
                 .thenReturn(result(available));
 
@@ -104,7 +164,9 @@ class PlaywrightScopeResolverTest {
 
         assertThat(resolved.scope().root()).contains(available);
         assertThat(resolved.scope().path()).hasSize(3); // Page -> Laptop B -> Available
+        verify(engine).locateSingle(eq(context), byAriaLabel("Laptop B"));
         verify(engine).locateSingle(eq(context), byAccessibleName());
+        verify(engine).locateSingle(eq(narrowedToLaptopB), byAriaLabel("Available"));
         verify(engine).locateSingle(eq(narrowedToLaptopB), byAccessibleName());
     }
 
@@ -125,6 +187,7 @@ class PlaywrightScopeResolverTest {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext context = pageContext();
         IElement laptopB = element("Laptop B region");
+        when(engine.locateSingle(eq(context), byAriaLabel("Laptop B"))).thenReturn(result(laptopB));
         when(engine.locateSingle(eq(context), byAccessibleName())).thenReturn(result(laptopB));
 
         assertThatIllegalArgumentException()
@@ -136,6 +199,10 @@ class PlaywrightScopeResolverTest {
 
     private static LocatorDefinition byAccessibleName() {
         return argThat(definition -> definition.accessibleName().isPresent());
+    }
+
+    private static LocatorDefinition byAriaLabel(String value) {
+        return argThat(definition -> value.equals(definition.attributes().get("aria-label")));
     }
 
     private static LocatorDefinition byVisibleText() {

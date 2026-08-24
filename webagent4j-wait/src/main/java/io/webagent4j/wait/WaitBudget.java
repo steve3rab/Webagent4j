@@ -13,18 +13,18 @@ import java.util.Objects;
  * second sees {@link #remaining()} return 3.5 seconds, not a fresh 5.
  *
  * <p>All arithmetic is based on {@link IMonotonicClock#nanoTime()}, never wall-clock time, and is
- * saturated rather than allowed to overflow: an implausibly large timeout clamps to the largest
- * representable deadline instead of wrapping around to a point in the past.
+ * rollover-safe and saturated rather than allowed to overflow: an implausibly large timeout clamps
+ * to the largest representable allowance instead of wrapping around.
  */
 public final class WaitBudget {
 
     private final long startNanos;
-    private final long deadlineNanos;
+    private final long timeoutNanos;
     private final IMonotonicClock clock;
 
-    private WaitBudget(long startNanos, long deadlineNanos, IMonotonicClock clock) {
+    private WaitBudget(long startNanos, long timeoutNanos, IMonotonicClock clock) {
         this.startNanos = startNanos;
-        this.deadlineNanos = deadlineNanos;
+        this.timeoutNanos = timeoutNanos;
         this.clock = clock;
     }
 
@@ -35,8 +35,7 @@ public final class WaitBudget {
         if (timeout.isNegative()) {
             throw new IllegalArgumentException("timeout must not be negative");
         }
-        long start = clock.nanoTime();
-        return new WaitBudget(start, saturatedAdd(start, saturatedNanos(timeout)), clock);
+        return new WaitBudget(clock.nanoTime(), saturatedNanos(timeout), clock);
     }
 
     /**
@@ -55,25 +54,20 @@ public final class WaitBudget {
 
     /** Returns the time elapsed since this budget started. Never negative. */
     public Duration elapsed() {
-        return Duration.ofNanos(Math.max(0L, clock.nanoTime() - startNanos));
+        return Duration.ofNanos(elapsedNanos());
     }
 
     /** Returns the time left before the deadline. Never negative; zero once expired. */
     public Duration remaining() {
-        return Duration.ofNanos(Math.max(0L, deadlineNanos - clock.nanoTime()));
+        return Duration.ofNanos(Math.max(0L, timeoutNanos - elapsedNanos()));
     }
 
     /** Returns whether the deadline has passed. */
     public boolean expired() {
-        return clock.nanoTime() >= deadlineNanos;
+        return elapsedNanos() >= timeoutNanos;
     }
 
-    private static long saturatedAdd(long left, long right) {
-        long sum = left + right;
-        // Overflow occurred iff both operands share a sign that the result does not.
-        if (((left ^ sum) & (right ^ sum)) < 0) {
-            return Long.MAX_VALUE;
-        }
-        return sum;
+    private long elapsedNanos() {
+        return Math.max(0L, clock.nanoTime() - startNanos);
     }
 }

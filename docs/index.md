@@ -22,10 +22,10 @@ map of every module and entry point, and use the focused guides below for full d
 - [Recording](recording.md)
 - [Plugins](plugins.md)
 - [Wait and stability](wait-and-stability.md)
-- [Testing](testing.md), [robustness](robustness.md), [known limitations](limitations.md), and
-  [contributing](contribution.md)
+- [Hardening](hardening.md), [testing](testing.md), [robustness](robustness.md),
+  [known limitations](limitations.md), and [contributing](contribution.md)
 - [Roadmap](roadmap.md)
 
 Workflows, schema-V1 recording, and explicit trusted locator plugins are implemented. Their guides
-define the supported behavior and deliberate non-goals. Phase 1.0-B is aligning cross-module
-contracts without adding features or changing recording schema V1.
+define the supported behavior and deliberate non-goals. Phase 1.0-C completed adversarial
+hardening without adding features, public signatures, dependencies, or recording schema V1 fields.

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.browser.InteractionContext;
+import io.webagent4j.locator.AmbiguousLocatorException;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -35,6 +36,31 @@ class ContextWrongTargetProtectionIT {
             assertThat(result.success()).isFalse();
             assertThat(result.failure().orElseThrow().type())
                     .isEqualTo(ActionFailureType.TARGET_AMBIGUOUS);
+            assertThat(support.clickCount("shipping-1")).isZero();
+            assertThat(support.clickCount("shipping-2")).isZero();
+        }
+    }
+
+    @Test
+    void differentAccessibleNameSourcesRemainAmbiguous() throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/context-cross-source-ambiguous")) {
+            var target =
+                    page.find(InteractionContext.context().containingText("Shipping"))
+                            .button()
+                            .named("Continue")
+                            .reference();
+
+            ActionResult<Void> result = page.action().click(target).execute();
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.TARGET_AMBIGUOUS);
+            assertThat(result.failure().orElseThrow().cause())
+                    .hasValueSatisfying(
+                            failure ->
+                                    assertThat(failure)
+                                            .isInstanceOf(AmbiguousLocatorException.class));
             assertThat(support.clickCount("shipping-1")).isZero();
             assertThat(support.clickCount("shipping-2")).isZero();
         }

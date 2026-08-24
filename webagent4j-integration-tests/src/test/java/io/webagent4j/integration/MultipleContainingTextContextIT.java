@@ -2,6 +2,7 @@ package io.webagent4j.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.webagent4j.action.ActionResult;
 import io.webagent4j.browser.InteractionContext;
 import org.junit.jupiter.api.Test;
 
@@ -18,17 +19,18 @@ class MultipleContainingTextContextIT {
     void combinesBothConstraintsToSelectExactlyTheRightTarget() throws Exception {
         try (var support = Phase4TestSupport.start();
                 var page = support.open("/actions/context-multi")) {
-            page.action()
-                    .click(
-                            page.find(
-                                            InteractionContext.context()
-                                                    .containingText("Laptop B")
-                                                    .containingText("Available"))
-                                    .button()
-                                    .named("Ajouter")
-                                    .reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    page.action()
+                            .click(
+                                    page.find(
+                                                    InteractionContext.context()
+                                                            .containingText("Laptop B")
+                                                            .containingText("Available"))
+                                            .button()
+                                            .named("Ajouter")
+                                            .reference())
+                            .execute();
+            assertSuccessful(result);
 
             assertThat(support.clickCount("laptopB-available")).isEqualTo(1);
             assertThat(support.clickCount("laptopB-unavailable")).isZero();
@@ -41,22 +43,39 @@ class MultipleContainingTextContextIT {
     void reversingTheConstraintOrderStillSelectsTheRightTarget() throws Exception {
         try (var support = Phase4TestSupport.start();
                 var page = support.open("/actions/context-multi")) {
-            page.action()
-                    .click(
-                            page.find(
-                                            InteractionContext.context()
-                                                    .containingText("Laptop A")
-                                                    .containingText("Unavailable"))
-                                    .button()
-                                    .named("Ajouter")
-                                    .reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    page.action()
+                            .click(
+                                    page.find(
+                                                    InteractionContext.context()
+                                                            .containingText("Laptop A")
+                                                            .containingText("Unavailable"))
+                                            .button()
+                                            .named("Ajouter")
+                                            .reference())
+                            .execute();
+            assertSuccessful(result);
 
             assertThat(support.clickCount("laptopA-unavailable")).isEqualTo(1);
             assertThat(support.clickCount("laptopA-available")).isZero();
             assertThat(support.clickCount("laptopB-available")).isZero();
             assertThat(support.clickCount("laptopB-unavailable")).isZero();
         }
+    }
+
+    private static void assertSuccessful(ActionResult<Void> result) {
+        assertThat(result.success())
+                .withFailMessage(
+                        () ->
+                                result.failure()
+                                        .map(
+                                                failure ->
+                                                        failure
+                                                                + ", cause="
+                                                                + failure.cause()
+                                                                        .map(Throwable::toString)
+                                                                        .orElse("none"))
+                                        .orElse("Action failed without structured diagnostics"))
+                .isTrue();
     }
 }

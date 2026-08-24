@@ -145,6 +145,7 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 - [Recording](docs/recording.md)
 - [Plugins](docs/plugins.md)
 - [Testing](docs/testing.md)
+- [Robustness and adversarial hardening](docs/hardening.md)
 - [Robustness benchmark](docs/robustness.md)
 - [Known limitations](docs/limitations.md)
 - [Roadmap](docs/roadmap.md)
@@ -154,9 +155,9 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 
 The current development line implements the browser foundation, semantic locator and observation
 engines, verified actions, extraction, HTTP and browser crawlers, deterministic workflows,
-schema-V1 recording, and explicit custom locator plugins. Phase 1.0-A is stabilizing and documenting
-the intended compatibility surface; empty `http`, `storage`, and `testing` reactor boundaries are
-not supported APIs.
+schema-V1 recording, and explicit custom locator plugins. Phase 1.0-C completed adversarial
+hardening of the 1.0 API candidate without adding product features or changing recording schema V1;
+empty `http`, `storage`, and `testing` reactor boundaries are not supported APIs.
 
 Compatibility follows semantic versioning starting with `1.0.0`. Before 1.0, breaking changes are
 documented in the [changelog](CHANGELOG.md), [migration guide](docs/migration-to-1.0.md), and release

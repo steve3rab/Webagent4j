@@ -127,8 +127,12 @@ aria-labelledby, associated landmark or heading name, etc.). Visible-text matchi
 fallback, and only when accessible-name resolution demonstrably reports a typed "not found" outcome;
 an ambiguous accessible-name match or a genuine backend/runtime failure is never retried under visible
 text and always propagates unchanged - a context ambiguity or backend failure means resolution stops,
-not that a different strategy silently takes over. Every configured `containingText(...)` constraint is
-honored, in order, each one narrowing the scope produced by the previous one: with two constraints,
+not that a different strategy silently takes over. An exact `aria-label` match does not short-circuit
+this proof: another container with the same name from `aria-labelledby`, a native label, or another
+supported accessible-name source makes the scope ambiguous. Only elements that can actually contain a
+descendant are eligible as containers, so a leaf heading repeating its parent section's name does not
+become a competing scope. Every configured `containingText(...)` constraint is honored, in order, each
+one narrowing the scope produced by the previous one: with two constraints,
 `.containingText("Laptop B").containingText("Available")` first narrows to the "Laptop B" region, then
 narrows again to "Available" strictly inside that region.
 
@@ -488,6 +492,10 @@ Prefer a specific role plus accessible name over broad text, CSS, or XPath scans
 can stop early; fuzzy discovery is skipped whenever deterministic discovery succeeds. A timeout is a
 global deadline across polling, strategy execution, scoring, ambiguity checks, and stability—not a new
 timeout for each phase.
+
+Playwright identity, state, attribute, text, and frame-URL inspections receive only a divided share of
+the caller's remaining deadline. No internal comfort floor can expand a 1 ns, 1 ms, or 100 ms remaining
+budget into a new window, and frame URL matching recalculates the remaining share before each candidate.
 
 ## Diagnostics, events, and logging
 

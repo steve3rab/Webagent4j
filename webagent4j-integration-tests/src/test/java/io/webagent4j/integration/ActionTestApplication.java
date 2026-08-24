@@ -257,6 +257,16 @@ final class ActionTestApplication implements AutoCloseable {
                             <section aria-label="Shipping"><button
                               onclick="fetch('/count-click/shipping-2')">Continue</button></section>
                             """);
+            case "/actions/context-cross-source-ambiguous" ->
+                    document(
+                            "Context cross-source ambiguous",
+                            """
+                            <section aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-1')">Continue</button></section>
+                            <h2 id="shipping-title">Shipping</h2>
+                            <section aria-labelledby="shipping-title"><button
+                              onclick="fetch('/count-click/shipping-2')">Continue</button></section>
+                            """);
             case "/actions/context-dynamic-ambiguous" ->
                     document(
                             "Context dynamic ambiguous",
@@ -309,6 +319,44 @@ final class ActionTestApplication implements AutoCloseable {
                                 '<button onclick="fetch(\\'/count-click/shipping-continue\\')">Continue</button>';
                               old.replaceWith(fresh);
                             }, 150)</script>
+                            """);
+            case "/actions/context-scope-insert-before-use" ->
+                    document(
+                            "Context scope insertion race",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            """);
+            case "/actions/context-scope-replace-before-use" ->
+                    document(
+                            "Context scope replacement race",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            """);
+            case "/actions/context-scope-reorder-before-use" ->
+                    document(
+                            "Context scope reorder race",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            <section id="billing-existing" aria-label="Billing"><button
+                              onclick="fetch('/count-click/billing-existing')">Continue</button></section>
+                            """);
+            case "/actions/context-scope-duplicate-before-use" ->
+                    document(
+                            "Context scope ambiguity race",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
+                            """);
+            case "/actions/context-scope-preexisting-attribute" ->
+                    document(
+                            "Context scope pre-existing application attribute",
+                            """
+                            <section id="shipping-original" aria-label="Shipping"
+                              data-webagent4j-scope-id="app-owned-value"><button
+                              onclick="fetch('/count-click/shipping-original')">Continue</button></section>
                             """);
             case "/actions/context-dynamic-semantic-change" ->
                     document(

@@ -7,7 +7,6 @@ import io.webagent4j.action.ActionPlanStatus;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.browser.InteractionContext;
-import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -23,7 +22,7 @@ class ActionPlanContextInvalidationIT {
     @Test
     void aPlanWhoseContextBecomesAmbiguousBeforeExecuteNeverTouchesTheBackend() throws Exception {
         try (var support = Phase4TestSupport.start();
-                var page = support.open("/actions/context-dynamic-ambiguous")) {
+                var page = support.open("/actions/context-scope-duplicate-before-use")) {
             var target =
                     page.find(InteractionContext.context().containingText("Shipping"))
                             .button()
@@ -33,14 +32,25 @@ class ActionPlanContextInvalidationIT {
             IActionPlan<Void> plan = page.action().click(target).plan();
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
-            page.action().waitFor(Duration.ofMillis(300)).execute().throwIfFailed();
+            page.evaluate(
+                    """
+                    () => {
+                      const duplicate = document.createElement('section');
+                      duplicate.id = 'shipping-duplicate';
+                      duplicate.setAttribute('aria-label', 'Shipping');
+                      duplicate.innerHTML = '<button>Continue</button>';
+                      duplicate.querySelector('button').addEventListener(
+                          'click', () => fetch('/count-click/shipping-duplicate'));
+                      document.body.appendChild(duplicate);
+                    }
+                    """);
             ActionResult<Void> result = plan.execute();
 
             assertThat(result.success()).isFalse();
             assertThat(result.failure().orElseThrow().type())
                     .isEqualTo(ActionFailureType.TARGET_AMBIGUOUS);
-            assertThat(support.clickCount("shipping-1")).isZero();
-            assertThat(support.clickCount("shipping-2")).isZero();
+            assertThat(support.clickCount("shipping-original")).isZero();
+            assertThat(support.clickCount("shipping-duplicate")).isZero();
         }
     }
 }
