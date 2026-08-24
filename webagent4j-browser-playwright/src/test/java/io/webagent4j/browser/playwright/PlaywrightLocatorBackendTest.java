@@ -4,12 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
@@ -25,6 +27,7 @@ import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.LocatorStrategyType;
 import io.webagent4j.locator.api.ElementRole;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -35,10 +38,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Regression coverage for Playwright locator discovery and structured-scope guards.
  *
- * <p>Candidate discovery performs one immediate current-DOM count and identity inspection. Element
- * metadata/state inspection uses {@link Locator#evaluateAll(String)} and never starts a nested
- * {@link Locator#evaluate(String, Object, Locator.EvaluateOptions)} wait. Structured scopes
- * preserve strict semantic 0/1/N cardinality and never let a physical binding hide ambiguity.
+ * <p>Candidate discovery performs one immediate current-DOM count and current-handle identity
+ * inspection. Element metadata/state inspection also resolves current handles and never starts a
+ * nested locator wait or uses {@link Locator#evaluateAll(String)}. Structured scopes preserve
+ * strict semantic 0/1/N cardinality and never let a physical binding hide ambiguity.
  */
 class PlaywrightLocatorBackendTest {
 
@@ -63,16 +66,18 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
-    void currentCandidateInspectionsDoNotStartNestedPlaywrightWaits() {
+    void currentCandidateInspectionsDoNotReResolveThroughEvaluateAllOrStartNestedWaits() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
+        ElementHandle identityHandle = mock(ElementHandle.class);
+        ElementHandle attributeHandle = mock(ElementHandle.class);
         Locator documentRoot = rootLocatingAll(matches);
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
-        when(item.evaluateAll(anyString()))
-                .thenReturn(
-                        Map.of("identity", "candidate", "domOrder", 0),
-                        Map.of("count", 1, "value", Map.of("id", "confirm")));
+        when(item.elementHandles()).thenReturn(List.of(identityHandle), List.of(attributeHandle));
+        when(identityHandle.evaluate(anyString(), isNull()))
+                .thenReturn(Map.of("identity", "candidate", "domOrder", 0));
+        when(attributeHandle.evaluate(anyString(), isNull())).thenReturn(Map.of("id", "confirm"));
 
         LocatorBackendSearchResult result =
                 backend(documentRoot)
@@ -86,8 +91,11 @@ class PlaywrightLocatorBackendTest {
         assertThat(result.candidates().getFirst().element().attributes())
                 .containsEntry("id", "confirm");
 
-        verify(item, times(2)).evaluateAll(anyString());
+        verify(item, times(2)).elementHandles();
+        verify(item, never()).evaluateAll(anyString());
         verify(item, never()).evaluate(anyString(), any(), any(Locator.EvaluateOptions.class));
+        verify(identityHandle).dispose();
+        verify(attributeHandle).dispose();
     }
 
     @ParameterizedTest
@@ -219,14 +227,58 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
-    void aCandidateThatVanishesDuringIdentityEvaluationIsExcludedFromThisPoll() {
+    void aCandidateAbsentAtImmediateHandleResolutionIsExcludedFromThisPoll() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
-        when(item.evaluateAll(anyString()))
-                .thenThrow(new TimeoutError("identity evaluation timed out"));
+        when(item.elementHandles()).thenReturn(List.of());
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isEqualTo(1);
+    }
+
+    @Test
+    void anUnexpectedIdentityHandleTimeoutPropagatesUnchanged() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        TimeoutError timeout = new TimeoutError("Identity handle query exceeded its bound");
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenThrow(timeout);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isSameAs(timeout);
+    }
+
+    @Test
+    void aDifferentDocumentAdoptionRaceDuringIdentityIsExcludedOnlyWhenARecheckProvesAbsence() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        PlaywrightException adoption = differentDocumentAdoptionFailure();
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenThrow(adoption);
         when(item.count()).thenReturn(0);
 
         LocatorBackendSearchResult result =
@@ -243,14 +295,14 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
-    void anIdentityTimeoutForAStillPresentCandidatePropagatesUnchanged() {
+    void aDifferentDocumentAdoptionRaceDuringIdentityForAStillPresentCandidatePropagates() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
-        TimeoutError timeout = new TimeoutError("Identity evaluation exceeded its bound");
+        PlaywrightException adoption = differentDocumentAdoptionFailure();
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
-        when(item.evaluateAll(anyString())).thenThrow(timeout);
+        when(item.elementHandles()).thenThrow(adoption);
         when(item.count()).thenReturn(1);
 
         assertThatThrownBy(
@@ -262,18 +314,18 @@ class PlaywrightLocatorBackendTest {
                                                 LocatorConfig.defaults(),
                                                 Duration.ofSeconds(1),
                                                 20))
-                .isSameAs(timeout);
+                .isSameAs(adoption);
     }
 
     @Test
-    void aGenuineBackendFailureDuringIdentityEvaluationPropagatesUnchanged() {
+    void aGenuineBackendFailureDuringIdentityResolutionPropagatesUnchanged() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
         RuntimeException backendFailure = new IllegalStateException("browser disconnected");
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
-        when(item.evaluateAll(anyString())).thenThrow(backendFailure);
+        when(item.elementHandles()).thenThrow(backendFailure);
 
         assertThatThrownBy(
                         () ->
@@ -288,9 +340,34 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
+    void aDetachedPhysicalHandleIsExcludedFromThisPoll() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenReturn(List.of(handle));
+        when(handle.evaluate(anyString(), isNull())).thenReturn(null);
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isEqualTo(1);
+        verify(handle).dispose();
+    }
+
+    @Test
     void aCanonicalMissingFrameFailureDuringCurrentElementInspectionProducesDetachedState() {
         Locator item = mock(Locator.class);
-        when(item.evaluateAll(anyString())).thenThrow(frameMissingForSelectorFailure());
+        when(item.elementHandles()).thenThrow(frameMissingForSelectorFailure());
 
         ElementState state =
                 new PlaywrightElement(
@@ -311,7 +388,7 @@ class PlaywrightLocatorBackendTest {
         PlaywrightException failure =
                 new PlaywrightException(
                         "browser disconnected after Failed to find frame for selector x");
-        when(item.evaluateAll(anyString())).thenThrow(failure);
+        when(item.elementHandles()).thenThrow(failure);
 
         assertThatThrownBy(
                         () ->
@@ -406,11 +483,12 @@ class PlaywrightLocatorBackendTest {
     void aUniqueGuardedStructuredScopeRemainsUsableAsALiveElement() {
         Locator bindingLocator = mock(Locator.class);
         Locator guardedLocator = mock(Locator.class);
+        ElementHandle stateHandle = mock(ElementHandle.class);
         Locator documentRoot = structuredScopeRoot(bindingLocator, guardedLocator);
         when(bindingLocator.count()).thenReturn(1);
         when(guardedLocator.count()).thenReturn(1);
-        when(guardedLocator.evaluateAll(anyString()))
-                .thenReturn(Map.of("count", 1, "value", presentStateValue()));
+        when(guardedLocator.elementHandles()).thenReturn(List.of(stateHandle));
+        when(stateHandle.evaluate(anyString(), isNull())).thenReturn(presentStateValue());
 
         PlaywrightLocatorBackend backend = playwrightBackend(documentRoot);
         IElement scope =
@@ -421,6 +499,7 @@ class PlaywrightLocatorBackendTest {
                         Duration.ofSeconds(1));
 
         assertThat(scope.state().present()).isTrue();
+        verify(stateHandle).dispose();
     }
 
     @Test
@@ -525,6 +604,14 @@ class PlaywrightLocatorBackendTest {
                 Map.entry("inViewport", true),
                 Map.entry("clickable", true),
                 Map.entry("covered", false));
+    }
+
+    private static PlaywrightException differentDocumentAdoptionFailure() {
+        return new PlaywrightException(
+                "Error {\n"
+                        + "  message='Unable to adopt element handle from a different document\n"
+                        + "  name='Error\n"
+                        + "}");
     }
 
     private static PlaywrightException frameDetachedFailure() {

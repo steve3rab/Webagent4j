@@ -11,6 +11,10 @@ final class PlaywrightFailureClassifier {
     private static final String FRAME_MISSING_FOR_SELECTOR = "Failed to find frame for selector \"";
     private static final String PROTOCOL_FRAME_MISSING_FOR_SELECTOR =
             "Error {\n  message='" + FRAME_MISSING_FOR_SELECTOR;
+    private static final String DIFFERENT_DOCUMENT_ADOPTION =
+            "Unable to adopt element handle from a different document";
+    private static final String PROTOCOL_DIFFERENT_DOCUMENT_ADOPTION =
+            "Error {\n  message='" + DIFFERENT_DOCUMENT_ADOPTION + "\n";
 
     private PlaywrightFailureClassifier() {}
 
@@ -52,5 +56,23 @@ final class PlaywrightFailureClassifier {
         String normalized = message.replace("\r\n", "\n");
         return normalized.startsWith(FRAME_MISSING_FOR_SELECTOR)
                 || normalized.startsWith(PROTOCOL_FRAME_MISSING_FOR_SELECTOR);
+    }
+
+    /**
+     * Returns whether Playwright reported the narrow cross-document adoption race produced when a
+     * document changes between selector resolution and handle adoption.
+     *
+     * <p>This signal is <strong>not</strong> absence by itself. Callers must perform a fresh
+     * synchronous recheck and may convert it to absence only when that recheck proves zero matches
+     * or reports a canonical unavailable-frame condition.
+     */
+    static boolean isDifferentDocumentAdoptionRace(PlaywrightException failure) {
+        String message = failure.getMessage();
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.replace("\r\n", "\n");
+        return normalized.equals(DIFFERENT_DOCUMENT_ADOPTION)
+                || normalized.startsWith(PROTOCOL_DIFFERENT_DOCUMENT_ADOPTION);
     }
 }

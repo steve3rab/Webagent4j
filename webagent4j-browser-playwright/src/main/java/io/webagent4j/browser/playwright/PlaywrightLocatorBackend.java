@@ -1,5 +1,6 @@
 package io.webagent4j.browser.playwright;
 
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
@@ -41,6 +42,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     private static final String IDENTITY_SCRIPT =
             """
             element => {
+              if (!element.isConnected) return null;
               globalThis.__webagent4jLocatorIds ||= new WeakMap();
               globalThis.__webagent4jLocatorSequence ||= 0;
               if (!globalThis.__webagent4jLocatorIds.has(element)) {
@@ -55,11 +57,6 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
               };
             }
             """;
-
-    private static final String CURRENT_IDENTITY_SCRIPT =
-            "elements => { const identify = "
-                    + IDENTITY_SCRIPT
-                    + "; return elements.length === 0 ? null : identify(elements[0]); }";
 
     private static final int MAXIMUM_INSPECTIONS_PER_CANDIDATE = 8;
     private static final AtomicLong STRUCTURED_SCOPE_BINDING_SEQUENCE = new AtomicLong();
@@ -161,23 +158,48 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         }
     }
 
+    /**
+     * Resolves candidate identity through current element handles instead of {@code evaluateAll()}.
+     *
+     * <p>This avoids re-resolving a locator containing the isolated structured-scope selector in
+     * Playwright's main world. The selector engine establishes the physical match first; identity
+     * is then inspected on that exact node. No nested locator wait is introduced.
+     */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> identifyOrNull(Locator item) {
-        Map<String, Object> identity;
+        List<ElementHandle> handles = List.of();
         try {
-            identity = (Map<String, Object>) item.evaluateAll(CURRENT_IDENTITY_SCRIPT);
-        } catch (TimeoutError vanished) {
-            if (confirmedAbsent(item, vanished)) {
+            handles = item.elementHandles();
+            if (handles.isEmpty()) {
                 return null;
             }
-            throw vanished;
+            if (handles.size() > 1) {
+                throw new AmbiguousLocatorException(
+                        "Candidate locator became ambiguous during current-DOM identity inspection");
+            }
+            return (Map<String, Object>) handles.getFirst().evaluate(IDENTITY_SCRIPT, null);
         } catch (PlaywrightException failure) {
             if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return null;
             }
+            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)
+                    && confirmedAbsent(item, failure)) {
+                return null;
+            }
             throw failure;
+        } finally {
+            dispose(handles);
         }
-        return identity;
+    }
+
+    private static void dispose(List<ElementHandle> handles) {
+        for (ElementHandle handle : handles) {
+            try {
+                handle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup only. Never replace the semantic result/failure of the probe.
+            }
+        }
     }
 
     static double inspectionTimeoutMillis(Duration timeout, int candidateCount) {
@@ -210,8 +232,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         return boundedCandidateCount * (MAXIMUM_INSPECTIONS_PER_CANDIDATE + 1L);
     }
 
-    /** Returns true only when a fresh synchronous count proves the timed-out locator is gone. */
-    private static boolean confirmedAbsent(Locator locator, TimeoutError original) {
+    /**
+     * Returns true only when a fresh synchronous count proves that a failed current-DOM locator is
+     * gone. This is shared by timeout and cross-document handle-adoption races.
+     */
+    private static boolean confirmedAbsent(Locator locator, PlaywrightException original) {
         try {
             return locator.count() == 0;
         } catch (PlaywrightException recheckFailure) {

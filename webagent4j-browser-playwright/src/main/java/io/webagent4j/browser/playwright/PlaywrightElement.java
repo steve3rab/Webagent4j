@@ -1,5 +1,6 @@
 package io.webagent4j.browser.playwright;
 
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import io.webagent4j.dom.BoundingBox;
@@ -11,6 +12,7 @@ import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.IFind;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -19,10 +21,12 @@ import java.util.Optional;
  * Internal live element adapter. Every element stays backed by a Playwright {@link Locator}, so it
  * can always be reused as a chainable scope root and re-resolved against the live DOM.
  *
- * <p>Read-only element inspection deliberately uses {@link Locator#evaluateAll(String)} instead of
- * {@link Locator#evaluate(String)}. {@code evaluateAll()} inspects the locator's current matches
- * without starting a nested Playwright wait for the element to appear. This keeps deadline-edge
- * locator resolution deterministic when only a sub-millisecond caller budget remains.
+ * <p>Read-only inspection first resolves the locator with {@link Locator#elementHandles()}, which
+ * is a current-DOM query and does not start the locator wait used by {@link Locator#evaluate}. The
+ * actual inspection then runs on the one already-resolved physical {@link ElementHandle}. This is
+ * important for custom selector engines registered in an isolated content-script world: the
+ * selector is resolved exactly once in its own world and is not re-resolved through {@link
+ * Locator#evaluateAll(String)} in the main world.
  */
 final class PlaywrightElement implements IElement {
 
@@ -254,41 +258,60 @@ final class PlaywrightElement implements IElement {
         return evaluateWithoutAdditionalValidation(elementFunction);
     }
 
-    @SuppressWarnings("unchecked")
     private Object evaluateWithoutAdditionalValidation(String elementFunction) {
+        List<ElementHandle> handles = List.of();
         try {
-            Map<String, Object> result =
-                    (Map<String, Object>)
-                            locator.evaluateAll(currentElementInspection(elementFunction));
-            int count = ((Number) result.get("count")).intValue();
-            if (count == 0) {
+            handles = locator.elementHandles();
+            if (handles.isEmpty()) {
                 return null;
             }
-            if (count > 1) {
+            if (handles.size() > 1) {
                 throw new AmbiguousLocatorException(
                         "Live element became ambiguous during current-DOM inspection");
             }
-            return result.get("value");
+            return handles.getFirst().evaluate(elementFunction, null);
         } catch (PlaywrightException failure) {
             if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return null;
             }
+            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)
+                    && confirmedAbsent(locator, failure)) {
+                return null;
+            }
             throw failure;
+        } finally {
+            dispose(handles);
         }
     }
 
-    private static String currentElementInspection(String elementFunction) {
-        return """
-                elements => {
-                  const count = elements.length;
-                  if (count !== 1) {
-                    return { count };
-                  }
-                  const inspect = (%s);
-                  return { count, value: inspect(elements[0]) };
-                }
-                """
-                .formatted(elementFunction);
+    /**
+     * Converts a cross-document handle-adoption race to absence only after a fresh synchronous
+     * recheck proves that the live locator is now gone. A still-present element or any opaque
+     * recheck failure preserves the original Playwright failure.
+     */
+    private static boolean confirmedAbsent(Locator locator, PlaywrightException original) {
+        try {
+            return locator.count() == 0;
+        } catch (PlaywrightException recheckFailure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(recheckFailure)) {
+                return true;
+            }
+            original.addSuppressed(recheckFailure);
+            throw original;
+        } catch (RuntimeException recheckFailure) {
+            original.addSuppressed(recheckFailure);
+            throw original;
+        }
+    }
+
+    private static void dispose(List<ElementHandle> handles) {
+        for (ElementHandle handle : handles) {
+            try {
+                handle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup only. Never replace the semantic result/failure of the probe.
+            }
+        }
     }
 
     private static boolean booleanValue(Map<String, Object> values, String name) {

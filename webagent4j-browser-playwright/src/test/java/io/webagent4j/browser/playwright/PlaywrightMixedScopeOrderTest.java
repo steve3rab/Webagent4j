@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -31,7 +32,6 @@ import io.webagent4j.locator.api.LocatorDefinition;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -281,22 +281,16 @@ class PlaywrightMixedScopeOrderTest {
     /** A {@link PlaywrightElement} with its underlying mocked locator and handle exposed. */
     record TestElement(PlaywrightElement element, Locator locator, ElementHandle handle) {}
 
-    /**
-     * Creates a present test element backed by a mocked live Locator.
-     *
-     * <p>{@link LocatorContext#within(IElement)} asks the element for its accessible name.
-     * PlaywrightElement now performs that inspection through {@link Locator#evaluateAll(String)},
-     * so this shared fixture returns the current-DOM {count,value} envelope. Scope containment
-     * tests reuse this helper, which is why this one fixture correction fixes both test classes.
-     */
+    /** Creates a present test element backed by a mocked live Locator. */
     static TestElement element(String accessibleName) {
         Locator locator = mock(Locator.class);
-        ElementHandle handle = mock(ElementHandle.class);
+        ElementHandle containmentHandle = mock(ElementHandle.class);
+        ElementHandle inspectionHandle = mock(ElementHandle.class);
 
         when(locator.count()).thenReturn(1);
-        when(locator.elementHandle()).thenReturn(handle);
-        when(locator.evaluateAll(anyString()))
-                .thenReturn(Map.of("count", 1, "value", accessibleName));
+        when(locator.elementHandle()).thenReturn(containmentHandle);
+        when(locator.elementHandles()).thenReturn(List.of(inspectionHandle));
+        when(inspectionHandle.evaluate(anyString(), isNull())).thenReturn(accessibleName);
 
         PlaywrightElement wrapped =
                 new PlaywrightElement(
@@ -306,7 +300,7 @@ class PlaywrightMixedScopeOrderTest {
                         LocatorScope.page(),
                         LocatorConfig.builder().build());
 
-        return new TestElement(wrapped, locator, handle);
+        return new TestElement(wrapped, locator, containmentHandle);
     }
 
     /** Stubs {@code child}'s DOM containment check to report it is inside {@code parent}. */
