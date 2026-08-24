@@ -5,6 +5,7 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType.LaunchOptions;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.Selectors;
 import io.webagent4j.browser.BrowserOptions;
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IPage;
@@ -48,15 +49,16 @@ final class PlaywrightBrowser implements IBrowser {
         Playwright playwright = Playwright.create();
         try {
             /*
-             * Registration must happen before any page is created. The engine intentionally uses
-             * the normal page JavaScript realm because its bound locator and the atomic binding
-             * evaluateAll() call share one ephemeral WeakMap. No DOM attribute is written.
+             * Registration must happen before any page is created. The selector engine stores its
+             * physical-binding WeakMap on the isolated content-script global object, which persists
+             * across BIND/GUARDED selector evaluations but is inaccessible to application JavaScript.
              */
             playwright
                     .selectors()
                     .register(
                             PlaywrightDomInspectionScripts.STRUCTURED_SCOPE_SELECTOR_ENGINE,
-                            PlaywrightDomInspectionScripts.STRUCTURED_SCOPE_SELECTOR_ENGINE_SCRIPT);
+                            PlaywrightDomInspectionScripts.STRUCTURED_SCOPE_SELECTOR_ENGINE_SCRIPT,
+                            new Selectors.RegisterOptions().setContentScript(true));
 
             LaunchOptions launchOptions =
                     new LaunchOptions()

@@ -2,6 +2,7 @@ package io.webagent4j.browser.playwright;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -30,6 +31,7 @@ import io.webagent4j.locator.api.LocatorDefinition;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -72,14 +74,8 @@ class PlaywrightMixedScopeOrderTest {
                         .single();
 
         assertThat(resolved).isSameAs(target.element());
-        // scopeA resolved from the untouched base context - not from a context already narrowed
-        // by elementB, which is what the previous (buggy) eager-element implementation produced.
         verify(engine).locateSingle(eq(base), byAriaLabel("Product A"));
         verify(engine).locateSingle(eq(base), byAccessibleName());
-        // the final target is resolved inside base -> Product A -> outer-container, in that order,
-        // and only after outer-container was proven to be inside Product A - checked by
-        // stubTerminalResolution() itself, re-resolving the live context exactly as the real engine
-        // would on every polling attempt.
     }
 
     @Test
@@ -105,9 +101,6 @@ class PlaywrightMixedScopeOrderTest {
                         .single();
 
         assertThat(resolved).isSameAs(target.element());
-        // the structured scope is resolved from base -> outer-container, not from the untouched
-        // base context: elementA is applied first, exactly as declared. elementA is the first
-        // scope in the chain (nothing narrowed it yet), so it needs no containment proof.
         verify(engine).locateSingle(eq(afterA), byAriaLabel("Available"));
         verify(engine).locateSingle(eq(afterA), byAccessibleName());
         verify(engine, never()).locateSingle(eq(base), byAriaLabel("Available"));
@@ -150,8 +143,6 @@ class PlaywrightMixedScopeOrderTest {
 
     @Test
     void preservesOrderWhenWithinIsCalledAgainAfterATerminalRoleSelector() {
-        // within(...) is also callable on ILocator itself (after .button(), etc.), not only on
-        // IFind - both must feed the same single ordered chain.
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext base = pageContext();
         TestElement regionA = element("Product A region");
@@ -189,9 +180,6 @@ class PlaywrightMixedScopeOrderTest {
         when(engine.locateSingle(any(ILiveLocatorContext.class), any()))
                 .thenAnswer(
                         invocation -> {
-                            // Re-resolving the live context is what actually re-runs the failed
-                            // structured scope lookup above and lets its ambiguity propagate - the
-                            // same thing the real engine does on every polling attempt.
                             ((ILiveLocatorContext) invocation.getArgument(0)).resolve();
                             throw new AssertionError(
                                     "the target definition must never be reached after an"
@@ -209,7 +197,7 @@ class PlaywrightMixedScopeOrderTest {
         org.assertj.core.api.Assertions.assertThatRuntimeException()
                 .isThrownBy(locator::single)
                 .isSameAs(ambiguous);
-        // The scope after the failed one - including its containment proof - is never evaluated.
+
         verify(engine, never())
                 .locateSingle(any(LocatorContext.class), argThat(d -> d.role().isPresent()));
     }
@@ -290,19 +278,26 @@ class PlaywrightMixedScopeOrderTest {
                 diagnostics);
     }
 
-    /**
-     * A {@link PlaywrightElement} with its underlying mocked {@link Locator} and handle exposed.
-     */
+    /** A {@link PlaywrightElement} with its underlying mocked locator and handle exposed. */
     record TestElement(PlaywrightElement element, Locator locator, ElementHandle handle) {}
 
-    /** Creates a present, attached test element backed by a mocked {@link Locator}. */
+    /**
+     * Creates a present test element backed by a mocked live Locator.
+     *
+     * <p>{@link LocatorContext#within(IElement)} asks the element for its accessible name.
+     * PlaywrightElement now performs that inspection through {@link Locator#evaluateAll(String)},
+     * so this shared fixture returns the current-DOM {count,value} envelope. Scope containment
+     * tests reuse this helper, which is why this one fixture correction fixes both test classes.
+     */
     static TestElement element(String accessibleName) {
         Locator locator = mock(Locator.class);
         ElementHandle handle = mock(ElementHandle.class);
+
         when(locator.count()).thenReturn(1);
         when(locator.elementHandle()).thenReturn(handle);
-        when(locator.evaluate(PlaywrightDomInspectionScripts.ACCESSIBLE_NAME_FUNCTION))
-                .thenReturn(accessibleName);
+        when(locator.evaluateAll(anyString()))
+                .thenReturn(Map.of("count", 1, "value", accessibleName));
+
         PlaywrightElement wrapped =
                 new PlaywrightElement(
                         locator,
@@ -310,12 +305,11 @@ class PlaywrightMixedScopeOrderTest {
                         null,
                         LocatorScope.page(),
                         LocatorConfig.builder().build());
+
         return new TestElement(wrapped, locator, handle);
     }
 
-    /**
-     * Stubs {@code child}'s Playwright DOM containment check to report it is inside {@code parent}.
-     */
+    /** Stubs {@code child}'s DOM containment check to report it is inside {@code parent}. */
     static void allowDescendantOrSelf(TestElement child, TestElement parent) {
         when(child.locator()
                         .evaluate(
@@ -324,10 +318,7 @@ class PlaywrightMixedScopeOrderTest {
                 .thenReturn(true);
     }
 
-    /**
-     * Stubs {@code child}'s Playwright DOM containment check to report it is NOT inside {@code
-     * parent}.
-     */
+    /** Stubs {@code child}'s DOM containment check to report it is not inside {@code parent}. */
     static void denyDescendantOrSelf(TestElement child, TestElement parent) {
         when(child.locator()
                         .evaluate(

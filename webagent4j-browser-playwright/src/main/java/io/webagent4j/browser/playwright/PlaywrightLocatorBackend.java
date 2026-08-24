@@ -256,11 +256,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     /**
      * Resolves one structured-scope container with a strict 0/1/N semantic classification.
      *
-     * <p>The unbound locator stays semantic and live. Once exactly one element is proven, a unique
-     * token is attached to that physical DOM node in an out-of-band WeakMap and a second live
-     * locator is created that requires both the semantic criterion and that token. A new call gets
-     * a new token, so a later poll/revalidation may legitimately accept a replacement node with the
-     * same semantics.
+     * <p>The selector engine performs the classification and physical binding in its own isolated
+     * execution state. The returned element stays a live, chainable {@link Locator}; the binding is
+     * only an ephemeral guard for this resolution seam. A later poll/revalidation calls this method
+     * again, receives a fresh token, and may therefore accept a replacement node with the same
+     * semantics.
      */
     IElement resolveUniqueContainer(
             LocatorContext context, String text, LocatorStrategyType strategy, Duration timeout) {
@@ -280,8 +280,10 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 "scope-"
                         + Long.toUnsignedString(
                                 STRUCTURED_SCOPE_BINDING_SEQUENCE.incrementAndGet());
-        Locator semanticLocator = structuredScopeLocator(root, text, strategy, context, "");
-        int currentCount = bindUniqueContainer(semanticLocator, binding, text);
+        Locator bindingLocator =
+                structuredScopeLocator(
+                        root, text, strategy, context, StructuredScopeOperation.BIND, binding);
+        int currentCount = countOrZero(bindingLocator);
         if (currentCount > 1) {
             throw new AmbiguousLocatorException(
                     "Structured scope text \"" + text + "\" matched multiple containers");
@@ -291,15 +293,17 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                     "No structured-scope container matched \"" + text + "\"");
         }
 
-        Locator boundLocator = structuredScopeLocator(root, text, strategy, context, binding);
+        Locator guardedLocator =
+                structuredScopeLocator(
+                        root, text, strategy, context, StructuredScopeOperation.GUARDED, binding);
         Runnable validator =
                 () -> {
                     ancestorValidator.run();
-                    requireSameUniqueContainer(semanticLocator, boundLocator, text);
+                    requireSameUniqueContainer(guardedLocator, text);
                 };
 
         return new PlaywrightElement(
-                boundLocator,
+                guardedLocator,
                 ElementRole.UNKNOWN,
                 this,
                 context.scope(),
@@ -308,39 +312,15 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 validator);
     }
 
-    private static int bindUniqueContainer(Locator semanticLocator, String binding, String text) {
-        try {
-            Object result =
-                    semanticLocator.evaluateAll(
-                            PlaywrightDomInspectionScripts.BIND_UNIQUE_CONTAINER_FUNCTION, binding);
-            return ((Number) result).intValue();
-        } catch (TimeoutError vanished) {
-            if (confirmedAbsent(semanticLocator, vanished)) {
-                return 0;
-            }
-            throw vanished;
-        } catch (PlaywrightException failure) {
-            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
-                throw new LocatorNotFoundException(
-                        "Structured scope frame disappeared while resolving \"" + text + "\"");
-            }
-            throw failure;
-        }
-    }
-
-    private static void requireSameUniqueContainer(
-            Locator semanticLocator, Locator boundLocator, String text) {
-        int semanticCount = countOrZero(semanticLocator);
-        if (semanticCount > 1) {
+    private static void requireSameUniqueContainer(Locator guardedLocator, String text) {
+        int currentCount = countOrZero(guardedLocator);
+        if (currentCount > 1) {
             throw new AmbiguousLocatorException(
                     "Structured scope text \"" + text + "\" became ambiguous before use");
         }
-        if (semanticCount == 0) {
-            throw new LocatorNotFoundException("Structured-scope container disappeared before use");
-        }
-        if (countOrZero(boundLocator) != 1) {
+        if (currentCount == 0) {
             throw new LocatorNotFoundException(
-                    "Structured-scope container identity changed before use");
+                    "Structured-scope container disappeared or changed identity before use");
         }
     }
 
@@ -349,8 +329,9 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             String text,
             LocatorStrategyType strategy,
             LocatorContext context,
+            StructuredScopeOperation operation,
             String binding) {
-        String mode =
+        String source =
                 switch (strategy) {
                     case ACCESSIBLE_NAME -> "a";
                     case VISIBLE_TEXT -> "t";
@@ -361,7 +342,9 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         String selector =
                 PlaywrightDomInspectionScripts.STRUCTURED_SCOPE_SELECTOR_ENGINE
                         + "="
-                        + mode
+                        + source
+                        + "."
+                        + operation.code()
                         + "."
                         + encodeSelectorPart(context.config().locale().toLanguageTag())
                         + "."
@@ -369,6 +352,21 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                         + "."
                         + encodeSelectorPart(binding);
         return root.locator(selector);
+    }
+
+    private enum StructuredScopeOperation {
+        BIND("b"),
+        GUARDED("g");
+
+        private final String code;
+
+        StructuredScopeOperation(String code) {
+            this.code = code;
+        }
+
+        String code() {
+            return code;
+        }
     }
 
     private static String encodeSelectorPart(String value) {

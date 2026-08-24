@@ -2,10 +2,10 @@ package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
-import com.microsoft.playwright.TimeoutError;
 import io.webagent4j.dom.BoundingBox;
 import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorScope;
 import io.webagent4j.locator.api.ElementRole;
@@ -18,6 +18,11 @@ import java.util.Optional;
 /**
  * Internal live element adapter. Every element stays backed by a Playwright {@link Locator}, so it
  * can always be reused as a chainable scope root and re-resolved against the live DOM.
+ *
+ * <p>Read-only element inspection deliberately uses {@link Locator#evaluateAll(String)} instead of
+ * {@link Locator#evaluate(String)}. {@code evaluateAll()} inspects the locator's current matches
+ * without starting a nested Playwright wait for the element to appear. This keeps deadline-edge
+ * locator resolution deterministic when only a sub-millisecond caller budget remains.
  */
 final class PlaywrightElement implements IElement {
 
@@ -26,7 +31,6 @@ final class PlaywrightElement implements IElement {
     private final PlaywrightLocatorBackend locatorBackend;
     private final LocatorScope originatingScope;
     private final LocatorConfig locatorConfig;
-    private final double inspectionTimeoutMillis;
     private final Runnable scopeIdentityValidator;
 
     PlaywrightElement(
@@ -70,12 +74,14 @@ final class PlaywrightElement implements IElement {
             LocatorConfig locatorConfig,
             double inspectionTimeoutMillis,
             Runnable scopeIdentityValidator) {
+        if (Double.isNaN(inspectionTimeoutMillis) || inspectionTimeoutMillis < 0.0) {
+            throw new IllegalArgumentException("inspectionTimeoutMillis must not be negative");
+        }
         this.locator = locator;
         this.knownRole = knownRole;
         this.locatorBackend = locatorBackend;
         this.originatingScope = originatingScope;
         this.locatorConfig = locatorConfig;
-        this.inspectionTimeoutMillis = inspectionTimeoutMillis;
         this.scopeIdentityValidator = scopeIdentityValidator;
     }
 
@@ -186,9 +192,6 @@ final class PlaywrightElement implements IElement {
     @SuppressWarnings("unchecked")
     public ElementState state() {
         validateScopeIdentity();
-        if (isAbsent()) {
-            return detachedState();
-        }
         Object inspected =
                 evaluateWithoutAdditionalValidation(PlaywrightDomInspectionScripts.STATE_FUNCTION);
         if (inspected == null) {
@@ -246,38 +249,26 @@ final class PlaywrightElement implements IElement {
         }
     }
 
-    private boolean isAbsent() {
-        try {
-            return locator.count() == 0;
-        } catch (TimeoutError failure) {
-            return absentAfter(failure);
-        } catch (PlaywrightException failure) {
-            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
-                return true;
-            }
-            throw failure;
-        }
-    }
-
-    private Object evaluateOrNull(String expression) {
+    private Object evaluateOrNull(String elementFunction) {
         validateScopeIdentity();
-        return evaluateWithoutAdditionalValidation(expression);
+        return evaluateWithoutAdditionalValidation(elementFunction);
     }
 
-    private Object evaluateWithoutAdditionalValidation(String expression) {
+    @SuppressWarnings("unchecked")
+    private Object evaluateWithoutAdditionalValidation(String elementFunction) {
         try {
-            return locator.evaluate(
-                    expression,
-                    null,
-                    new Locator.EvaluateOptions()
-                            .setTimeout(
-                                    PlaywrightLocatorBackend.requirePositivePlaywrightTimeout(
-                                            inspectionTimeoutMillis, "Element inspection")));
-        } catch (TimeoutError failure) {
-            if (absentAfter(failure)) {
+            Map<String, Object> result =
+                    (Map<String, Object>)
+                            locator.evaluateAll(currentElementInspection(elementFunction));
+            int count = ((Number) result.get("count")).intValue();
+            if (count == 0) {
                 return null;
             }
-            throw failure;
+            if (count > 1) {
+                throw new AmbiguousLocatorException(
+                        "Live element became ambiguous during current-DOM inspection");
+            }
+            return result.get("value");
         } catch (PlaywrightException failure) {
             if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return null;
@@ -286,14 +277,18 @@ final class PlaywrightElement implements IElement {
         }
     }
 
-    /** Returns true only when a fresh synchronous recheck proves the timed-out target is gone. */
-    private boolean absentAfter(TimeoutError originalFailure) {
-        try {
-            return locator.count() == 0;
-        } catch (RuntimeException recheckFailure) {
-            originalFailure.addSuppressed(recheckFailure);
-            throw originalFailure;
-        }
+    private static String currentElementInspection(String elementFunction) {
+        return """
+                elements => {
+                  const count = elements.length;
+                  if (count !== 1) {
+                    return { count };
+                  }
+                  const inspect = (%s);
+                  return { count, value: inspect(elements[0]) };
+                }
+                """
+                .formatted(elementFunction);
     }
 
     private static boolean booleanValue(Map<String, Object> values, String name) {

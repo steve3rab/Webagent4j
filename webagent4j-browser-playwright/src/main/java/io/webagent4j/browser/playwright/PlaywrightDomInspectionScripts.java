@@ -27,20 +27,53 @@ final class PlaywrightDomInspectionScripts {
     /**
      * Internal live selector engine for structured scopes.
      *
-     * <p>The selector body has four dot-separated fields:
+     * <p>The selector body has five dot-separated fields:
      *
      * <pre>
-     * mode.localeBase64.textBase64.bindingBase64
+     * source.operation.localeBase64.textBase64.bindingBase64
      * </pre>
      *
-     * <p>{@code mode} is {@code a} for accessible-name matching or {@code t} for visible text. The
-     * optional binding is stored out-of-band in a {@link WeakMap}; no DOM attribute is ever added
-     * or removed. An unbound selector is semantic and live. A bound selector additionally requires
-     * the exact physical node that was bound during the current classification-to-use seam.
+     * <p>{@code source} is {@code a} for accessible-name matching or {@code t} for visible text.
+     * {@code operation} is {@code s} for a semantic lookup, {@code b} for an atomic bind attempt,
+     * or {@code g} for a guarded lookup. Physical bindings live in a JavaScript {@code WeakMap}
+     * stored on the selector engine's isolated content-script global object. Application JavaScript
+     * cannot access that global object, and no DOM attribute is ever added or removed. The store is
+     * deliberately shared across selector-engine evaluations in the same isolated frame realm so a
+     * BIND locator and its later GUARDED locator observe the same physical identity state.
+     *
+     * <p>A guarded lookup never hides semantic ambiguity: zero semantic matches stay zero and two
+     * or more semantic matches stay multiple. The binding is consulted only when the current
+     * semantic cardinality is exactly one.
      */
     static final String STRUCTURED_SCOPE_SELECTOR_ENGINE_SCRIPT =
             """
             (() => {
+              const storeKey = Symbol.for('io.webagent4j.structuredScopeBindings.v1');
+              let bindings = globalThis[storeKey];
+              if (!bindings) {
+                bindings = new WeakMap();
+                Object.defineProperty(globalThis, storeKey, {
+                  value: bindings,
+                  writable: false,
+                  configurable: false,
+                  enumerable: false
+                });
+              }
+
+              const rememberBinding = (element, binding) => {
+                let tokens = bindings.get(element);
+                if (!tokens) {
+                  tokens = new Set();
+                  bindings.set(element, tokens);
+                }
+                tokens.add(binding);
+              };
+
+              const hasBinding = (element, binding) => {
+                const tokens = bindings.get(element);
+                return Boolean(tokens && tokens.has(binding));
+              };
+
               const decode = value => {
                 if (!value) return '';
                 const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
@@ -70,34 +103,57 @@ final class PlaywrightDomInspectionScripts {
 
               const parse = selector => {
                 const parts = selector.split('.');
-                if (parts.length !== 4 || (parts[0] !== 'a' && parts[0] !== 't')) {
+                if (parts.length !== 5
+                    || (parts[0] !== 'a' && parts[0] !== 't')
+                    || !['s', 'b', 'g'].includes(parts[1])) {
                   throw new Error('Invalid WebAgent4j structured-scope selector');
                 }
                 return {
                   accessible: parts[0] === 'a',
-                  locale: decode(parts[1]),
-                  text: decode(parts[2]),
-                  binding: decode(parts[3])
+                  operation: parts[1],
+                  locale: decode(parts[2]),
+                  text: decode(parts[3]),
+                  binding: decode(parts[4])
                 };
               };
 
-              const matches = (root, selector) => {
-                const options = parse(selector);
+              const semanticMatches = (root, options) => {
                 const expected = normalize(options.text, options.locale);
-                const bindings = globalThis.__webagent4jStructuredScopeBindings;
                 const result = [];
                 for (const element of root.querySelectorAll('*')) {
                   if (!element.querySelector('*')) continue;
                   const actual = options.accessible
                     ? accessibleName(element)
                     : element.innerText || element.textContent || '';
-                  if (normalize(actual, options.locale) !== expected) continue;
-                  if (options.binding) {
-                    if (!bindings || bindings.get(element) !== options.binding) continue;
+                  if (normalize(actual, options.locale) === expected) {
+                    result.push(element);
                   }
-                  result.push(element);
                 }
                 return result;
+              };
+
+              const matches = (root, selector) => {
+                const options = parse(selector);
+                const semantic = semanticMatches(root, options);
+
+                if (options.operation === 's') {
+                  return semantic;
+                }
+
+                if (options.operation === 'b') {
+                  if (semantic.length === 1) {
+                    rememberBinding(semantic[0], options.binding);
+                  }
+                  return semantic;
+                }
+
+                // Guarded mode preserves semantic 0/N cardinality. The physical binding can only
+                // accept or reject the sole semantic match; it can never select one element from
+                // an ambiguous set.
+                if (semantic.length !== 1) {
+                  return semantic;
+                }
+                return hasBinding(semantic[0], options.binding) ? semantic : [];
               };
 
               return {
@@ -110,20 +166,6 @@ final class PlaywrightDomInspectionScripts {
                 }
               };
             })()
-            """;
-
-    /**
-     * Atomically binds one opaque token to the sole current semantic match. If there are zero or
-     * multiple current matches, no binding is created and the current cardinality is returned.
-     */
-    static final String BIND_UNIQUE_CONTAINER_FUNCTION =
-            """
-            (elements, binding) => {
-              if (elements.length !== 1) return elements.length;
-              globalThis.__webagent4jStructuredScopeBindings ||= new WeakMap();
-              globalThis.__webagent4jStructuredScopeBindings.set(elements[0], binding);
-              return 1;
-            }
             """;
 
     /**
