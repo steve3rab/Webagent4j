@@ -12,12 +12,10 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Proves structured-scope discovery and TOCTOU revalidation never mutate application-owned DOM.
- * Physical identity is now tracked purely in-memory (a per-document {@code WeakMap} - see {@link
- * io.webagent4j.browser.playwright.PlaywrightDomInspectionScripts#MATCHING_CONTAINER_IDENTITIES_FUNCTION}),
- * never via a {@code data-webagent4j-scope-id} DOM attribute stamp. TOCTOU protection across a
+ * Physical identity is tracked purely in-memory in the isolated selector-engine realm, never via a
+ * {@code data-webagent4j-scope-id} DOM attribute stamp. TOCTOU protection across a
  * classification-to-use seam (insertion, replacement, reorder, duplicate-ambiguity) is covered
- * separately by {@link ContextScopeIdentityMutationIT}, which exercises the same production code
- * path and therefore already proves that protection survives without any DOM mutation.
+ * separately by {@link ContextScopeIdentityMutationIT}.
  */
 class StructuredScopeDomMutationIT {
 
@@ -72,6 +70,39 @@ class StructuredScopeDomMutationIT {
 
             assertThat(result.success()).isTrue();
             assertThat(page.evaluate("() => window.__webagent4jObservedMutations")).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void repeatedResolutionBeyondThePerElementBindingLimitKeepsTheNewestScopeUsable()
+            throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/context-scope-preexisting-attribute")) {
+            // Exercise beyond the production per-element bound (256) without exposing it publicly.
+            int repetitions = 272;
+
+            IElement latest = null;
+            for (int attempt = 0; attempt < repetitions; attempt++) {
+                latest =
+                        page.find(InteractionContext.context().containingText("Shipping"))
+                                .button()
+                                .named("Continue")
+                                .timeout(Duration.ofSeconds(5))
+                                .single();
+            }
+
+            assertThat(latest).isNotNull();
+            assertThat(latest.state().present()).isTrue();
+
+            /*
+             * The resource-ownership correction remains fully in-memory and must not regress into
+             * application-DOM stamping while exercising the eviction path.
+             */
+            assertThat(
+                            page.evaluate(
+                                    "() => document.getElementById('shipping-original')"
+                                            + ".getAttribute('data-webagent4j-scope-id')"))
+                    .isEqualTo("app-owned-value");
         }
     }
 

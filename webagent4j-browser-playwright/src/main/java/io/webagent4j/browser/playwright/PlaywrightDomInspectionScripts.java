@@ -5,6 +5,15 @@ final class PlaywrightDomInspectionScripts {
 
     static final String STRUCTURED_SCOPE_SELECTOR_ENGINE = "webagent4j_scope";
 
+    /**
+     * Maximum number of recent physical-scope leases retained for one live DOM element.
+     *
+     * <p>The bindings are only TOCTOU guards. Evicting an old lease is fail-closed: a stale guarded
+     * locator stops matching, while semantic ambiguity is still reported before the binding is
+     * consulted.
+     */
+    static final int MAX_STRUCTURED_SCOPE_BINDINGS_PER_ELEMENT = 256;
+
     static final String ACCESSIBLE_NAME_FUNCTION =
             """
             (element) => {
@@ -41,6 +50,11 @@ final class PlaywrightDomInspectionScripts {
      * deliberately shared across selector-engine evaluations in the same isolated frame realm so a
      * BIND locator and its later GUARDED locator observe the same physical identity state.
      *
+     * <p>Binding retention is strictly bounded per live physical element. Only the most recent
+     * {@link #MAX_STRUCTURED_SCOPE_BINDINGS_PER_ELEMENT} leases are retained. Eviction is
+     * deliberately fail-closed: an expired guarded locator stops matching; it can never make an
+     * ambiguous semantic result unique.
+     *
      * <p>A guarded lookup never hides semantic ambiguity: zero semantic matches stay zero and two
      * or more semantic matches stay multiple. The binding is consulted only when the current
      * semantic cardinality is exactly one.
@@ -60,13 +74,30 @@ final class PlaywrightDomInspectionScripts {
                 });
               }
 
+              const maxBindingsPerElement = __MAX_BINDINGS_PER_ELEMENT__;
+
               const rememberBinding = (element, binding) => {
                 let tokens = bindings.get(element);
                 if (!tokens) {
-                  tokens = new Set();
+                  // Map preserves deterministic insertion order for bounded eviction.
+                  tokens = new Map();
                   bindings.set(element, tokens);
                 }
-                tokens.add(binding);
+
+                // Refresh without increasing cardinality when the same lease is observed again.
+                if (tokens.has(binding)) {
+                  tokens.delete(binding);
+                }
+                tokens.set(binding, true);
+
+                // Keep only the most recent leases. Eviction can only make a stale guard fail.
+                while (tokens.size > maxBindingsPerElement) {
+                  const oldest = tokens.keys().next();
+                  if (oldest.done) {
+                    break;
+                  }
+                  tokens.delete(oldest.value);
+                }
               };
 
               const hasBinding = (element, binding) => {
@@ -166,7 +197,10 @@ final class PlaywrightDomInspectionScripts {
                 }
               };
             })()
-            """;
+            """
+                    .replace(
+                            "__MAX_BINDINGS_PER_ELEMENT__",
+                            Integer.toString(MAX_STRUCTURED_SCOPE_BINDINGS_PER_ELEMENT));
 
     /**
      * Legacy/current-DOM classification helper retained for focused regression tests and
