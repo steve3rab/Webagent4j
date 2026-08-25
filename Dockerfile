@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM mcr.microsoft.com/playwright/java:v1.60.0-noble AS base
+FROM mcr.microsoft.com/playwright/java:v1.62.0-noble AS base
 WORKDIR /workspace
 COPY . .
 RUN chmod +x mvnw

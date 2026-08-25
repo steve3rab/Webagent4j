@@ -21,7 +21,7 @@ jobs:
     # hitting this job's 30-minute timeout on every run. The image ships a newer JDK than 21, so
     # setup-java below still installs and switches to Temurin 21 for the actual build/test run.
     container:
-      image: mcr.microsoft.com/playwright/java:v1.60.0-noble
+      image: mcr.microsoft.com/playwright/java:v1.62.0-noble
       options: --user 1001
     steps:
       - uses: actions/checkout@v7

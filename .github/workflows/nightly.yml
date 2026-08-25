@@ -18,7 +18,7 @@ jobs:
     # runtime install-deps -> apt-get -> Ubuntu/Azure mirror path that can hang indefinitely.
     # setup-java still installs and switches to Temurin 21, since the image ships a newer JDK.
     container:
-      image: mcr.microsoft.com/playwright/java:v1.60.0-noble
+      image: mcr.microsoft.com/playwright/java:v1.62.0-noble
       options: --user 1001
     steps:
       - uses: actions/checkout@v7
