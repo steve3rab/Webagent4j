@@ -12,7 +12,7 @@ class WebAgentTest {
 
     @Test
     void exposesTheInitialSemanticVersion() {
-        assertThat(WebAgent.VERSION).isEqualTo("0.1.0-SNAPSHOT");
+        assertThat(WebAgent.VERSION).isEqualTo("1.0.0-RC1");
         assertThat(WebAgent.browser()).isNotNull();
     }
 
