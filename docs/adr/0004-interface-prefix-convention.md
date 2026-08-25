@@ -1,19 +1,16 @@
-# ADR 0004: Prefix interfaces with I
+# ADR 0004: Prefix interfaces with `I` and abstract classes with `A`
 
-- Status: Accepted
-- Date: 2026-08-13
+**Status:** Accepted
+**Supersedes:** None
 
 ## Context
 
-The project specification chooses an explicit naming convention for interfaces and abstract classes.
+The project uses many explicit ports, policies, and extension interfaces. A consistent naming convention makes abstraction roles immediately visible across modules.
 
 ## Decision
 
-Prefix every interface with `I` and every abstract class with `A`. Unit tests end with `Test` and
-integration tests with `IT`. Enforce the interface rule with ArchUnit and the test suffixes through
-Surefire and Failsafe inclusion patterns.
+Public/project interfaces use an `I` prefix and abstract base classes use an `A` prefix. New code follows the convention unless a language/runtime-required type name makes that impossible.
 
 ## Consequences
 
-The convention differs from common Java library style but makes architectural contracts visually
-explicit and consistent throughout this project.
+Naming is intentionally project-specific. Contributions and public APIs remain visually consistent, and refactors should not introduce mixed conventions.

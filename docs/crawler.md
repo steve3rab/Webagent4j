@@ -1,16 +1,17 @@
-# Crawler
+# Crawlers
 
-The HTTP crawler (Phase 0.6) is implemented. See [http-crawler.md](http-crawler.md) for the full
-guide: `CrawlRequest`/`CrawlResult`/`CrawledPage`, deterministic BFS traversal, URL normalization,
-deduplication, host/domain scope policy, redirect and retry handling, response-size protection,
-and the documented Phase 0.6 limitations (no JavaScript rendering, no `robots.txt` enforcement yet,
-no distributed or high-concurrency crawling).
+WebAgent4J provides two intentionally separate crawler contracts.
 
-The browser crawler (Phase 0.7) is also implemented. See [browser-crawler.md](browser-crawler.md)
-for the full guide: `BrowserCrawlRequest`/`BrowserCrawlResult`/`BrowserCrawledPage`, JavaScript-
-rendered link discovery, session-scoped navigation reusing one `IBrowser` per crawl, bounded
-concurrency with a deterministic result order, cancellation, and the documented Phase 0.7
-limitations (top-level frames only, no SPA `pushState` tracking, no redirect hop list).
+## HTTP crawler
 
-General persistent storage remains future, unimplemented work; nothing in this phase claims
-otherwise.
+Use [HTTP crawler](http-crawler.md) when the content you need is present in HTTP responses and JavaScript rendering is unnecessary. It is sequential, deterministic BFS and does not launch a browser.
+
+## Browser crawler
+
+Use [Browser crawler](browser-crawler.md) when links/content require JavaScript rendering or an existing browser session. It is single-lane and uses one caller-supplied `IBrowser` session.
+
+The browser crawler is not an `ICrawler` implementation and does not reuse `CrawlRequest`/`CrawlResult`. HTTP status/redirect/body semantics and browser navigation/stability/observation semantics are different enough that forcing one universal result model would hide important failure information.
+
+Neither crawler automatically falls back to the other. The caller chooses the correct vertical explicitly.
+
+Both crawlers share the network/security responsibilities in [Security model](security-model.md#network-and-ssrf-boundary): `robots.txt` is not enforced and configured host/scheme policy is not a universal SSRF firewall.

@@ -1,209 +1,95 @@
 # API stability policy
 
-This policy defines which WebAgent4J contracts are intended to become compatible at `1.0.0`. It
-applies to published Java and Maven surfaces, not to every declaration that happens to use Java's
-`public` modifier.
+This policy defines the compatibility surface intended for WebAgent4J 1.0 and later. Until `1.0.0` is actually published, the source tree is a release candidate and necessary pre-release corrections remain possible. Once `1.0.0` is published, the commitments below govern supported surfaces.
 
-WebAgent4J is still pre-1.0. Until `1.0.0`, necessary breaking cleanups are allowed when they are
-documented in the changelog and, when migration is not obvious, in the migration guide. The
-current cleanup is documented in [migration-to-1.0.md](migration-to-1.0.md). Shared behavioral
-rules and intentional domain differences are defined in [contracts.md](contracts.md).
+## Semantic Versioning
 
-Phase 1.0-C did not add or change a supported production type, method, constructor, field, Maven
-coordinate, dependency, or recording schema V1 field. Its finite-value, monotonic-time, rollover,
-and bounded-adapter changes are behavioral corrections for inputs and environments that could not
-previously satisfy the documented contracts. The evidence is maintained in
-[hardening.md](hardening.md).
+For supported Java APIs, SPIs, and Maven coordinates:
 
-## Starting with 1.0
+- patch releases fix compatible behavior and do not intentionally break supported source or binary contracts;
+- minor releases may add compatible API/SPI surface but do not intentionally remove or incompatibly change supported contracts;
+- major releases may make incompatible source, binary, or documented behavioral changes.
 
-Starting with `1.0.0`, supported Java APIs, SPIs, and Maven coordinates follow Semantic Versioning:
+Security or correctness fixes may require exceptional behavior changes. Such exceptions must be narrowly scoped, fail-safe, and prominently documented in release notes and migration guidance.
 
-- a patch release fixes compatible behavior and does not intentionally break supported source or
-  binary contracts;
-- a minor release may add compatible API and SPI surface but does not intentionally remove or
-  incompatibly change supported contracts;
-- a major release may make incompatible source, binary, or documented behavioral changes.
-
-Security fixes may require exceptional action. Any such exception will be narrowly scoped and
-called out prominently in release notes.
-
-The command-line interface is versioned separately from the Java API. Its documented command names,
-options, exit codes, and machine-readable output become compatibility commitments only when the CLI
-guide says so. Internal console wording is not a Java API promise.
+Compatibility is reviewed across source, binary, and documented behavior. Keeping a method signature unchanged does not make an incompatible validation or failure-semantics change automatically safe.
 
 ## Supported surface classifications
 
-The production inventory contains 368 effective public types, excluding examples, integration
-tests, and robustness tests. They are classified as follows for the proposed 1.0 surface:
+### Consumer API
 
-| Classification | Types | Compatibility intent |
-| --- | ---: | --- |
-| Supported consumer API | 296 | Application-facing contracts, values, facades, engines, and documented exceptions |
-| Supported SPI | 32 | Deliberate implementation or callback points listed below |
-| Public for a runtime mechanism | 1 | `PlaywrightBrowserProvider`, public for `ServiceLoader`, not an application entry point |
-| Testing-support API | 0 | `webagent4j-testing` is empty and makes no fixture commitment |
-| Implementation-public | 38 | Cross-package implementation types under `.internal.`; unsupported despite Java visibility |
-| CLI application entry point | 1 | `WebAgentCommand`; governed by the separate CLI contract |
+A public type/member is supported consumer API when it is documented for application use in this documentation or generated Javadoc and is not in an `internal` package. Its documented validation, ordering, absence, failure, ownership, thread-safety, timeout, and side-effect behavior forms part of the contract.
 
-Effective public means that the type and all enclosing types are public. Compiler-generated record
-members and inherited `Object` methods do not create a separate support classification.
+### SPI
 
-### Supported consumer API
+Supported SPIs are deliberate implementation/callback points. The current SPI families include:
 
-A supported consumer API is a public type or member documented for direct application use in
-[public-api.md](public-api.md), its domain guide, or generated Javadoc. Its documented validation,
-ordering, absence, failure, ownership, and side-effect semantics are part of the contract.
+- time and polling (`IMonotonicClock`, `IWaitProbe`, `IWaitSleeper`);
+- locator composition/backends/listeners/strategies/normalization;
+- observation capture, policies, factories, listeners, filters, and redaction;
+- action backend and stabilization;
+- extraction converters and validators;
+- browser provider discovery;
+- HTTP crawler fetch/extraction/scope/dedup/normalization ports;
+- workflow action factories and conditions;
+- locator plugin provider discovery.
 
-The `io.webagent4j.*.internal` package convention is an explicit non-API marker. Public types in
-such packages exist only because Java package boundaries are used inside the implementation. They
-may change without a major release and must not be imported by applications.
+An interface is not automatically an SPI merely because Java permits applications to implement it. Consumer-facing engine interfaces remain consumer API unless their guide documents an implementation contract.
 
-### Supported SPIs
+### Runtime-public types
 
-The following 32 types are deliberate 1.0 SPI candidates. Their contracts include documented
-callback ordering, null handling, failure propagation, and ownership; WebAgent4J does not promise
-to sandbox third-party implementations.
+A concrete type may be public only because Java runtime discovery requires it. `PlaywrightBrowserProvider` is the primary example: it is instantiated by `ServiceLoader` but is not the normal application entry point.
 
-- Time and polling: `IMonotonicClock`, `IWaitProbe`, `IWaitSleeper`.
-- Locator composition: `IInteractabilityChecker`, `ILiveLocatorContext`, `ILocatorBackend`,
-  `ILocatorEventListener`, `ILocatorStrategy`, `ILocatorStrategyRegistry`, `ITextNormalizer`.
-- Observation capture and policies: `IObservationSource`, `PageSnapshot`, `SnapshotElement`,
-  `SnapshotElementState`, `IElementCapabilityResolver`, `ILocatorDefinitionFactory`,
-  `IObservationEventListener`, `IObservationFilter`, `IObservationRedactionPolicy`.
-- Action and extraction: `IActionBackend`, `IStabilizationStrategy`, `IExtractionValidator`,
-  `IValueConverter`.
-- Browser discovery: `IBrowserProvider`.
-- Crawling: `ICrawlDeduplicator`, `ICrawlScopePolicy`, `IUrlNormalizer`, `IHtmlLinkExtractor`,
-  `IHttpFetcher`.
-- Workflows: `IWorkflowActionFactory`, `IWorkflowCondition`.
-- Plugins: `ILocatorStrategyProvider`.
+### Implementation-public types
 
-Interfaces used only to consume an engine, such as `ILocatorEngine` and `ICrawler`, remain consumer
-API rather than SPIs merely because an application could technically implement them.
+Types under `io.webagent4j.*.internal` are unsupported even when Java visibility is public. They may move or change in a non-major release when implementation needs require it.
 
-### Runtime-public and implementation-public types
+## Artifact policy
 
-`PlaywrightBrowserProvider` must be public so Java `ServiceLoader` can instantiate it. Applications
-select Playwright through `WebAgent`, not by constructing that provider. Its public visibility is a
-runtime constraint, not a promise that its constructor or concrete type is application API.
+The supported 1.0 library artifacts are the BOM and the production browser, locator, wait, observation, action, verification, extraction, crawler, workflow, recording, and plugin modules listed in [modules.md](modules.md).
 
-The 38 effective public types in implementation packages are grouped under:
+`webagent4j-common` is treated as supported low-level API/SPI for advanced use. The current BOM does not manage it; a direct dependency therefore needs an explicit version equal to the rest of the WebAgent4J release. This should be resolved at the build-policy level before claiming that every supported artifact is BOM-managed.
 
-- `io.webagent4j.action.internal`;
-- `io.webagent4j.browsercrawler.internal`;
-- `io.webagent4j.crawler.internal`;
-- `io.webagent4j.locator.internal`;
-- `io.webagent4j.observation.internal`.
+Reserved `webagent4j-http`, `webagent4j-storage`, and `webagent4j-testing` modules are not supported application artifacts. Examples and test modules are not compatibility surfaces.
 
-Moving these types during this phase would create broad package churn without reducing an actual
-consumer contract. Their unsupported status is therefore made explicit instead.
+## Nullability, values, collections
 
-## Maven artifact policy
+- Required public arguments reject `null` unless explicitly documented otherwise.
+- Optional values use `Optional`; APIs do not return a null `Optional`.
+- Immutable values/results defensively snapshot incoming collections and do not expose mutable internal collections.
+- IDs reject null, blank, or otherwise invalid local state according to their own syntax rules.
+- Ratios, scores, weights, confidence values, margins, and similar bounded floating-point values must be finite as well as inside their documented range. `NaN` is never a valid bypass.
+- Public elapsed durations are non-negative. Configured timeouts/poll intervals are positive except the documented zero-budget immediate-probe behavior of `WaitBudget`.
 
-The BOM aligns versions only for supported, consumable production artifacts. Empty placeholders
-`webagent4j-http`, `webagent4j-storage`, and `webagent4j-testing` are reactor boundaries, not
-supported dependencies, and are not managed by the BOM.
+## Failures and diagnostics
 
-The proposed supported 1.0 artifacts are:
+Expected absence is represented by a typed result, typed exception, or documented empty `Optional` according to the domain. Unexpected backend/runtime failure is never silently converted into absence, null, an empty collection, or fabricated success.
 
-- `webagent4j-bom`, `webagent4j-common`, `webagent4j-wait`, `webagent4j-locator-api`,
-  `webagent4j-dom`, `webagent4j-observation-api`, `webagent4j-locator`,
-  `webagent4j-verification`, `webagent4j-action`, `webagent4j-browser-api`,
-  `webagent4j-observation`, `webagent4j-browser-playwright`, `webagent4j-core`;
-- `webagent4j-extraction-api`, `webagent4j-extraction`, `webagent4j-crawler-api`,
-  `webagent4j-crawler`, `webagent4j-browser-crawler`;
-- `webagent4j-workflow`, `webagent4j-recording`, and `webagent4j-plugin-api`.
+Only renderings explicitly documented as safe/structural may be logged as such. General record `toString()` output is not automatically a logging boundary. Some structured failures retain a raw `Throwable` for advanced in-process diagnosis; callers must treat it as sensitive.
 
-`webagent4j-cli` is a distributable application. Examples, integration tests, robustness tests,
-empty reserved artifacts, and the parent reactor POM are not supported application libraries.
+Native Java serialization is not a supported persistence or compatibility format. Use stable structured fields and, for workflow recordings, the documented JSON schema V1.
 
-## Compatibility dimensions
+## Recording compatibility
 
-Source, binary, and behavior compatibility are reviewed independently. A signature can remain
-binary compatible while a new required-argument invariant changes behavior; conversely, changing a
-return type can break already compiled callers even when ordinary source code still compiles.
-
-Supported behavior includes:
-
-- validation and nullability documented by Javadoc;
-- deterministic ordering and immutable collection snapshots;
-- typed expected absence versus genuine backend failure;
-- resource ownership and thread-safety statements;
-- the absence of hidden retries around potentially side-effecting work.
-
-The cross-module interpretation of these commitments is maintained in
-[Cross-module contracts](contracts.md). A domain guide may deliberately define a narrower contract,
-such as browser-crawler cancellation or HTTP-crawler partial success, without creating a universal
-framework abstraction.
-
-It does not include object identity, exception object identity, wall-clock durations, unordered
-third-party input, browser/network timing, or undocumented diagnostic prose.
-
-## Nullability, values, and collections
-
-Required public arguments reject `null`. Optional values use `Optional` and never return a null
-`Optional`. Immutable values and results defensively snapshot incoming collections, and returned
-collections do not expose mutable internal state. IDs reject null, blank, or otherwise locally
-invalid values at construction. A documented diagnostic payload may retain null when null is the
-value being rejected, as with a directly invoked `IExtractionValidator`.
-
-Floating-point values documented as ratios, weights, scores, confidence, margins, or contributions
-must be finite as well as inside their documented range. `NaN` is never a valid way to bypass a
-range invariant.
-
-`IPage#evaluate(String)` intentionally returns `Object` because JavaScript values are dynamically
-typed. `WaitSample` intentionally carries an opaque `Optional<Object>` stability key. These are
-documented dynamic/opaque boundaries, not general-purpose metadata maps. No supported signature
-uses `Map<String, Object>`.
-
-## Failures, diagnostics, and Java serialization
-
-Expected absence is represented by a typed result, typed exception, or documented empty
-`Optional`. An unexpected backend/runtime failure is not converted into absence, `null`, an empty
-collection, or fabricated success.
-
-Structured failures retain typed fields for programmatic handling. Their `message` and `toString()`
-representations are safe summaries and may deliberately omit URIs, raw extracted values, provider
-messages, and raw causes. `ActionFailure`, `CrawlFailure`, and `BrowserCrawlFailure` retain a raw
-`Throwable` for advanced in-process diagnostics; callers must treat it as sensitive and must not
-persist or expose it without their own redaction policy.
-
-Native Java serialization is not a supported persistence or compatibility format for WebAgent4J
-public types. Inheriting `Serializable` from `Throwable` does not imply support. Structured
-exceptions whose state could be silently lost explicitly reject `ObjectOutputStream` and
-`ObjectInputStream` with `NotSerializableException`. Use stable structured fields for in-process
-handling and the documented recording JSON format for recordings.
-
-## Recording schema compatibility
-
-Recording JSON compatibility is separate from Java/Maven SemVer. The JSON document carries an
-explicit integer `schemaVersion`; the only current version is V1. Decoding is strict and never
-falls back from an unknown version. Enums are encoded by name, never by Java ordinal, and the format
-does not rely on native Java serialization.
-
-This stabilization phase does not change schema V1. A future schema change must document whether it
-is backward readable, introduce the appropriate schema version, and provide migration guidance.
+Recording JSON compatibility is versioned separately from Java binary compatibility. Schema V1 is strict: unknown schema versions do not fall back, duplicate/unknown fields and impossible state combinations are rejected, and enums are encoded by name. A future incompatible shape requires a new schema version and migration policy; it must not silently reinterpret V1.
 
 ## Resource ownership and thread safety
 
-| Kind | Thread-safety contract | Resource ownership |
-| --- | --- | --- |
-| Immutable definitions, options, IDs, results, snapshots, and registries | Reusable across threads once safely published | No external resource ownership |
-| Builders and prepared operation objects | Caller-confined unless their Javadoc explicitly says otherwise | No ownership transfer unless documented |
-| Engines and crawlers | No blanket thread-safety promise; collaborators and one invocation must remain caller-confined unless documented otherwise | They do not close caller-supplied collaborators unless the domain contract explicitly assigns ownership |
-| `IBrowser` and `IPage` | Explicitly not thread-safe | The creating caller owns and closes them; closing a browser closes its pages and backend resources |
-| `PluginLoader#load(ClassLoader)` | Independent loader calls; provider callbacks run synchronously | The caller retains ownership of the supplied class loader; it is neither closed nor globally cached |
-| `IHttpFetcher` responses and Java streams | Follow the declaring method's try-with-resources/close contract | Ownership transfers only where Javadoc says so |
-
-When a more specific type's Javadoc states a stronger guarantee, that statement governs that type.
+- Immutable definitions, IDs, results, snapshots, and registries are shareable after safe publication unless their Javadoc says otherwise.
+- Builders, prepared actions, browsers, pages, frames, and live elements are caller-confined unless explicitly documented otherwise.
+- `IBrowser` and its pages are caller-owned. Closing the browser closes its pages and backend resources.
+- Engines have no blanket concurrency promise merely because they retain little state; injected collaborators and live browser objects must also satisfy the required concurrency contract.
+- Callers retain ownership of a class loader passed to `PluginLoader`.
+- Ownership transfers only when a domain guide or method Javadoc says so.
 
 ## Determinism and side effects
 
-Determinism is logical: for the same inputs and the same sequence of environment responses,
-ordering, classification, comparison, and redaction decisions are reproducible. It is not a claim
-that external browser/network state or elapsed durations are identical.
+Determinism is logical, not a promise of identical wall-clock timing or external browser/network state. For the same inputs and environment responses, WebAgent4J aims for reproducible ordering, classification, redaction, and comparison decisions.
 
-WebAgent4J does not add hidden retries around potentially side-effecting actions, workflow steps,
-plugin callbacks, or browser evaluation. A retry exists only where the relevant public policy
-explicitly opts in and defines its safety boundary.
+Potentially side-effecting backend actions are never hidden inside polling loops and are not blindly retried. A retry exists only where a documented policy opts in and defines the safe retry boundary. See [Cross-module contracts](contracts.md).
+
+## CLI policy
+
+The CLI is a separate compatibility surface even though it is built from the same repository version. Before declaring the CLI stable, its supported command names, options, exit codes, and machine-readable output must be documented and release-tested. Internal console prose is not a Java API promise.
+
+If no separate CLI compatibility document exists for a release, consumers must not infer that every human-readable message is SemVer-stable.

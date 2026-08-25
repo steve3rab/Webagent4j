@@ -1,34 +1,16 @@
-# ADR 0009: Prefer safe semantic non-resolution
+# ADR 0009: Safe semantic resolution policy
 
-- Status: Accepted
-- Date: 2026-08-13
+**Status:** Accepted, strengthened by 1.0 adversarial hardening
+**Supersedes:** None
 
 ## Context
 
-Real pages contain duplicate labels, misleading text, inaccessible controls, transient DOM nodes, and
-weak fuzzy similarities. Maximizing the number of resolved locators can select a semantically wrong
-control and turn a recoverable locator failure into an incorrect side effect.
+A deterministic engine can often resolve a semantically strong target, but some pages are ambiguous, inaccessible, dynamically replaced, or visually meaningful without machine-readable distinctions. Picking something merely to increase a success metric is unsafe.
 
 ## Decision
 
-WebAgent4J prefers an explicit absence of decision to an uncertain action. Locator outcomes are
-formalized as `RESOLVED`, `AMBIGUOUS`, `UNRESOLVABLE`, `NOT_INTERACTABLE`, and `TIMEOUT`. Equivalent
-top candidates remain ambiguous; insufficient evidence remains unresolvable; matching controls that
-violate requested interaction state remain not interactable.
-
-Fuzzy matching stays an exact-first, bounded, conservative fallback. It evaluates complete phrases,
-rejects dangerous negated lookalikes, and cannot override an explicit accessible name with
-contradictory visible text. The local deterministic benchmark treats every wrong target as a critical
-failure and requires a count of zero. Server-side tracking verifies action targets and non-idempotent
-execution counts independently from DOM success messages.
-
-The core does not guess with AI. A future optional strategy may begin only after an explicit uncertain
-outcome and must disclose strategy, confidence, reason, and policy before any action decision.
+Prefer safe failure over unjustified selection. Ambiguity is explicit and does not become transient pending state for uniqueness-requiring operations. Backend/runtime failure does not become absence. Structured scopes are hard constraints. Dynamic identity must be backend-controlled and late semantic duplicates must remain ambiguous.
 
 ## Consequences
 
-- Some pages that a human can interpret visually remain ambiguous or unresolvable.
-- Callers receive structured, diagnosable failures instead of arbitrary DOM-order selection.
-- Accessibility improvements and explicit scopes improve both user experience and automation safety.
-- Resolution-rate changes cannot be evaluated without the wrong-target and safe-failure metrics.
-- Benchmark expectation changes remain explicit in a version-controlled baseline.
+The framework may return not-found/unresolvable/ambiguous instead of acting. Visual-only/AI fallback is not part of the deterministic contract. Optional future decision systems must preserve uncertainty rather than silently converting it into an action.
