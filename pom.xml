@@ -83,7 +83,7 @@
     <archunit.version>1.4.1</archunit.version>
     <assertj.version>3.27.3</assertj.version>
     <byte-buddy.version>1.18.7</byte-buddy.version>
-    <jackson.version>2.19.2</jackson.version>
+    <jackson.version>2.21.5</jackson.version>
     <jsoup.version>1.23.1</jsoup.version>
     <junit.version>5.13.4</junit.version>
     <mockito.version>5.23.0</mockito.version>
