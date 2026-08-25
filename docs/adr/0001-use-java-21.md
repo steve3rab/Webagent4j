@@ -1,21 +1,16 @@
-# ADR 0001: Use Java 21 as the minimum
+# ADR 0001: Use Java 21
 
-- Status: Accepted
-- Date: 2026-08-13
+**Status:** Accepted
+**Supersedes:** None
 
 ## Context
 
-The project needs a current LTS runtime and simple concurrency for future blocking HTTP and storage
-workloads.
+WebAgent4J needs a single modern Java baseline for records, sealed hierarchies, current language/library capabilities, reproducible CI, and a clear consumer compatibility floor.
 
 ## Decision
 
-Compile to Java 21-compatible bytecode and support builds and runtime use on Java 21 or later.
-Configure Maven Compiler Plugin with `--release 21` and Maven Enforcer with the open-ended `[21,)`
-JDK range. Use records, switch expressions, immutable collections, and virtual threads only where
-they clarify real code. Avoid a reactive framework by default.
+Java 21 is the minimum supported runtime and compiler bytecode target. Builds may run on later JDK feature releases, but compilation uses `--release 21`. Java 21 remains a required release-validation environment.
 
 ## Consequences
 
-Consumers need Java 21 or later. Java 21 remains the minimum CI baseline, while the Enforcer plugin
-accepts later JDK feature releases and rejects only versions below 21.
+Consumers need Java 21 or later. The project can use Java 21 language/JDK capabilities without carrying legacy compatibility layers. Passing on a later JDK does not replace testing the Java 21 minimum.

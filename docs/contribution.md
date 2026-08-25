@@ -1,6 +1,16 @@
 # Contribution guide
 
-The canonical policy is [CONTRIBUTING.md](../CONTRIBUTING.md). Keep public APIs small, document their
-contracts and thread-safety expectations, preserve immutable result values, and introduce an abstraction
-only when a tested architectural problem needs it. Changes to module edges should update
-[modules.md](modules.md) and, when structurally important, add a concise ADR.
+The canonical repository contribution policy lives in `../CONTRIBUTING.md`. This page only records documentation-specific expectations.
+
+For code changes that affect supported behavior:
+
+- update useful public Javadoc;
+- update the relevant domain guide;
+- update `contracts.md` only when the rule is genuinely cross-module;
+- update `security-model.md` for trust/security-boundary changes;
+- update `limitations.md` when a limitation is added/removed;
+- update `modules.md`/architecture ADRs for structural dependency changes;
+- add migration/release notes for compatibility-impacting changes;
+- add deterministic tests proving the changed contract.
+
+Follow [documentation-governance.md](documentation-governance.md) rather than copying the same matrix into multiple guides.

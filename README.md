@@ -3,38 +3,48 @@
 [![CI](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml/badge.svg)](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml)
 [![Java 21+](https://img.shields.io/badge/Java-21%2B-ED8B00.svg?logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Project status](https://img.shields.io/badge/Status-Active%20development-orange.svg)](#project-status)
 
 WebAgent4J is a deterministic, backend-neutral web automation foundation for Java 21 or later. It
-combines accessible semantic locators, explicit actions, verifiable outcomes, and bounded page
-observations behind stable public contracts. Playwright is the first browser adapter.
+combines semantic element location, explicit browser actions, bounded observation, deterministic
+extraction, crawling, workflows, recording, and verification behind contracts designed to fail
+closed rather than guess.
+
+Playwright is the first browser backend.
 
 > [!IMPORTANT]
-> WebAgent4J is under active pre-1.0 development. Public APIs may evolve before the first stable
-> release, and artifacts are not yet published to Maven Central.
+> The repository is in release-readiness work for the first stable `1.0.0` release. Public Maven
+> artifacts are not yet published from this repository's current release workflow. Until publication
+> is enabled, build and install the artifacts locally.
 
-## Why WebAgent4J
+## Design goals
 
-- **Accessible by design** — locate elements through ARIA roles, accessible names, labels, and state.
-- **Deterministic resolution** — exact-first matching, conservative fallback, ranking, ambiguity
-  detection, and explainable diagnostics.
-- **Verified actions** — execute browser actions with explicit postconditions and structured results.
-- **Semantic observations** — capture immutable, bounded, redacted snapshots for inspection, JSON
-  rendering, fingerprinting, and diffing.
-- **Backend-neutral APIs** — application code does not depend on native Playwright types.
-- **Small core** — no AI SDK, application framework, or reactive runtime is required.
+WebAgent4J is built around a small set of framework-wide guarantees:
 
-## Quick start
+- **Deterministic decisions** — for the same inputs and the same sequence of external responses,
+  ordering, classification, normalization, redaction, and comparison decisions are reproducible.
+- **Fail-closed target selection** — ambiguity, missing evidence, or opaque backend failure never
+  authorizes a guessed browser target.
+- **No hidden side-effect retry** — read-only resolution and verification may poll, but a browser
+  side effect is not silently repeated by wait logic.
+- **Backend-neutral public contracts** — supported application APIs do not expose native Playwright
+  objects.
+- **Explicit trust boundaries** — safe diagnostic renderings, caller metadata, raw failures,
+  plugins, recordings, and network targets have documented security boundaries.
+- **Bounded operations where promised** — locator, observation, action, crawler, and wait contracts
+  define their timeout or capacity limits explicitly.
+- **Small runtime surface** — no AI/LLM SDK, Spring, Jakarta EE, reactive runtime, or dependency
+  injection framework is required.
 
-### Requirements
+## Requirements
 
 - Java 21 or later
 - Git
+- Internet access for the first build when Maven dependencies and Playwright browser components are
+  not already cached
 
-Maven is included through the Maven Wrapper.
+Maven is supplied through the Maven Wrapper. The project compiles with `--release 21`.
 
-Java 21 is the minimum supported version. Later JDK releases are accepted for both builds and
-runtime use; the project still emits Java 21-compatible bytecode and tests that minimum in CI.
+## Build from source
 
 ```bash
 git clone https://github.com/steve3rab/Webagent4j.git
@@ -42,20 +52,44 @@ cd Webagent4j
 ./mvnw clean verify
 ```
 
-On Windows, run `mvnw.cmd clean verify` instead.
+On Windows:
 
-### Maven dependencies
+```powershell
+.\mvnw.cmd clean verify
+```
 
-Until artifacts are published, build and install the project locally with `./mvnw install`. Then
-import the BOM and the modules needed by your application:
+The standard reactor verifies formatting, static architecture rules, unit tests, integration tests,
+coverage gates, and aggregate Javadoc. The profile-gated adversarial corpus can be run separately:
+
+```bash
+./mvnw -Probustness verify
+```
+
+See [`docs/testing.md`](docs/testing.md) and [`docs/hardening.md`](docs/hardening.md) for the quality
+model.
+
+## Use the libraries before public publication
+
+Until public Maven publication is enabled, install the current source build into your local
+repository:
+
+```bash
+./mvnw install
+```
+
+Then use one version property for the BOM:
 
 ```xml
+<properties>
+  <webagent4j.version>YOUR_WEBAGENT4J_VERSION</webagent4j.version>
+</properties>
+
 <dependencyManagement>
   <dependencies>
     <dependency>
       <groupId>io.webagent4j</groupId>
       <artifactId>webagent4j-bom</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <version>${webagent4j.version}</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
@@ -67,6 +101,7 @@ import the BOM and the modules needed by your application:
     <groupId>io.webagent4j</groupId>
     <artifactId>webagent4j-core</artifactId>
   </dependency>
+
   <dependency>
     <groupId>io.webagent4j</groupId>
     <artifactId>webagent4j-browser-playwright</artifactId>
@@ -75,67 +110,111 @@ import the BOM and the modules needed by your application:
 </dependencies>
 ```
 
-### Example
+The authoritative supported-artifact list is maintained in
+[`docs/api-stability.md`](docs/api-stability.md).
+
+## Browser example
 
 ```java
-try (IBrowser browser = WebAgent.browser()
-        .playwright()
-        .chromium()
-        .headless(true)
-        .launch()) {
+import static io.webagent4j.verification.Verifications.urlContains;
+
+import io.webagent4j.action.ActionResult;
+import io.webagent4j.browser.IBrowser;
+import io.webagent4j.browser.IPage;
+import io.webagent4j.core.WebAgent;
+
+try (IBrowser browser =
+        WebAgent.browser()
+                .playwright()
+                .chromium()
+                .headless(true)
+                .launch()) {
+
     IPage page = browser.open("https://example.com");
 
-    ActionResult<Void> result = page.action()
-            .click(page.find()
-                    .link()
-                    .named("More information...")
-                    .single())
-            .expect(urlContains("iana"))
-            .execute();
+    ActionResult<Void> result =
+            page.action()
+                    .click(
+                            page.find()
+                                    .link()
+                                    .named("More information...")
+                                    .reference())
+                    .expect(urlContains("iana"))
+                    .execute();
+
     result.throwIfFailed();
 }
 ```
 
-Additional runnable examples are available in
-[`webagent4j-examples`](webagent4j-examples/src/main/java/io/webagent4j/examples).
+Use try-with-resources for browsers. The creating caller owns the browser unless a more specific API
+explicitly transfers ownership.
 
-`./mvnw clean verify` also builds the aggregated Javadoc (`target/reports/apidocs/index.html`) for
-the full method-level API reference alongside the [Public API guide](docs/public-api.md).
+## Main capabilities
 
-The same aggregated Javadoc is published from `main` via GitHub Pages:
-
-- Public Java API: <https://steve3rab.github.io/Webagent4j/api/latest/>
-- Documentation site: <https://steve3rab.github.io/Webagent4j/>
-
-`api/latest` tracks the current head of `main` and is republished on every push to it (see
-[`.github/workflows/pages.yml`](.github/workflows/pages.yml)). Publishing requires the
-repository's **Settings → Pages → Source** to be set to **GitHub Actions**; until that is
-configured, these URLs are not yet live.
-
-## Architecture
-
-The repository is organized as a Maven multi-module build. Public contracts remain separate from
-browser-specific implementations.
-
-| Area | Modules | Purpose |
+| Area | Main modules | Purpose |
 | --- | --- | --- |
-| Public contracts | `browser-api`, `dom`, `locator-api`, `observation-api`, `extraction-api`, `crawler-api` | Candidate supported application-facing types |
-| Engines | `locator`, `observation`, `verification`, `action`, `extraction`, `crawler`, `browser-crawler`, `workflow`, `recording` | Deterministic domain behavior |
-| Extensions | `plugin-api` | Explicit trusted custom locator strategy discovery; zero plugins by default |
-| Browser adapters | `browser-playwright` | Playwright-backed execution |
-| Entry points | `core`, `cli`, `examples` | Configuration and usage |
-| Quality | `testing`, `integration-tests`, `robustness-tests` | Fixtures, architecture rules, browser coverage, and adversarial validation |
+| Browser lifecycle | `webagent4j-core`, `webagent4j-browser-api` | Backend-neutral browser and page lifecycle |
+| Playwright backend | `webagent4j-browser-playwright` | Browser execution adapter |
+| Semantic location | `webagent4j-locator-api`, `webagent4j-locator`, `webagent4j-dom` | Deterministic live element resolution and scopes |
+| Wait and stability | `webagent4j-wait` | Monotonic budgets, polling, stability windows |
+| Observation | `webagent4j-observation-api`, `webagent4j-observation` | Bounded detached semantic page snapshots |
+| Actions | `webagent4j-action` | Planning, dry-run, execution, stabilization, structured results |
+| Verification | `webagent4j-verification` | Read-only deterministic conditions and postconditions |
+| Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
+| HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
+| Browser crawler | `webagent4j-browser-crawler` | Single-lane crawling of JavaScript-rendered pages |
+| Workflows | `webagent4j-workflow` | Sequential fail-fast typed orchestration |
+| Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison |
+| Plugins | `webagent4j-plugin-api` | Explicit trusted custom locator strategies |
+| CLI | `webagent4j-cli` | Small command-line application |
 
-See the [architecture guide](docs/architecture.md) and [module graph](docs/modules.md) for details.
+Reserved or test-only reactor modules are not automatically supported consumer artifacts. See
+[`docs/modules.md`](docs/modules.md).
+
+## Browser support
+
+The Playwright adapter contains launch support for Chromium, Firefox, and WebKit. The project's
+release qualification is intentionally more specific than simple implementation availability.
+
+Consult [`docs/support-matrix.md`](docs/support-matrix.md) for the exact browser, operating-system,
+CI, and robustness status promised by the current release line.
+
+Do not infer a support commitment only because an enum value or backend launch path exists.
+
+## Security
+
+Web pages, network targets, raw failures, plugins, and caller metadata are distinct trust boundaries.
+
+Important examples:
+
+- WebAgent4J is not a universal SSRF firewall. Callers accepting untrusted URLs must enforce their
+  own destination policy.
+- `robots.txt` is not automatically enforced by the crawlers.
+- Plugins are trusted in-process Java code and are not sandboxed.
+- Only diagnostic representations explicitly documented as safe should be logged without an
+  application-specific review.
+- Recording V1 excludes documented raw workflow/action value channels, but caller identifiers such
+  as recording/action IDs remain a verbatim metadata boundary.
+- Browser side effects are not automatically retried by wait logic.
+
+See [`SECURITY.md`](SECURITY.md) and
+[`docs/security-model.md`](docs/security-model.md) before exposing WebAgent4J to untrusted input.
 
 ## Documentation
 
+Start with [`docs/index.md`](docs/index.md). The main references are:
+
 - [Getting started](docs/getting-started.md)
-- [Public API reference](docs/public-api.md) - which module to depend on, entry points, and contracts
-- [API stability policy](docs/api-stability.md) - supported API/SPI surface and 1.0 compatibility
-- [Migration to 1.0](docs/migration-to-1.0.md) - pre-freeze source, binary, and behavior cleanups
+- [Public API map](docs/public-api.md)
+- [API stability policy](docs/api-stability.md)
+- [Cross-module contracts](docs/contracts.md)
+- [Support matrix](docs/support-matrix.md)
+- [Security model](docs/security-model.md)
+- [Known limitations](docs/limitations.md)
+- [Browser lifecycle](docs/browser.md)
 - [Semantic locators](docs/locators.md)
-- [Semantic observations](docs/observation.md)
+- [Wait and stability](docs/wait-and-stability.md)
+- [Semantic observation](docs/observation.md)
 - [Actions](docs/actions.md)
 - [Verification](docs/verification.md)
 - [Extraction](docs/extraction.md)
@@ -144,34 +223,65 @@ See the [architecture guide](docs/architecture.md) and [module graph](docs/modul
 - [Workflows](docs/workflow.md)
 - [Recording](docs/recording.md)
 - [Plugins](docs/plugins.md)
+- [CLI](docs/cli.md)
 - [Testing](docs/testing.md)
-- [Robustness and adversarial hardening](docs/hardening.md)
-- [Robustness benchmark](docs/robustness.md)
-- [Known limitations](docs/limitations.md)
+- [Hardening evidence](docs/hardening.md)
+- [Release process](docs/release.md)
+- [Documentation governance](docs/documentation-governance.md)
+- [Migration to 1.0](docs/migration-to-1.0.md)
 - [Roadmap](docs/roadmap.md)
 - [Architecture decision records](docs/adr)
 
+Aggregate Javadoc is generated by:
+
+```bash
+./mvnw clean verify
+```
+
+The development Javadoc published from `main` is available under `api/latest` when GitHub Pages is
+configured. Stable releases must publish immutable version-specific Javadoc according to
+[`docs/release.md`](docs/release.md); `api/latest` must not be treated as the reference for an older
+released artifact.
+
+## Compatibility
+
+Semantic Versioning compatibility commitments begin with `1.0.0`.
+
+The exact supported Java APIs, SPIs, Maven artifacts, behavioral guarantees, and intentionally
+unsupported implementation-public types are defined in
+[`docs/api-stability.md`](docs/api-stability.md).
+
+The stable Recording JSON format has its own explicit schema version. Recording schema compatibility
+must not be inferred from Java serialization or Java object identity.
+
 ## Project status
 
-The current development line implements the browser foundation, semantic locator and observation
-engines, verified actions, extraction, HTTP and browser crawlers, deterministic workflows,
-schema-V1 recording, and explicit custom locator plugins. Phase 1.0-C completed adversarial
-hardening of the 1.0 API candidate without adding product features or changing recording schema V1;
-empty `http`, `storage`, and `testing` reactor boundaries are not supported APIs.
+The functional scope intended for 1.0 is implemented:
 
-Compatibility follows semantic versioning starting with `1.0.0`. Before 1.0, breaking changes are
-documented in the [changelog](CHANGELOG.md), [migration guide](docs/migration-to-1.0.md), and release
-notes. See the [API stability policy](docs/api-stability.md) for the exact support boundary.
+- browser lifecycle and semantic location;
+- bounded observation;
+- verified actions and deterministic waits;
+- extraction;
+- HTTP and browser crawling;
+- sequential workflows;
+- Recording JSON V1 and offline comparison;
+- explicit trusted locator plugins;
+- adversarial hardening of cross-module contracts.
 
-## Community
+Current work is release readiness: packaging, publication metadata, release automation,
+documentation/version alignment, artifact inspection, and final release qualification.
 
-Contributions are welcome. Start with the [contribution guide](CONTRIBUTING.md), use
-[GitHub Discussions](https://github.com/steve3rab/Webagent4j/discussions) for design questions, and
-use [GitHub Issues](https://github.com/steve3rab/Webagent4j/issues) for reproducible defects and
-focused proposals. General help is covered by the [support guide](SUPPORT.md).
+No new product capability should be inferred from release-readiness changes.
 
-Please report security issues privately according to the [security policy](SECURITY.md).
+## Contributing
+
+Contributions are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
+
+Use GitHub Issues for reproducible defects and focused proposals, and GitHub Discussions for broader
+design discussion where appropriate. General help is covered by [`SUPPORT.md`](SUPPORT.md).
+
+Security issues must be reported privately according to [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-WebAgent4J is available under the [Apache License 2.0](LICENSE).
+WebAgent4J is licensed under the [Apache License 2.0](LICENSE).

@@ -1,183 +1,132 @@
 # Cross-module contracts
 
-This page is the Phase 1.0-B consistency matrix for WebAgent4J's supported API and SPI candidate.
-It defines the rules shared across modules and records the places where two domains intentionally
-use different contracts. Domain guides remain authoritative for details; this page prevents a local
-term or convenience from being mistaken for a framework-wide abstraction.
-
-Phase 1.0-B adds no product feature, generic result framework, extension point, or recording schema
-version. It preserves the Phase 1.0-A public signature candidate while correcting invalid public
-states and fail-closed backend classification.
+This is the normative consistency matrix for supported WebAgent4J API and SPI. It defines framework-wide meanings and calls out intentional differences between domains. Domain guides remain authoritative for domain-specific details.
 
 ## Common terminology
 
-| Term | Cross-module meaning |
+| Term | Meaning |
 | --- | --- |
-| Success | The operation's documented objective completed. It does not imply that every optional diagnostic exists. |
-| Completed | A terminal result, not necessarily a success. `WorkflowStatus.COMPLETED` is narrower and means every workflow step succeeded or was skipped. |
-| Expected absence | The requested entity is demonstrably not present. It may use an empty `Optional`, typed not-found result, or typed not-found exception according to the domain. |
-| Ambiguous | More than one candidate satisfies a contract that requires one. Ambiguity is never downgraded to absence. |
-| Backend failure | An unexpected failure of the browser, transport, provider, or other adapter. It is never fabricated into absence or success. |
-| Timeout | A configured deadline was not satisfied. Timeout is distinct from interruption, cancellation, ambiguity, and generic backend failure. |
-| Duration | Elapsed or configured time. Elapsed durations are non-negative; configured polling/action/request timeouts are positive unless a domain explicitly documents a zero-budget immediate probe. |
+| Success | The operation's documented objective completed; optional diagnostics may still be absent. |
+| Expected absence | The requested entity is demonstrably not present. The representation is domain-specific. |
+| Ambiguous | More than one candidate satisfies a contract requiring one. Ambiguity never becomes absence. |
+| Backend failure | Unexpected failure of a browser, transport, provider, or adapter. It never becomes fabricated absence/success. |
+| Timeout | A configured deadline was not satisfied. It is distinct from interruption/cancellation and backend failure. |
+| Interruption | Caller-thread interruption. Where handled, the interrupt flag is preserved. |
+| Deterministic | Logical ordering/classification is reproducible for the same inputs/environment responses; elapsed real time need not be. |
 
-## Results and failures
+## Result and failure boundaries
 
-| Domain | Success representation | Expected unsuccessful outcome | Unexpected failure boundary |
+| Domain | Success | Expected non-success | Unexpected failure |
 | --- | --- | --- | --- |
-| Wait | `WaitResult` with `SUCCESS` and a value | `TIMED_OUT`; a last informational value may remain | Probe runtime failures propagate; interruption becomes `WaitInterruptedException` with interrupt status preserved |
-| Locator | `LocatorResult` | Typed not-found or ambiguity result/exception according to the terminal operation | Backend/runtime failures propagate and are never converted to empty lookup results |
-| Verification | `VerificationResult.success() == true` | Mismatch or timeout in a structured result | Verification callback failures follow the verification engine contract |
-| Action | `ActionResult` with `ActionStatus.SUCCESS` and no failure | Structured non-success status plus one `ActionFailure` | Supported pipeline failures are classified; raw retained causes are sensitive in-process diagnostics |
-| Extraction | `ExtractionResult` or typed extracted value | Structured validation/conversion failure | Unexpected implementation failures propagate at the documented boundary |
-| HTTP crawler | `CrawlResult` containing successful pages | Per-URL `CrawlFailure`; by default sibling URLs continue | Opaque fetcher failures become `BACKEND_FAILURE`, never a fabricated response |
-| Browser crawler | `BrowserCrawlResult` containing successful pages | Browser-specific `BrowserCrawlFailure`; cancellation is cooperative | Backend failures use the browser taxonomy and can trigger fail-fast termination |
-| Workflow | `WorkflowResult` with `COMPLETED` | First runtime failure produces one `FAILED` step and later `NOT_RUN` steps; preflight failure produces all `NOT_RUN` | Supported condition/action runtime failures become safe structured failures; JVM errors are not caught |
-| Recording/replay | Valid immutable recording and structured replay comparison | Malformed documents are rejected; mismatches are comparison data | Codec/runtime defects propagate through the documented recording exception boundary |
-| Plugins | Complete immutable `PluginRegistry` | Loading is all-or-nothing through `PluginLoadException` and `PluginLoadFailure` | Provider failures are bounded and translated without exposing arbitrary provider messages |
+| Wait | `WaitResult(SUCCESS)` with value | `TIMED_OUT`, optionally retaining last informational value | Probe runtime failure propagates; interruption becomes `WaitInterruptedException` |
+| Locator | `LocatorResult` / resolved element(s) | typed not-found or ambiguity according to terminal operation | backend/runtime failure propagates |
+| Verification | successful `VerificationResult` | mismatch or timeout result | callback/implementation failure follows verification contract |
+| Action | `ActionResult` with `SUCCESS` | structured non-success status/failure | supported pipeline failures classified; retained raw causes are sensitive |
+| Extraction | successful `ExtractionResult` | typed conversion/validation/attribute failure | opaque runtime/backend failure propagates |
+| HTTP crawler | `CrawlResult` with pages | per-URL `CrawlFailure`; siblings normally continue | fetcher/backend failures become structured crawler failures, never fake responses |
+| Browser crawler | `BrowserCrawlResult` with pages | browser-specific failure/cancellation | backend failure uses browser-crawler taxonomy; fail-fast is explicit |
+| Workflow | `COMPLETED` trace | first runtime failure then `NOT_RUN`; preflight failure all `NOT_RUN` | supported runtime failures become safe structured workflow failures |
+| Recording | valid recording / comparison result | malformed data rejected; mismatches are data | codec defects follow codec exception boundary |
+| Plugins | complete immutable registry | all-or-nothing `PluginLoadException` | provider/strategy behavior follows trusted SPI boundary |
 
-The modules intentionally retain domain-specific result types. A universal `Result<T, E>` would
-erase important differences such as a wait's last value, an action's execution mode, a crawler's
-partial page set, and a workflow's full fail-fast trace.
+A universal `Result<T,E>` is intentionally not introduced because each domain carries different safety information.
 
-The exact action status/execution-mode/failure-type matrix is enforced at every layer that carries
-all three fields: `ActionResult`, a workflow `ACTION_FAILED` projection, and a recorded
-`ACTION_FAILED` projection. Success is `REAL` or `DRY_RUN` without a failure; precondition failure
-is `NOT_EXECUTED/PRECONDITION_FAILED`; resolution failure is
-`EXECUTION_FAILED/NOT_EXECUTED` with `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, or
-`BACKEND_FAILURE`; an attempted execution failure is `EXECUTION_FAILED/REAL` with
-`TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`,
-`UPLOAD_FAILURE`, or `DOWNLOAD_FAILURE`; verification failure is
-`VERIFICATION_FAILED/REAL/POSTCONDITION_FAILED`; timeout is `NOT_EXECUTED` or `REAL` with
-`TIMEOUT`; cancellation is `CANCELLED/NOT_EXECUTED/INTERRUPTED` before backend invocation or
-`CANCELLED/REAL/INTERRUPTED` after invocation or once a side effect may have started. Cancellation
-is never `DRY_RUN`, and the caller thread's interrupt flag remains set.
+## Action outcome matrix
 
-Planning has no `ActionStatus` or `ActionExecutionMode`: an interruption during `plan()` target
-resolution instead produces `ActionPlanStatus.BLOCKED` with `ActionFailureType.INTERRUPTED`, invokes
-no backend, and preserves the caller thread's interrupt flag. This plan-time outcome is distinct
-from the two execution-time `CANCELLED` outcomes above.
+The following shapes are the only valid combinations when status, execution mode, and failure type are all represented:
 
-### Workflow and recording projection
+| `ActionStatus` | `ActionExecutionMode` | Failure |
+| --- | --- | --- |
+| `SUCCESS` | `REAL` or `DRY_RUN` | absent |
+| `PRECONDITION_FAILED` | `NOT_EXECUTED` | `PRECONDITION_FAILED` |
+| `EXECUTION_FAILED` | `NOT_EXECUTED` | `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, or `BACKEND_FAILURE` |
+| `EXECUTION_FAILED` | `REAL` | `TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`, `UPLOAD_FAILURE`, or `DOWNLOAD_FAILURE` |
+| `VERIFICATION_FAILED` | `REAL` | `POSTCONDITION_FAILED` |
+| `TIMEOUT` | `NOT_EXECUTED` or `REAL` | `TIMEOUT` |
+| `CANCELLED` | `NOT_EXECUTED` or `REAL` | `INTERRUPTED` |
 
-Every public `WorkflowResult` accepted by its constructors is now representable by the recording
-model:
+`NOT_EXECUTED` cancellation means interruption was observed before backend invocation. `REAL` cancellation means the backend was already invoked or a side effect may have started. Cancellation is never `DRY_RUN`.
 
-- every result and recording contains at least one step;
-- a completed result contains only `SUCCEEDED` and `SKIPPED` steps;
-- a preflight failure has no step ID and every step is `NOT_RUN`;
-- a runtime failure has exactly one matching `FAILED` step, only successful/skipped predecessors,
-  and only `NOT_RUN` successors;
-- a failed step publishes no output, and its own failure names that step;
-- `ASSIGN` and `ACTION` steps carry only the output/action-summary shapes the engine can emit;
-- only `ACTION_FAILED` carries `ActionFailureType`, and it obeys the exact action matrix above.
+Planning has no execution mode: interruption during `plan()` yields `ActionPlanStatus.BLOCKED` with `INTERRUPTED`, no backend invocation, and the caller thread remains interrupted.
 
-These are constructor invariants, not a second workflow execution algorithm. Recording schema V1
-is unchanged.
+## Workflow and recording trace shape
 
-## Timeout and duration matrix
+Every accepted workflow result/recording contains at least one step.
 
-| Domain | Configured timeout | Clock/deadline | Precision and zero behavior |
-| --- | --- | --- | --- |
-| Wait | `WaitBudget` accepts zero for one immediate probe | Injected monotonic clock | Poll interval and stability window are positive |
-| Locator | Positive definition/config timeout | One shared `WaitBudget` per resolution; strategy elapsed time uses the same injected monotonic clock | Always performs the documented immediate probe; Playwright candidate and frame inspection time scales with remaining bounded work |
-| Verification | Positive polling interval; timeout or shared budget supplied by caller | Shared monotonic budget when the budget overload is used | The fixed-duration `awaitAll` overload intentionally gives each verification its own timeout |
-| Action | Positive overall action timeout | One monotonic clock for the shared budget, total/phase/event elapsed timing; wall clock only for absolute audit timestamps | An already-running backend side effect is not forcibly interrupted when the budget expires |
-| HTTP crawler/fetch | Positive request/crawl timeouts | Monotonic elapsed measurement | `HttpFetchRequest` rejects zero; HTTP status responses are not timeout failures |
-| Browser crawler | Positive whole-millisecond navigation timeout and stability window | One navigation/stability budget | Stability cannot exceed navigation timeout |
-| Observation | Positive observation budget | Monotonic elapsed enforcement | Snapshot/statistics/event elapsed durations are non-negative |
+- `COMPLETED`: every step is `SUCCEEDED` or `SKIPPED`.
+- Preflight `FAILED`: every step is `NOT_RUN`; the overall failure is a preflight input failure and has no step ID.
+- Runtime `FAILED`: zero or more `SUCCEEDED`/`SKIPPED`, exactly one matching `FAILED`, then only `NOT_RUN`.
+- A failed step publishes no output and its failure identifies that step.
+- Only `ACTION_FAILED` carries an `ActionFailureType` and it obeys the action matrix above.
+- Recording schema V1 preserves these invariants without adding live replay semantics.
 
-All public elapsed timing values reject negative durations. This includes wait results, locator
-diagnostics/events, verification results, action results/events/stabilization, observation
-snapshots/statistics/events, and HTTP fetch results.
+## Time and budgets
 
-`WaitBudget` stores a timeout allowance and compares elapsed monotonic deltas. It does not rely on
-an absolute saturated deadline, so `remaining()` and `expired()` stay consistent when the signed
-`nanoTime()` representation rolls over. Wall time remains appropriate only for absolute audit
-timestamps.
+- Timeouts and elapsed durations use monotonic time for deadline arithmetic. Wall-clock time is only for absolute audit timestamps where documented.
+- `WaitBudget` supports a zero allowance for exactly the documented immediate-probe behavior and uses rollover-safe elapsed arithmetic.
+- Locator resolution uses one bounded wait budget; dynamic scopes are re-resolved within that budget rather than starting nested full-timeout waits.
+- Action target resolution, stabilization, and postconditions consume one shared action budget. A backend side effect is not started after that budget is already expired.
+- An already-running backend operation is not claimed to be forcibly interruptible merely because the Java-side deadline expires.
+- Verification's standalone fixed-duration `awaitAll` API may give each condition its own timeout; the action pipeline uses the shared-budget overload.
+- Browser-crawler navigation and stability share one navigation budget. Post-stability observation/title/URL calls are separate operations and are documented limitations where no backend-native timeout is available.
+
+## Retry and exactly-once safety
+
+- Read-only probes may be polled repeatedly.
+- Action target resolution retries only a demonstrated typed `NOT_FOUND` according to explicit retry policy.
+- Ambiguity and opaque backend/runtime failures are not retried as absence.
+- The actual backend side effect executes at most once per action execution path.
+- `IActionPlan.execute()` is single-use; a second call fails rather than risking a repeated side effect.
+- Workflow execution adds no hidden retry around steps or actions.
+- Plugin callbacks are not automatically retried.
+
+“At most once” is intentionally narrower than “known to have completed once”: a backend can fail after a side effect may have started, which is why `REAL` execution mode matters.
 
 ## Resource ownership
 
-| Resource | Owner | Close behavior |
+| Resource | Owner | Rule |
 | --- | --- | --- |
-| `IBrowser` / `IPage` | The caller that creates them | Caller closes them; closing a browser closes its pages and backend resources |
-| Browser-crawler page | `BrowserCrawler` | Created lazily, reused synchronously, and closed in `finally` on success, failure, fail-fast, or cancellation |
-| Browser passed to `BrowserCrawler` | Caller by default | Closed only when `closeBrowserOnCompletion(true)` explicitly transfers that responsibility |
-| Workflow-captured page/action resource | Caller or application factory | Workflow never creates, closes, caches, or transfers it |
-| Plugin `ClassLoader` | Caller | `PluginLoader` neither closes nor globally caches it |
-| HTTP response body | `JavaHttpFetcher` during the call | Fully consumed into a bounded byte array; no stream ownership escapes in `HttpFetchResult` |
-| Immutable result/snapshot/definition | No external resource owner | No close operation |
+| Browser/page/frame live resources | caller that creates/receives them | close the browser; pages/resources inside its context are closed with it |
+| Browser-crawler page | `BrowserCrawler` | created lazily and closed in `finally` on every terminal path |
+| Browser passed to browser crawler | caller by default | crawler closes it only with explicit ownership-transfer option |
+| Workflow browser/action resources | application/factory | workflow does not create, cache, or close them |
+| Plugin class loader | caller | loader does not close or globally cache it |
+| HTTP response stream | fetcher implementation | consumed/closed inside the fetch boundary; no open stream escapes normal result |
+| Immutable values/results | none | no external close operation |
 
-Cleanup is deterministic, but a best-effort cleanup failure is not promoted into a second result
-taxonomy unless the domain guide explicitly says so. Applications remain responsible for closing
-their own outer resources.
+Cleanup failures are not allowed to overwrite the primary operation result unless a domain explicitly documents a stronger cleanup failure contract.
 
-## Threading and cancellation
+## Threading
 
-| Component | Threading contract | Cancellation/interruption |
-| --- | --- | --- |
-| Immutable values and definitions | Shareable after safe publication | Not applicable |
-| Builders, prepared actions, pages, and browsers | Caller-confined unless stated otherwise | Action interruption becomes `CANCELLED` where the action pipeline handles it |
-| `WaitEngine` | Synchronous on the caller thread | Preserves interruption status and throws `WaitInterruptedException` |
-| Locator, action, extraction, workflow, and HTTP crawler engines | Synchronous; no hidden executor or worker pool | Domain-specific interruption behavior; no universal cancellation token |
-| `ObservationEngine` | Retains no per-call mutable state; concurrent sharing requires every injected collaborator to be concurrency-safe | Checks caller-thread interruption |
-| `BrowserCrawler` | One caller thread and one crawler-owned page | Explicit cooperative `CancellationToken` |
-| Plugin loading/callbacks | Synchronous on the calling thread | No hidden cancellation or retry |
+- Immutable values are shareable after safe publication.
+- Browsers, pages, frames, live elements, builders, and prepared operations are caller-confined unless explicitly documented otherwise.
+- Wait, locator, action, extraction, workflow, and crawler operations are synchronous and create no hidden worker pool.
+- `ObservationEngine` has no per-call mutable session state, but concurrent reuse is safe only if every injected collaborator is also concurrency-safe.
+- Browser crawler is deliberately single-lane and uses one caller thread and one crawler-owned page.
+- Plugin loading and callbacks are synchronous.
 
-The browser crawler's token is intentionally not generalized to actions, waits, workflows, or HTTP
-crawling. Those operations have different side-effect and partial-result semantics.
+## Security and diagnostic text
 
-## Security and trust boundaries
+- Only an explicitly documented safe/structural rendering is safe to log without inspecting its contents.
+- Secret values and sensitive observation values are redacted or structurally excluded from framework-owned safe renderings.
+- Typed accessors may intentionally return raw values, URLs, metadata, or causes; caller-owned redaction is required before logging/persistence.
+- Recording excludes raw workflow inputs/outputs/action values and raw `Throwable`, but caller-controlled IDs/metadata are persisted verbatim and must be non-sensitive.
+- Plugins are trusted in-process Java code, not sandboxed.
+- No general SSRF firewall is implied by HTTP(S) scheme validation or crawler host scoping.
 
-| Data | Framework rendering | Explicit typed access |
-| --- | --- | --- |
-| Secrets and observed input values | Redacted or omitted | Available only through documented explicit APIs needed to perform the operation |
-| Action event target/result/metadata text | Excluded from `ActionEvent#toString()` | Retained by accessors for in-process consumers that apply their own policy |
-| Failure causes | Excluded from safe summary rendering | Some action/crawler failures retain the raw cause; treat it as sensitive |
-| URLs and extracted raw values | Omitted from safe exception/failure text where documented | Typed URI/value accessors remain available in-process |
-| Recording metadata | Stored verbatim by design | Caller must keep keys and values non-sensitive before recording |
-| Plugin identifiers, versions, strategy IDs | Treated as trusted diagnostic metadata after validation | Provider/application owns their content |
-| SPI callbacks | Trusted in-process code, not sandboxed | Callback failures follow the declaring SPI contract |
+See [Security model](security-model.md).
 
-Only surfaces explicitly documented as safe or structural diagnostic renderings provide a
-no-untrusted-text guarantee. General value/result `toString()` output must not be treated as a
-logging or persistence boundary unless its domain contract explicitly documents that guarantee.
-Native Java serialization is not a persistence contract; recording JSON V1 is the only stable
-framework-owned persistence format.
+## Identity and ambiguity
 
-## Identity, normalization, and ordering
-
-- `ActionId`, `WorkflowId`, `WorkflowStepId`, `RecordingId`, and `PluginId` preserve their validated
-  textual identity. `PluginId` additionally has a restricted lowercase syntax.
-- `ObservationId` and `SemanticElementId` trim surrounding whitespace because they are capture-local
-  semantic identities rather than caller-persisted workflow/recording keys.
-- Locator candidates use deterministic score, evidence, and DOM-order tie-breaking.
-- Workflows and recordings preserve definition order; HTTP and browser crawlers preserve their
-  documented frontier/result order; plugins sort provider and strategy contributions explicitly.
-- Unordered caller input is never promised a new semantic order merely because an implementation
-  snapshots it with an immutable collection.
-
-These normalization differences are intentional. No universal UUID format or global ID base class
-is introduced.
+- Backend candidate identity is a structural identity input to deduplication/stability, never user-visible text, mutable attributes, DOM index, or application-controlled globals.
+- Structured semantic scopes are hard constraints. If the scope is missing, resolution is not allowed to escape to an unrelated region; if it is ambiguous, ambiguity fails closed before target selection.
+- Reordering a still-live physical structured scope must not silently retarget it. Physical replacement is distinguished from same-node reordering for already-bound live scopes, while a fresh semantic reference may resolve a valid replacement on a later independent resolution.
+- Late semantic duplicates must surface as ambiguity before any physical identity guard can collapse them to one target.
 
 ## Intentional domain differences
 
-| Difference | Reason |
-| --- | --- |
-| HTTP and browser crawlers have separate requests, results, and failure enums | HTTP status/redirect semantics do not map honestly to rendered-page navigation and observation failures |
-| HTTP crawler continues after per-page failure by default; workflow always fails fast | Crawling produces a useful partial graph, while workflow steps form an ordered dataflow with side effects |
-| Browser crawler has a cancellation token; action cancellation is interruption-based | A crawl has a natural cooperative frontier; an action may already have performed a non-repeatable side effect |
-| Wait timeout may carry a last informational value; locator not-found does not fabricate an element | The wait primitive reports probe history, while a locator must never invent a target |
-| Verification's fixed-duration list overload uses per-condition timeouts; action uses one shared budget | The former preserves its explicit standalone API contract; the action must bound the whole side-effecting pipeline |
-| Recording compares structural failure fields but ignores diagnostic message/type-name drift across executions | Diagnostics may vary without changing replay semantics |
-| `FRAME_ACCESS_FAILED` is reserved until browser-crawler frame traversal exists | Keeping the documented enum value avoids premature churn; it is explicitly unreachable today |
-
-## Extension-point consistency
-
-All supported SPIs require non-null inputs and outputs as documented, execute synchronously unless
-their contract says otherwise, receive no sandbox, and transfer no resource ownership implicitly.
-WebAgent4J does not retry arbitrary extension callbacks. Plugin discovery is explicit and
-all-or-nothing; ordinary engine construction loads zero plugins.
-
-See [API stability policy](api-stability.md) for the authoritative supported SPI inventory and
-[Migration to the 1.0 API candidate](migration-to-1.0.md) for the pre-1.0 behavioral corrections.
+- HTTP and browser crawlers have separate requests/results/failures because HTTP response semantics do not map honestly to browser navigation/observation.
+- HTTP crawling continues after per-page failure by default; workflows fail fast because steps form an ordered side-effect/dataflow sequence.
+- Browser crawler has a cooperative cancellation token; action cancellation is interruption-based.
+- Wait timeout may retain a last informational value; locators never fabricate an element.
+- Recording replay comparison ignores diagnostic prose/type-name drift that is intentionally non-semantic, while one recording must still be internally consistent.

@@ -1,51 +1,26 @@
 # Verification
 
-`IVerification` is a deterministic, side-effect-free condition over `IVerificationContext`.
-`VerificationEngine` polls it with a positive interval and timeout, returning a structured
-`VerificationResult`. Conditions do not hide mismatches in exceptions.
+`IVerification` is a deterministic, read-only condition evaluated against an `IVerificationContext`. `VerificationEngine` polls it with a bounded interval/deadline and returns structured `VerificationResult` values.
 
-```java
-ActionResult<Void> result = page.action()
-        .click(page.find().button().named("Continue").reference())
-        .expect(allOf(
-                urlContains("/complete"),
-                titleContains("Complete"),
-                textVisible("Order confirmed")))
-        .execute();
-```
+## Built-in families
 
-## Built-in conditions
+- URL equality/contains/regex
+- page title/text
+- element existence/absence/visibility/enabled/editable/checked/selected/focused
+- element text/attribute/value/count
+- semantic observation-diff conditions
+- composition with `allOf`, `anyOf`, and `not`
 
-- URL: `urlContains`, `urlEquals`, and `urlMatches`
-- Page: `titleEquals`, `titleContains`, and `textVisible`
-- Element state: exists, missing, visible, hidden, enabled, disabled, editable, checked, unchecked,
-  selected, and focused
-- Element data: exact text, contained text, attribute value, input value, and element count
-- Semantic diff: element added, element removed, dialog opened, and any state changed
-- Composition: `allOf`, `anyOf`, and `not`
+Element conditions use semantic references, so repeated evaluations observe current DOM state rather than a stale native handle.
 
-Element conditions use reusable semantic references, so each poll observes the current DOM rather
-than a stale native handle. `valueEquals(String)` can be attached directly to a target action and is
-bound to that target by the action engine.
+## Polling
 
-## Polling and timeout behavior
+The first evaluation is immediate. A pending mismatch is evaluated again until success or timeout. Polling a verification never repeats the action that preceded it.
 
-The first evaluation is immediate. Failed conditions are evaluated again at the configured interval
-until success or timeout. The interval is capped by the remaining budget, and the final result records
-its duration and timeout state. Polling does not repeat the browser action that preceded it.
-
-Composite conditions preserve encounter order. `allOf` succeeds only when every child succeeds;
-`anyOf` succeeds when at least one child succeeds; `not` negates one child. Conditions should remain
-fast, deterministic, read-only, and safe to evaluate repeatedly.
+When invoked through the action pipeline, all postconditions share the action's remaining `WaitBudget`; several conditions cannot each silently receive the full original action timeout. The standalone fixed-duration `awaitAll` overload intentionally keeps its own per-condition timeout contract. Use the shared-budget form when a single overall deadline is required.
 
 ## Custom conditions
 
-Applications may implement `IVerification` against the small public context. Return expected and
-actual values that are useful but safe to retain. Never include passwords, authorization headers,
-tokens, payment data, or unrestricted page content in a result. Use semantic observations when a
-condition depends on page-wide state.
+Custom `IVerification` implementations should be deterministic, read-only, fast, and safe to repeat. Returned expected/actual/description values may become diagnostics; do not embed credentials, authorization headers, tokens, payment data, or unrestricted page content.
 
-Verification definitions and results are immutable and thread-safe when their custom predicates are
-thread-safe. A live page context remains confined to its owning browser thread.
-
-See [Actions](actions.md) for lifecycle, retry safety, and failure mapping.
+Verification definitions/results are immutable. Thread safety of a custom verification depends on the custom implementation; the live page context remains caller-confined.

@@ -19,6 +19,13 @@
     </license>
   </licenses>
 
+  <developers>
+    <developer>
+      <id>steve3rab</id>
+      <name>RABEHAJA Stevens</name>
+    </developer>
+  </developers>
+
   <modules>
     <module>webagent4j-bom</module>
     <module>webagent4j-common</module>

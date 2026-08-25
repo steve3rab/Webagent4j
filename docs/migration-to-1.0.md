@@ -1,127 +1,68 @@
-# Migration to the 1.0 API candidate
+# Migration to the 1.0 API
 
-Phase 1.0-A intentionally performs a small set of pre-1.0 cleanups before the compatibility surface
-is frozen. No recording schema or product feature changes in this phase.
+This guide records pre-1.0 changes that callers may need to address when moving from older development snapshots to the 1.0 contract. It is historical migration guidance; current semantics live in the domain guides.
 
 ## Plugin registry composition
 
-Before:
-
-```java
-LocatorStrategyRegistry strategies = plugins.locatorStrategyRegistry();
-```
-
-After:
+`PluginRegistry#locatorStrategyRegistry()` is consumed through `ILocatorStrategyRegistry` rather than requiring the concrete registry type.
 
 ```java
 ILocatorStrategyRegistry strategies = plugins.locatorStrategyRegistry();
 LocatorEngine locator = new LocatorEngine(strategies);
 ```
 
-Migration: type variables and parameters to `ILocatorStrategyRegistry`. The interface already
-contains the complete composition contract required by `LocatorEngine`; do not cast the result back
-to the concrete implementation.
+Avoid casting back to implementation classes.
 
-Reason: `PluginRegistry` should not expose a locator implementation class when the supported
-interface is sufficient. This is source compatible for direct method-call composition, but source
-incompatible for callers assigning to the concrete type and binary incompatible for already
-compiled callers.
+## Plugin exceptions
 
-## Plugin load exception construction and serialization
+`PluginLoadException` construction is loader-owned. Applications catch it and inspect structured `failure()` rather than manufacturing loader failures. Native Java serialization of structured exceptions is not a persistence contract.
 
-Before, applications could invoke the public `PluginLoadException(PluginLoadFailure)` constructor.
-After, construction is owned by `PluginLoader`; applications catch `PluginLoadException` and inspect
-`failure()`.
+## Required values and invariants
 
-Migration: construct or return the structured `PluginLoadFailure` in application-owned validation
-code instead of manufacturing a loader exception. Only `PluginLoader` defines when a plugin load
-has failed.
+Previously under-specified invalid values now fail immediately: required null/blank fields, negative elapsed durations, non-finite unit-interval values, non-positive configured request timeouts, and impossible workflow/action/recording combinations.
 
-Native Java serialization of `PluginLoadException` is now explicitly unsupported and throws
-`NotSerializableException`. The same rule is explicit for other structured exceptions whose typed
-state would otherwise be lost. Migration: do not persist exceptions with
-`ObjectOutputStream`; persist an application-defined safe error DTO when necessary.
+Fix invalid fixtures/application DTO construction rather than relying on contradictory objects surviving until a later engine call.
 
-Reason: deserialization must never create an unusable exception whose required `failure()` is null.
+## Safe diagnostics
 
-## Required arguments and value invariants
+Several exception/result renderings were narrowed so raw extracted values, URIs, causes, target/result metadata, or arbitrary provider messages are not copied into framework-owned safe summaries.
 
-The following previously under-specified invalid inputs now fail immediately:
+Do not parse exception messages. Use typed fields in-process and apply an application-owned redaction policy before logging raw accessors/causes.
 
-- required base-exception messages and required structured failure/result arguments cannot be null;
-- public locator diagnostic overloads require a non-null diagnostics object; use the one-argument
-  constructor when diagnostics are intentionally absent;
-- extraction conversion exceptions require their raw value and target type; validation exceptions
-  require a non-blank description and may retain an explicitly rejected null value;
-- `ResponseTooLargeException` requires a non-null URI and a positive limit;
-- `BoundingBox` requires finite coordinates and non-negative finite dimensions.
+## Locator/backend failure classification
 
-Migration: validate input at the application boundary and use the explicit overload for absent
-locator diagnostics. Valid existing calls are unchanged.
+Backend timeout/runtime failure is no longer treated as generic absence. Known Playwright disappearance races require fresh proof of absence/frame unavailability; otherwise the original backend error propagates.
 
-Reason: public values and exceptions must not carry locally invalid required state into later code.
+Code that previously interpreted backend failure as an empty/not-found result must handle the real failure.
 
-## Safe diagnostic text
+## Action result matrix
 
-Extraction exceptions no longer include a raw extracted value or arbitrary cause message in
-`getMessage()`. `ResponseTooLargeException` no longer includes the URI in its message.
-`CrawlFailure#toString()` and `BrowserCrawlFailure#toString()` now describe structural fields without
-rendering the URL, message, or raw cause.
+Directly constructed action/workflow/recording projections must follow the exact status/execution/failure matrix documented in [contracts.md](contracts.md#action-outcome-matrix).
 
-Migration: use typed accessors for in-process handling. Treat values, URIs, and retained causes as
-sensitive and apply an application-owned redaction policy before logging or persistence. Do not
-parse exception messages.
+Interruption before backend invocation is `CANCELLED/NOT_EXECUTED/INTERRUPTED`; after invocation or possible side effect it is `CANCELLED/REAL/INTERRUPTED`. Planning interruption is a BLOCKED plan with `INTERRUPTED`.
 
-Reason: framework-owned diagnostics should not accidentally disclose untrusted or sensitive input.
+## Workflow/recording trace shape
 
-## Playwright inspection failure classification
+Workflow results and recordings require at least one step. Completed/preflight/runtime-failure traces must match reachable fail-fast execution. Strict recording decode rejects impossible historical fixtures rather than normalizing them.
 
-A Playwright inspection timeout is translated to expected element disappearance only when a fresh
-count confirms the element is gone. If the element remains present, or the backend recheck fails,
-the original backend exception propagates. The canonical Playwright protocol error whose first
-field is `Frame was detached` is also definitive disappearance because Playwright 1.60 provides no
-dedicated Java subtype for it; incidental text in any other error is not classified as absence.
+Recording schema version remains V1; these are invariant corrections, not a field/version migration.
 
-Migration: code that incorrectly depended on backend failures appearing as absent metadata must
-handle the genuine backend failure. Typed disappearance behavior is unchanged.
+## Timing
 
-Reason: fail-closed behavior must distinguish expected absence from a broken browser/backend.
+Elapsed action/locator/wait timing uses monotonic clocks; wall-clock time is limited to absolute timestamp fields. Timeout arithmetic is overflow/rollover-safe and adapter sub-operations consume the caller's bounded remaining work.
 
-## BOM alignment
+## Structured scopes
 
-The BOM no longer manages the empty placeholder artifacts `webagent4j-http`,
-`webagent4j-storage`, or `webagent4j-testing`.
+Structured semantic scopes now preserve fail-closed ambiguity and physical identity through dynamic DOM reordering/replacement races. Code that depended on DOM index, page-controlled identity markers, or silent substitution was never a supported contract and must use semantic references/scopes instead.
 
-Migration: remove dependencies on those empty artifacts. They provide no supported API. Reactor
-modules remain in the source tree as explicitly unsupported boundaries.
+## BOM/placeholders
 
-Reason: dependency management should describe consumable artifacts rather than create an implied
-compatibility promise for placeholders.
+Reserved empty `webagent4j-http`, `webagent4j-storage`, and `webagent4j-testing` are not supported BOM-managed application dependencies. Remove application dependencies on them.
 
-## Unchanged contracts
+## What did not change
 
-- Recording JSON remains schema V1; no field, ordering, decoding, or replay behavior changes.
-- Plugin discovery remains explicit, deterministic, trusted, and zero-plugin by default.
-- Workflow execution remains sequential and fail-fast with no hidden workflow retry.
-- No new locator strategy, workflow step, crawler behavior, persistence, AI, agent, or MCP feature
-  is introduced.
-
-## Phase 1.0-B behavioral contract corrections
-
-Phase 1.0-B changes no public Java signature and does not change recording schema V1. It rejects
-public values that could not be produced or consumed consistently:
-
-- direct `ActionResult`, `WorkflowActionSummary`, `RecordedAction`, `WorkflowFailure`,
-  `WorkflowStepResult`, and `WorkflowResult` construction must follow the engines' documented
-  status/execution and sequential fail-fast shapes;
-- elapsed durations cannot be negative, configured `HttpFetchRequest` timeouts must be positive,
-  successful waits carry a value, timed-out waits carry no achieved-stability duration, and a
-  successful verification cannot also be timed out;
-- `ActionEvent#toString()` no longer includes target, result, or metadata text;
-- Playwright inspection timeout is absence only after a fresh count proves disappearance; the
-  canonical frame-detached protocol error is also a definitive disappearance signal.
-
-Migration: fix invalid test fixtures or application-created DTOs at their construction boundary,
-and use typed action-event accessors only inside an application-owned redaction policy. Valid
-engine-produced values are unchanged. Code that depended on a still-present Playwright target being
-reported absent must handle the original backend timeout instead.
+- no automatic live replay was added to Recording;
+- plugin discovery remains explicit/trusted and zero-plugin by default;
+- workflow remains sequential/fail-fast with no hidden workflow retry;
+- no AI/OCR/MCP dependency was introduced into the core;
+- Playwright remains behind backend-neutral public contracts.

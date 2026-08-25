@@ -34,21 +34,32 @@ final class PlaywrightDomInspectionScripts {
      * </pre>
      *
      * <p>{@code source} is {@code a} for accessible-name matching or {@code t} for visible text.
-     * {@code operation} is {@code s} for a semantic lookup, {@code b} for an atomic bind attempt,
-     * or {@code g} for a guarded lookup. Physical bindings live in a JavaScript {@code WeakMap}
-     * stored on the selector engine's isolated content-script global object. Application JavaScript
-     * cannot access that global object, and no DOM attribute is ever added or removed. The store is
-     * deliberately shared across selector-engine evaluations in the same isolated frame realm so a
-     * BIND locator and its later GUARDED locator observe the same physical identity state.
+     *
+     * <p>{@code operation} is:
+     *
+     * <ul>
+     *   <li>{@code s} — semantic lookup without consulting physical binding state;
+     *   <li>{@code b} — atomic transient lease bind attempt on the uniquely matched physical
+     *       element;
+     *   <li>{@code l} — lease-guarded lookup requiring the current unique semantic match to still
+     *       own the expected transient lease;
+     *   <li>{@code p} — promotion of the expected transient lease to the stable physical identity;
+     *   <li>{@code g} — stable-identity guarded lookup requiring the current unique semantic match
+     *       to still own the expected stable physical identity.
+     * </ul>
+     *
+     * <p>Semantic cardinality is evaluated before lease or identity guards. Zero matches remain
+     * zero and multiple semantic matches remain multiple, so binding state can never hide
+     * ambiguity.
+     *
+     * <p>Physical binding state lives in a JavaScript {@code WeakMap} stored on the selector
+     * engine's isolated content-script global object. Application JavaScript cannot access that
+     * state and no DOM attribute is added or removed.
      *
      * <p>Each live physical element owns constant-size state: one stable physical identity and at
      * most one transient bind lease. Re-resolution overwrites only the transient lease and never
-     * accumulates historical tokens, so an old still-valid scope cannot expire because unrelated
-     * later resolutions exceeded an arbitrary retention limit.
-     *
-     * <p>A guarded lookup never hides semantic ambiguity: zero semantic matches stay zero and two
-     * or more semantic matches stay multiple. The binding is consulted only when the current
-     * semantic cardinality is exactly one.
+     * accumulates historical tokens, so unrelated later resolutions cannot expire an older
+     * still-valid live scope.
      */
     static final String STRUCTURED_SCOPE_SELECTOR_ENGINE_SCRIPT =
             """

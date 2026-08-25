@@ -1,20 +1,16 @@
-# ADR 0005: Keep the core unaware of AI systems
+# ADR 0005: Keep the core deterministic and independent of AI dependencies
 
-- Status: Accepted
-- Date: 2026-08-13
+**Status:** Accepted
+**Supersedes:** None
 
 ## Context
 
-Future optional agents or MCP tools may benefit from observations and verified actions, while the base
-library must remain deterministic and useful without them.
+Semantic web automation must remain inspectable, deterministic, runnable locally, and usable without model/network services. Optional decision systems should not redefine the safety semantics of the browser core.
 
 ## Decision
 
-Do not add AI, LLM, MCP, prompt, token, chat, or model dependencies and concepts to core or domain
-modules. Future integrations must call the same public observation, locator, action, workflow, and
-verification API as every other consumer.
+Production core/domain modules do not depend on AI/LLM frameworks or expose model/prompt/token concepts as required core contracts. Future optional decision or MCP adapters must consume the same public observation/locator/action/workflow contracts as ordinary applications.
 
 ## Consequences
 
-The core stays small, testable, and vendor-neutral. Optional decision systems cannot bypass action
-verification or reach native browser objects.
+The deterministic engine can fail with explicit ambiguity/unresolvable outcomes instead of guessing. Optional higher-level decision systems can be added separately without making them a runtime dependency or bypassing action-safety invariants.
