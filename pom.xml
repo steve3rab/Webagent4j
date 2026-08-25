@@ -92,7 +92,7 @@
     <slf4j.version>2.0.18</slf4j.version>
     <testcontainers.version>1.21.3</testcontainers.version>
 
-    <checkstyle.version>10.26.1</checkstyle.version>
+    <checkstyle.version>14.0.0</checkstyle.version>
     <google-java-format.version>1.28.0</google-java-format.version>
     <jacoco.version>0.8.15</jacoco.version>
     <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
