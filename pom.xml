@@ -408,6 +408,7 @@
         <configuration>
           <doclint>all,-missing</doclint>
           <quiet>true</quiet>
+          <notimestamp>true</notimestamp>
         </configuration>
         <executions>
           <execution>

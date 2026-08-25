@@ -44,7 +44,7 @@ class ContextScopeIdentityMutationIT {
                             .execute();
 
             assertThat(result.success()).isTrue();
-            assertThat(support.clickCount("shipping-original")).isEqualTo(1);
+            support.awaitClickCount("shipping-original", 1);
             assertThat(support.clickCount("billing-inserted")).isZero();
         }
     }
@@ -103,7 +103,7 @@ class ContextScopeIdentityMutationIT {
                             .execute();
 
             assertThat(result.success()).isTrue();
-            assertThat(support.clickCount("shipping-original")).isEqualTo(1);
+            support.awaitClickCount("shipping-original", 1);
             assertThat(support.clickCount("billing-existing")).isZero();
         }
     }
@@ -158,7 +158,7 @@ class ContextScopeIdentityMutationIT {
 
             first.click();
 
-            assertThat(support.clickCount("shipping-original")).isEqualTo(1);
+            support.awaitClickCount("shipping-original", 1);
             assertThat(support.clickCount("billing-inserted")).isZero();
         }
     }
