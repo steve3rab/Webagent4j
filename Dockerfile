@@ -13,8 +13,8 @@ RUN ./mvnw --batch-mode --no-transfer-progress -Probustness verify
 FROM base AS build
 RUN ./mvnw --batch-mode --no-transfer-progress -DskipTests package
 
-FROM mcr.microsoft.com/playwright/java:v1.60.0-noble
+FROM mcr.microsoft.com/playwright/java:v1.62.0-noble
 WORKDIR /app
-COPY --from=build /workspace/webagent4j-cli/target/webagent4j-cli-0.1.0-SNAPSHOT.jar /app/webagent4j.jar
+COPY --from=build /workspace/webagent4j-cli/target/webagent4j-cli-1.0.0-RC1.jar /app/webagent4j.jar
 ENTRYPOINT ["java", "-jar", "/app/webagent4j.jar"]
 CMD ["--help"]

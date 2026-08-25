@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
-      image: mcr.microsoft.com/playwright/java:v1.60.0-noble
+      image: mcr.microsoft.com/playwright/java:v1.62.0-noble
       options: --user 1001
     steps:
       - uses: actions/checkout@v7
