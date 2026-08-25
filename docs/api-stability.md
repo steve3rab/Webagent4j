@@ -91,5 +91,3 @@ Potentially side-effecting backend actions are never hidden inside polling loops
 ## CLI policy
 
 The CLI is a separate compatibility surface even though it is built from the same repository version. Before declaring the CLI stable, its supported command names, options, exit codes, and machine-readable output must be documented and release-tested. Internal console prose is not a Java API promise.
-
-If no separate CLI compatibility document exists for a release, consumers must not infer that every human-readable message is SemVer-stable.

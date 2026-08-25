@@ -21,8 +21,8 @@ Passing on one operating system is not evidence that a browser backend is fully 
 | Engine | Implemented | Deterministic robustness gate | 1.0 support tier |
 | --- | ---: | ---: | --- |
 | Chromium | Yes | Yes | Tier 1: release-gated |
-| Firefox | Yes | No full adversarial corpus | Tier 2: available, best-effort until promoted |
-| WebKit | Yes | No full adversarial corpus | Tier 2: available, best-effort until promoted |
+| Firefox | Yes | No full adversarial corpus | Tier 2: implemented in the Playwright adapter; not part of the primary 1.0 consumer launch path or release qualification |
+| WebKit | Yes | No full adversarial corpus | Tier 2: implemented in the Playwright adapter; not part of the primary 1.0 consumer launch path or release qualification |
 
 The Playwright adapter can launch all three engines, but the deterministic wrong-target/ambiguity corpus currently gates Chromium. Firefox or WebKit must not be described as equivalently qualified until the same robustness expectations run reliably for them.
 

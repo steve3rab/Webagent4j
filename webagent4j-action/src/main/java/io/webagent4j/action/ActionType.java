@@ -1,6 +1,6 @@
 package io.webagent4j.action;
 
-/** Browser operations implemented by the Phase 4 action engine. */
+/** Browser operations supported by the action engine. */
 public enum ActionType {
     CLICK,
     DOUBLE_CLICK,
