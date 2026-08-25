@@ -48,7 +48,7 @@ Types under `io.webagent4j.*.internal` are unsupported even when Java visibility
 
 The supported 1.0 library artifacts are the BOM and the production browser, locator, wait, observation, action, verification, extraction, crawler, workflow, recording, and plugin modules listed in [modules.md](modules.md).
 
-`webagent4j-common` is treated as supported low-level API/SPI for advanced use. The current BOM does not manage it; a direct dependency therefore needs an explicit version equal to the rest of the WebAgent4J release. This should be resolved at the build-policy level before claiming that every supported artifact is BOM-managed.
+`webagent4j-common` is treated as supported low-level API/SPI for advanced use and is managed by the WebAgent4J BOM at the same version as the rest of the supported release artifacts.
 
 Reserved `webagent4j-http`, `webagent4j-storage`, and `webagent4j-testing` modules are not supported application artifacts. Examples and test modules are not compatibility surfaces.
 
