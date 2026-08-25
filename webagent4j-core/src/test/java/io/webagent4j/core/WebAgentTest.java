@@ -11,8 +11,15 @@ import org.junit.jupiter.api.Test;
 class WebAgentTest {
 
     @Test
-    void exposesTheInitialSemanticVersion() {
-        assertThat(WebAgent.VERSION).isEqualTo("1.0.0-RC1");
+    void exposesBuildVersion() {
+        assertThat(WebAgent.VERSION)
+                .isNotNull()
+                .isNotBlank()
+                .doesNotContain("${")
+                .isNotEqualToIgnoringCase("unknown")
+                .isNotEqualToIgnoringCase("dev")
+                .matches("\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?");
+
         assertThat(WebAgent.browser()).isNotNull();
     }
 
