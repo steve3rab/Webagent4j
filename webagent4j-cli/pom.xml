@@ -125,23 +125,6 @@
                   <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
                 </configuration>
               </execution>
-              <execution>
-                <id>third-party-license-texts</id>
-                <goals>
-                  <goal>download-licenses</goal>
-                </goals>
-                <phase>generate-resources</phase>
-                <configuration>
-                  <cleanLicensesOutputDirectory>true</cleanLicensesOutputDirectory>
-                  <errorRemedy>xmlOutput</errorRemedy>
-                  <excludedGroups>io.webagent4j</excludedGroups>
-                  <includeTransitiveDependencies>true</includeTransitiveDependencies>
-                  <licensesOutputDirectory>${project.build.directory}/generated-resources/licenses</licensesOutputDirectory>
-                  <licensesOutputFile>${project.build.directory}/generated-resources/licenses.xml</licensesOutputFile>
-                  <removeOrphanLicenseFiles>true</removeOrphanLicenseFiles>
-                  <sortByGroupIdAndArtifactId>true</sortByGroupIdAndArtifactId>
-                </configuration>
-              </execution>
             </executions>
           </plugin>
         </plugins>

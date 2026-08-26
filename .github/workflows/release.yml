@@ -116,31 +116,27 @@ jobs:
           java-version: "21"
           cache: maven
 
+      - name: Build and audit CLI distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/build-distribution.sh
+
       - name: Build release artifacts
         run: >-
           ./mvnw
           --batch-mode
           --no-transfer-progress
-          -Prelease,distribution
-          clean verify
+          -Prelease
+          verify
 
       - name: Run full robustness suite
         run: >-
           ./mvnw
           --batch-mode
           --no-transfer-progress
-          -Probustness,distribution
+          -Probustness
           verify
-
-      - name: Audit shaded CLI JAR
-        shell: bash
-        env:
-          VERSION: ${{ needs.metadata.outputs.version }}
-        run: |
-          set -euo pipefail
-          bash .github/scripts/audit-cli-jar.sh \
-            "webagent4j-cli/target/webagent4j-cli-${VERSION}.jar" \
-            "$VERSION"
 
       - name: Inspect release artifacts and aggregate Javadoc
         shell: bash
@@ -149,9 +145,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          cli_jar="webagent4j-cli/target/webagent4j-cli-${VERSION}.jar"
+          cli_jar="target/distribution/webagent4j-cli-${VERSION}.jar"
+          cli_checksum="${cli_jar}.sha256"
 
           test -s "$cli_jar"
+          test -s "$cli_checksum"
           test -s target/reports/apidocs/index.html
           grep -q "WebAgent" target/reports/apidocs/index.html
 
@@ -166,7 +164,8 @@ jobs:
           mkdir -p target/release-bundle/apidocs
 
           cp \
-            "webagent4j-cli/target/webagent4j-cli-${VERSION}.jar" \
+            "target/distribution/webagent4j-cli-${VERSION}.jar" \
+            "target/distribution/webagent4j-cli-${VERSION}.jar.sha256" \
             target/release-bundle/
 
           cp -a \
@@ -211,18 +210,6 @@ jobs:
         with:
           name: release-bundle-${{ needs.metadata.outputs.version }}
           path: target/release-bundle
-
-      - name: Create CLI checksum
-        shell: bash
-        env:
-          VERSION: ${{ needs.metadata.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          cd target/release-bundle
-          sha256sum \
-            "webagent4j-cli-${VERSION}.jar" \
-            > "webagent4j-cli-${VERSION}.jar.sha256"
 
       - name: Publish immutable versioned Javadocs
         shell: bash
