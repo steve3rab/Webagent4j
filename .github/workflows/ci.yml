@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 30
 
     # Keep the Playwright container aligned with playwright.version in pom.xml
-    # and with the Dockerfile used by the project.
+    # and with the Dockerfile used by the project
     container:
       image: mcr.microsoft.com/playwright/java:v1.62.0-noble
       options: --user 1001
