@@ -23,6 +23,7 @@ require_entry() {
 require_entry "META-INF/MANIFEST.MF"
 require_entry "META-INF/LICENSE"
 require_entry "META-INF/third-party/THIRD-PARTY.txt"
+require_entry "META-INF/third-party/licenses/slf4j-2.0.18-LICENSE.txt"
 require_entry "META-INF/services/io.webagent4j.browser.IBrowserProvider"
 
 if grep -Eiq '^META-INF/.*\.(SF|RSA|DSA)$' <<<"$entries"; then
@@ -64,6 +65,23 @@ grep -Fxq \
 
 if [[ ! -s "$tmp_dir/META-INF/third-party/THIRD-PARTY.txt" ]]; then
   echo "THIRD-PARTY.txt is empty." >&2
+  exit 1
+fi
+
+slf4j_license="$tmp_dir/META-INF/third-party/licenses/slf4j-2.0.18-LICENSE.txt"
+
+if [[ ! -s "$slf4j_license" ]]; then
+  echo "Bundled SLF4J license is empty." >&2
+  exit 1
+fi
+
+if ! grep -Fq "Copyright (c) 2004-2025 QOS.CH Sarl (Switzerland)" "$slf4j_license"; then
+  echo "Bundled SLF4J license does not match the curated 2.0.18 license text." >&2
+  exit 1
+fi
+
+if ! grep -Fq "Permission is hereby granted" "$slf4j_license"; then
+  echo "Bundled SLF4J license is missing the MIT permission grant." >&2
   exit 1
 fi
 
