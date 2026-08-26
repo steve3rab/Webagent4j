@@ -47,6 +47,12 @@ jobs:
           --no-transfer-progress
           clean verify
 
+      - name: Build and audit CLI distribution
+        run: bash .github/scripts/build-distribution.sh
+
+      - name: Run CLI JAR audit regression tests
+        run: bash .github/scripts/tests/audit-cli-jar.test.sh
+
       - name: Verify core robustness subset
         run: >-
           ./mvnw
