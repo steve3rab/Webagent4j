@@ -1,0 +1,17 @@
+io.webagent4j.action
+io.webagent4j.action.internal
+io.webagent4j.browser
+io.webagent4j.browser.playwright
+io.webagent4j.common
+io.webagent4j.core
+io.webagent4j.dom
+io.webagent4j.extraction
+io.webagent4j.extraction.api
+io.webagent4j.locator
+io.webagent4j.locator.api
+io.webagent4j.locator.internal
+io.webagent4j.observation
+io.webagent4j.observation.internal
+io.webagent4j.observation.spi
+io.webagent4j.verification
+io.webagent4j.wait
