@@ -101,7 +101,7 @@
                 <configuration>
                   <addOutputDirectoryAsResourceDir>false</addOutputDirectoryAsResourceDir>
                   <excludedGroups>io.webagent4j</excludedGroups>
-                  <failIfWarning>true</failIfWarning>
+                  <failOnMissing>true</failOnMissing>
                   <includeTransitiveDependencies>true</includeTransitiveDependencies>
                   <outputDirectory>${project.build.directory}/generated-resources</outputDirectory>
                   <sortArtifactByName>true</sortArtifactByName>
