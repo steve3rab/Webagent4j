@@ -46,8 +46,8 @@ jobs:
           --batch-mode
           --no-transfer-progress
           clean verify
-          
-            - name: Verify CLI distribution
+
+      - name: Verify CLI distribution
         shell: bash
         run: |
           set -euo pipefail
@@ -118,6 +118,33 @@ jobs:
           name: pages-javadoc
           path: target/reports/apidocs/
           if-no-files-found: error
+
+  docker:
+    name: Docker / non-root smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build Docker test stage
+        run: |
+          docker build \
+            --target test \
+            --tag webagent4j:test \
+            .
+
+      - name: Build runtime image
+        run: |
+          docker build \
+            --tag webagent4j:pr \
+            .
+
+      - name: Smoke-test runtime image
+        run: |
+          docker run --rm webagent4j:pr version
+          docker run --rm webagent4j:pr --help
 
   deploy-pages:
     name: Deploy to GitHub Pages
