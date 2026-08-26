@@ -69,12 +69,24 @@
                 </filter>
               </filters>
               <transformers>
+
+                <!-- Discard generic dependency META-INF/LICENSE entries. -->
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
+
+                <!-- Explicitly restore WebAgent4j's own license in the distribution JAR. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/LICENSE</resource>
+                  <file>${maven.multiModuleProjectDirectory}/LICENSE</file>
+                </transformer>
+
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer"/>
+
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>io.webagent4j.cli.WebAgent4jCli</mainClass>
                 </transformer>
+
               </transformers>
             </configuration>
           </execution>
