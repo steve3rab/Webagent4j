@@ -32,6 +32,7 @@ class MultipleContainingTextContextIT {
                             .execute();
             assertSuccessful(result);
 
+            support.awaitClickCount("laptopB-available", 1);
             assertThat(support.clickCount("laptopB-available")).isEqualTo(1);
             assertThat(support.clickCount("laptopB-unavailable")).isZero();
             assertThat(support.clickCount("laptopA-available")).isZero();
@@ -56,6 +57,7 @@ class MultipleContainingTextContextIT {
                             .execute();
             assertSuccessful(result);
 
+            support.awaitClickCount("laptopA-unavailable", 1);
             assertThat(support.clickCount("laptopA-unavailable")).isEqualTo(1);
             assertThat(support.clickCount("laptopA-available")).isZero();
             assertThat(support.clickCount("laptopB-available")).isZero();

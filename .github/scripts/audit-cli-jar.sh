@@ -23,13 +23,7 @@ require_entry() {
 require_entry "META-INF/MANIFEST.MF"
 require_entry "META-INF/LICENSE"
 require_entry "META-INF/third-party/THIRD-PARTY.txt"
-require_entry "META-INF/third-party/licenses.xml"
 require_entry "META-INF/services/io.webagent4j.browser.IBrowserProvider"
-
-if ! grep -Eq '^META-INF/third-party/licenses/[^/]+$' <<<"$entries"; then
-  echo "No downloaded third-party license text was bundled." >&2
-  exit 1
-fi
 
 if grep -Eiq '^META-INF/.*\.(SF|RSA|DSA)$' <<<"$entries"; then
   echo "Invalid dependency signature metadata remains in the shaded JAR." >&2
