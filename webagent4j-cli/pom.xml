@@ -30,6 +30,22 @@
     </dependency>
   </dependencies>
   <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <resource>
+        <targetPath>META-INF</targetPath>
+        <directory>${maven.multiModuleProjectDirectory}</directory>
+        <includes>
+          <include>LICENSE</include>
+        </includes>
+      </resource>
+      <resource>
+        <targetPath>META-INF/third-party</targetPath>
+        <directory>${project.build.directory}/generated-resources</directory>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -42,11 +58,40 @@
             <phase>package</phase>
             <configuration>
               <createDependencyReducedPom>false</createDependencyReducedPom>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <!-- Signatures of dependency JARs become invalid after shading -->
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+
+                    <!-- JPMS descriptors are not valid for the resulting uber-JAR -->
+                    <exclude>module-info.class</exclude>
+                    <exclude>META-INF/versions/**/module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
               <transformers>
+
+                <!-- Discard generic dependency META-INF/LICENSE entries. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
+
+                <!-- Explicitly restore WebAgent4j's own license in the distribution JAR. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/LICENSE</resource>
+                  <file>${maven.multiModuleProjectDirectory}/LICENSE</file>
+                </transformer>
+
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer"/>
+
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>io.webagent4j.cli.WebAgent4jCli</mainClass>
                 </transformer>
+
               </transformers>
             </configuration>
           </execution>
@@ -54,4 +99,53 @@
       </plugin>
     </plugins>
   </build>
+  <profiles>
+    <profile>
+      <id>distribution</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>license-maven-plugin</artifactId>
+            <version>2.7.1</version>
+            <executions>
+              <execution>
+                <id>third-party-inventory</id>
+                <goals>
+                  <goal>add-third-party</goal>
+                </goals>
+                <phase>generate-resources</phase>
+                <configuration>
+                  <addOutputDirectoryAsResourceDir>false</addOutputDirectoryAsResourceDir>
+                  <excludedGroups>io.webagent4j</excludedGroups>
+                  <failOnMissing>true</failOnMissing>
+                  <includeTransitiveDependencies>true</includeTransitiveDependencies>
+                  <outputDirectory>${project.build.directory}/generated-resources</outputDirectory>
+                  <sortArtifactByName>true</sortArtifactByName>
+                  <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
+                </configuration>
+              </execution>
+              <execution>
+                <id>third-party-license-texts</id>
+                <goals>
+                  <goal>download-licenses</goal>
+                </goals>
+                <phase>generate-resources</phase>
+                <configuration>
+                  <cleanLicensesOutputDirectory>true</cleanLicensesOutputDirectory>
+                  <errorRemedy>xmlOutput</errorRemedy>
+                  <excludedGroups>io.webagent4j</excludedGroups>
+                  <includeTransitiveDependencies>true</includeTransitiveDependencies>
+                  <licensesOutputDirectory>${project.build.directory}/generated-resources/licenses</licensesOutputDirectory>
+                  <licensesOutputFile>${project.build.directory}/generated-resources/licenses.xml</licensesOutputFile>
+                  <removeOrphanLicenseFiles>true</removeOrphanLicenseFiles>
+                  <sortByGroupIdAndArtifactId>true</sortByGroupIdAndArtifactId>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

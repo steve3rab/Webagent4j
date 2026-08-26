@@ -6,7 +6,6 @@ import io.webagent4j.action.ActionPlanStatus;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.browser.InteractionContext;
-import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -23,7 +22,8 @@ class ActionPlanContextReplacementIT {
     void aPlanWhoseContextIsReplacedWithTheSameSemanticsStillExecutesExactlyOnce()
             throws Exception {
         try (var support = Phase4TestSupport.start();
-                var page = support.open("/actions/context-dynamic-replaced")) {
+                var page = support.open("/actions/context-scope-replace-before-use")) {
+
             var target =
                     page.find(InteractionContext.context().containingText("Shipping"))
                             .button()
@@ -31,13 +31,35 @@ class ActionPlanContextReplacementIT {
                             .reference();
 
             IActionPlan<Void> plan = page.action().click(target).plan();
+
             assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
 
-            page.action().waitFor(Duration.ofMillis(300)).execute().throwIfFailed();
+            page.evaluate(
+                    """
+                    () => {
+                      const old = document.getElementById('shipping-original');
+
+                      const fresh = document.createElement('section');
+                      fresh.id = 'shipping-replacement';
+                      fresh.setAttribute('aria-label', 'Shipping');
+                      fresh.innerHTML = '<button>Continue</button>';
+
+                      fresh.querySelector('button').addEventListener(
+                          'click',
+                          () => fetch('/count-click/shipping-replacement'));
+
+                      old.replaceWith(fresh);
+                    }
+                    """);
+
             ActionResult<Void> result = plan.execute();
 
             assertThat(result.success()).isTrue();
-            assertThat(support.clickCount("shipping-continue")).isEqualTo(1);
+
+            support.awaitClickCount("shipping-replacement", 1);
+
+            assertThat(support.clickCount("shipping-original")).isZero();
+            assertThat(support.clickCount("shipping-replacement")).isEqualTo(1);
         }
     }
 }
