@@ -62,9 +62,14 @@
                 <filter>
                   <artifact>*:*</artifact>
                   <excludes>
+                    <!-- Signatures of dependency JARs become invalid after shading -->
                     <exclude>META-INF/*.SF</exclude>
                     <exclude>META-INF/*.RSA</exclude>
                     <exclude>META-INF/*.DSA</exclude>
+
+                    <!-- JPMS descriptors are not valid for the resulting uber-JAR -->
+                    <exclude>module-info.class</exclude>
+                    <exclude>META-INF/versions/**/module-info.class</exclude>
                   </excludes>
                 </filter>
               </filters>
