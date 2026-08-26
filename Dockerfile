@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM mcr.microsoft.com/playwright/java:v1.62.0-noble AS base
 WORKDIR /workspace
+RUN chown pwuser:pwuser /workspace
 COPY --chown=pwuser:pwuser . .
 RUN chmod +x mvnw
 USER pwuser

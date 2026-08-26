@@ -46,6 +46,34 @@ jobs:
           --batch-mode
           --no-transfer-progress
           clean verify
+          
+            - name: Verify CLI distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(
+            ./mvnw \
+              --batch-mode \
+              --no-transfer-progress \
+              -q \
+              -Dstyle.color=never \
+              -DforceStdout \
+              help:evaluate \
+              -Dexpression=project.version
+          )"
+          version="$(printf '%s' "$version" | tr -d '\r\n')"
+
+          ./mvnw \
+            --batch-mode \
+            --no-transfer-progress \
+            -Pdistribution \
+            -DskipTests \
+            package
+
+          bash .github/scripts/audit-cli-jar.sh \
+            "webagent4j-cli/target/webagent4j-cli-${version}.jar" \
+            "$version"
 
       - name: Verify core robustness subset
         run: >-

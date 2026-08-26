@@ -116,6 +116,7 @@
                 <phase>generate-resources</phase>
                 <configuration>
                   <cleanLicensesOutputDirectory>true</cleanLicensesOutputDirectory>
+                  <errorRemedy>xmlOutput</errorRemedy>
                   <excludedGroups>io.webagent4j</excludedGroups>
                   <includeTransitiveDependencies>true</includeTransitiveDependencies>
                   <licensesOutputDirectory>${project.build.directory}/generated-resources/licenses</licensesOutputDirectory>

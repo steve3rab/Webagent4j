@@ -32,7 +32,7 @@
         <configuration>
           <failOnUnresolvedArtifacts>true</failOnUnresolvedArtifacts>
           <failOnUnresolvedDependencies>true</failOnUnresolvedDependencies>
-          <failSeverity>potentiallyBreaking</failSeverity>
+          <failCriticality>error</failCriticality>
           <oldArtifacts>
           <artifact>io.webagent4j:webagent4j-common:${api.baseline.version}</artifact>
           <artifact>io.webagent4j:webagent4j-wait:${api.baseline.version}</artifact>
