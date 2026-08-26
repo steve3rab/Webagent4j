@@ -4,7 +4,7 @@
   <parent>
     <groupId>io.webagent4j</groupId>
     <artifactId>webagent4j-parent</artifactId>
-    <version>1.0.0-RC1</version>
+    <version>1.0.0</version>
   </parent>
   <artifactId>webagent4j-http</artifactId>
   <name>WebAgent4J HTTP</name>
