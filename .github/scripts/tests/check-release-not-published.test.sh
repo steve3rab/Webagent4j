@@ -20,17 +20,125 @@ source "$guard_script"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
-# assert_status <name> <expected_result: pass|fail> <expected_message_substring> -- evaluate_release_status args...
-assert_status() {
-  local name="$1" expected="$2" expected_message="$3"
-  shift 3
+export GITHUB_REPOSITORY="octo/example"
+export GITHUB_TOKEN="test-token"
+
+# --- Pure-function cases: evaluate_by_tag_status ---------------------------
+
+# assert_by_tag <name> <expected_verdict> -- evaluate_by_tag_status args...
+assert_by_tag() {
+  local name="$1" expected="$2"
+  shift 2
   [[ "$1" == "--" ]]
   shift
   cases_run=$((cases_run + 1))
 
+  local verdict
+  verdict="$(evaluate_by_tag_status "$@" 2>/dev/null)"
+
+  if [[ "$verdict" == "$expected" ]]; then
+    echo "PASS: $name"
+  else
+    echo "FAIL: $name -- expected verdict '$expected', got '$verdict'" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+no_release_body="$work_dir/no-release.json"
+printf '{"message":"Not Found"}' > "$no_release_body"
+assert_by_tag "by-tag 404 is 'absent'" absent -- "v9.9.9" "404" "$no_release_body"
+
+public_release_body="$work_dir/public-release.json"
+printf '{"draft": false, "prerelease": false, "tag_name": "v9.9.9"}' > "$public_release_body"
+assert_by_tag "by-tag 200 draft:false is 'public'" public -- "v9.9.9" "200" "$public_release_body"
+
+draft_release_body="$work_dir/draft-release.json"
+printf '{"draft": true, "prerelease": false, "tag_name": "v9.9.9"}' > "$draft_release_body"
+assert_by_tag "by-tag 200 draft:true is 'draft'" draft -- "v9.9.9" "200" "$draft_release_body"
+
+malformed_body="$work_dir/malformed.json"
+printf 'not json at all' > "$malformed_body"
+assert_by_tag "by-tag malformed 200 body is 'indeterminate'" indeterminate -- "v9.9.9" "200" "$malformed_body"
+
+missing_field_body="$work_dir/missing-field.json"
+printf '{"tag_name": "v9.9.9"}' > "$missing_field_body"
+assert_by_tag "by-tag 200 without a draft field is 'indeterminate'" indeterminate -- "v9.9.9" "200" "$missing_field_body"
+
+server_error_body="$work_dir/server-error.json"
+printf '{"message":"Internal Server Error"}' > "$server_error_body"
+assert_by_tag "by-tag HTTP 500 is 'indeterminate'" indeterminate -- "v9.9.9" "500" "$server_error_body"
+
+rate_limited_body="$work_dir/rate-limited.json"
+printf '{"message":"API rate limit exceeded"}' > "$rate_limited_body"
+assert_by_tag "by-tag HTTP 403 is 'indeterminate'" indeterminate -- "v9.9.9" "403" "$rate_limited_body"
+
+# --- End-to-end cases: check_release_absent, with curl stubbed -------------
+# A single stub serves both the by-tag endpoint and the paginated releases
+# list, dispatching on the requested URL, so each scenario below exercises
+# the full check_release_absent flow exactly as main() invokes it.
+
+# mock_curl_dispatch reads a "plan" the test case defines as environment
+# variables before calling curl:
+#   MOCK_BY_TAG_STATUS / MOCK_BY_TAG_BODY   -- response for /releases/tags/*
+#   MOCK_LIST_STATUS   / MOCK_LIST_BODY     -- response for the *first* list
+#                                              page; subsequent pages (if
+#                                              MOCK_LIST_BODY has 100+
+#                                              entries) are not exercised by
+#                                              these tests, which all use
+#                                              small fixture lists
+#   MOCK_TRANSPORT_FAIL_ON                  -- "by-tag" or "list" to make
+#                                              that call fail as if curl
+#                                              itself could not connect
+curl() {
+  local args=("$@")
+  local out_file="" url=""
+  local i
+  for i in "${!args[@]}"; do
+    case "${args[$i]}" in
+      --output) out_file="${args[$((i + 1))]}" ;;
+    esac
+  done
+  url="${args[-1]}"
+
+  if [[ "$url" == *"/releases/tags/"* ]]; then
+    if [[ "${MOCK_TRANSPORT_FAIL_ON:-}" == "by-tag" ]]; then
+      return 7
+    fi
+    printf '%s' "${MOCK_BY_TAG_BODY:-"{}"}" > "$out_file"
+    printf '%s' "${MOCK_BY_TAG_STATUS:-404}"
+    return 0
+  fi
+
+  if [[ "$url" == *"/releases?per_page="* ]]; then
+    if [[ "${MOCK_TRANSPORT_FAIL_ON:-}" == "list" ]]; then
+      return 7
+    fi
+    # Only ever answer page 1 with the fixture; any further page (which
+    # would only be requested if page 1 returned a full 100 entries, never
+    # the case in these small fixtures) is an empty page, ending pagination.
+    if [[ "$url" == *"&page=1" ]]; then
+      printf '%s' "${MOCK_LIST_BODY:-"[]"}" > "$out_file"
+      printf '%s' "${MOCK_LIST_STATUS:-200}"
+    else
+      printf '[]' > "$out_file"
+      printf '200'
+    fi
+    return 0
+  fi
+
+  echo "unexpected curl invocation in test stub: ${args[*]}" >&2
+  return 99
+}
+export -f curl
+
+# assert_absent <name> <expected: pass|fail> <expected_message_substring>
+assert_absent() {
+  local name="$1" expected="$2" expected_message="$3"
+  cases_run=$((cases_run + 1))
+
   local output result
   set +e
-  if output="$(evaluate_release_status "$@" 2>&1)"; then result="pass"; else result="fail"; fi
+  if output="$(check_release_absent "v9.9.9" 2>&1)"; then result="pass"; else result="fail"; fi
   set -e
 
   local ok=1
@@ -52,110 +160,73 @@ assert_status() {
   fi
 }
 
-# --- Case 1: no release exists (404) -> success --------------------------
-no_release_body="$work_dir/no-release.json"
-printf '{"message":"Not Found"}' > "$no_release_body"
-assert_status "no existing release (404) is accepted" pass "No existing GitHub Release" \
-  -- "v9.9.9" "404" "$no_release_body"
+# Case: no release at all -> success.
+MOCK_BY_TAG_STATUS=404
+MOCK_BY_TAG_BODY='{"message":"Not Found"}'
+MOCK_LIST_STATUS=200
+MOCK_LIST_BODY='[]'
+unset MOCK_TRANSPORT_FAIL_ON
+assert_absent "no release at all is accepted" pass "No existing GitHub Release"
 
-# --- Case 2: public release already exists -> failure ---------------------
-public_release_body="$work_dir/public-release.json"
-printf '{"draft": false, "prerelease": false, "tag_name": "v9.9.9"}' > "$public_release_body"
-assert_status "pre-existing public release (200, draft:false) is refused" fail "PUBLIC GitHub Release" \
-  -- "v9.9.9" "200" "$public_release_body"
+# Case: public release found directly via the by-tag endpoint -> failure.
+MOCK_BY_TAG_STATUS=200
+MOCK_BY_TAG_BODY='{"draft": false, "tag_name": "v9.9.9"}'
+assert_absent "public release via by-tag endpoint is refused" fail "PUBLIC GitHub Release"
 
-# --- Case 3: draft release already exists -> failure -----------------------
-draft_release_body="$work_dir/draft-release.json"
-printf '{"draft": true, "prerelease": false, "tag_name": "v9.9.9"}' > "$draft_release_body"
-assert_status "pre-existing draft release (200, draft:true) is refused" fail "DRAFT GitHub Release" \
-  -- "v9.9.9" "200" "$draft_release_body"
+# Case: draft reported directly by the by-tag endpoint (defensive case,
+# should GitHub's documented behavior ever change) -> failure.
+MOCK_BY_TAG_STATUS=200
+MOCK_BY_TAG_BODY='{"draft": true, "tag_name": "v9.9.9"}'
+assert_absent "draft reported directly via by-tag endpoint is refused" fail "DRAFT GitHub Release"
 
-# --- Case 4: response body cannot be parsed -> failure (indeterminate) -----
-malformed_body="$work_dir/malformed.json"
-printf 'not json at all' > "$malformed_body"
-assert_status "malformed 200 response body is refused as indeterminate" fail "could not be determined" \
-  -- "v9.9.9" "200" "$malformed_body"
+# Case: the required scenario -- by-tag endpoint says 404 (as GitHub always
+# does for a draft), but the release is visible in the full releases list.
+MOCK_BY_TAG_STATUS=404
+MOCK_BY_TAG_BODY='{"message":"Not Found"}'
+MOCK_LIST_STATUS=200
+MOCK_LIST_BODY='[{"id": 123, "draft": true, "tag_name": "v9.9.9"}]'
+assert_absent "draft invisible via by-tag but present in the releases list is refused" fail "not visible via the by-tag lookup"
 
-# --- Case 5: 200 response missing the draft field -> failure --------------
-missing_field_body="$work_dir/missing-field.json"
-printf '{"tag_name": "v9.9.9"}' > "$missing_field_body"
-assert_status "200 response without a draft field is refused as indeterminate" fail "no 'draft' field" \
-  -- "v9.9.9" "200" "$missing_field_body"
+# Case: releases list shows a non-draft release for the tag even though
+# by-tag said 404 -- a genuine contradiction between the two sources.
+MOCK_LIST_BODY='[{"id": 123, "draft": false, "tag_name": "v9.9.9"}]'
+assert_absent "contradiction between by-tag 404 and a published match in the list is refused" fail "contradictory release state"
 
-# --- Case 6: unexpected HTTP status (server error) -> failure -------------
-server_error_body="$work_dir/server-error.json"
-printf '{"message":"Internal Server Error"}' > "$server_error_body"
-assert_status "unexpected HTTP status (500) is refused as ambiguous" fail "Unexpected response" \
-  -- "v9.9.9" "500" "$server_error_body"
+# Case: multiple releases claim the same tag in the list -- contradictory /
+# concurrent state.
+MOCK_LIST_BODY='[{"id": 123, "draft": true, "tag_name": "v9.9.9"}, {"id": 456, "draft": false, "tag_name": "v9.9.9"}]'
+assert_absent "multiple releases matching the same tag in the list are refused" fail "contradictory or concurrent release state"
 
-# --- Case 7: unexpected HTTP status (403, e.g. rate limit) -> failure -----
-rate_limited_body="$work_dir/rate-limited.json"
-printf '{"message":"API rate limit exceeded"}' > "$rate_limited_body"
-assert_status "unexpected HTTP status (403) is refused as ambiguous" fail "Unexpected response" \
-  -- "v9.9.9" "403" "$rate_limited_body"
+# Case: releases list page cannot be parsed -> indeterminate, refused.
+MOCK_LIST_STATUS=200
+MOCK_LIST_BODY='not json at all'
+assert_absent "unparseable releases list page is refused as indeterminate" fail "could not be scanned"
 
-# --- Case 8: transport-level failure (network unreachable) never reads as
-# "no release" -- exercised end-to-end through main() with curl stubbed
-# out to simulate a network failure.
-cases_run=$((cases_run + 1))
-(
-  curl() { return 7; } # simulate curl's "could not connect" exit code
-  export -f curl
-  export GITHUB_REPOSITORY="octo/example"
-  export GITHUB_TOKEN="test-token"
+# Case: releases list responds with an unexpected HTTP status.
+MOCK_LIST_STATUS=500
+MOCK_LIST_BODY='{"message":"Internal Server Error"}'
+assert_absent "releases list HTTP 500 is refused" fail "could not be scanned"
 
-  set +e
-  output="$(main "v9.9.9" 2>&1)"
-  exit_code=$?
-  set -e
+MOCK_LIST_STATUS=403
+MOCK_LIST_BODY='{"message":"API rate limit exceeded"}'
+assert_absent "releases list HTTP 403 is refused" fail "could not be scanned"
 
-  if [[ "$exit_code" -ne 0 ]] && [[ "$output" == *"Unable to reach the GitHub API"* ]] && [[ "$output" != *"No existing GitHub Release"* ]]; then
-    echo "PASS: transport failure is refused and never reported as 'no release'"
-  else
-    echo "FAIL: transport failure -- expected a non-zero exit with an explicit unreachable-API message" >&2
-    echo "  exit=$exit_code" >&2
-    printf '%s\n' "$output" | sed 's/^/    /' >&2
-    exit 1
-  fi
-) || failures=$((failures + 1))
+# Case: transport failure reaching the by-tag endpoint -- never conflated
+# with "no release".
+MOCK_BY_TAG_STATUS=404
+MOCK_BY_TAG_BODY='{"message":"Not Found"}'
+MOCK_LIST_STATUS=200
+MOCK_LIST_BODY='[]'
+MOCK_TRANSPORT_FAIL_ON="by-tag"
+assert_absent "transport failure on the by-tag lookup is refused, not treated as absent" fail "Unable to reach the GitHub API"
 
-# --- Case 9: no release, exercised end-to-end through main() with curl
-# stubbed to return a genuine 404 -- confirms the wiring between
-# fetch_release_status, main and evaluate_release_status, still without
-# any real network access.
-cases_run=$((cases_run + 1))
-(
-  curl() {
-    # Mimic `curl -o <file> -w '%{http_code}'`: find -o's argument, write
-    # a 404 body there, print the status code on stdout.
-    local out_file=""
-    local args=("$@")
-    for i in "${!args[@]}"; do
-      if [[ "${args[$i]}" == "--output" ]]; then
-        out_file="${args[$((i + 1))]}"
-      fi
-    done
-    printf '{"message":"Not Found"}' > "$out_file"
-    printf '404'
-  }
-  export -f curl
-  export GITHUB_REPOSITORY="octo/example"
-  export GITHUB_TOKEN="test-token"
+# Case: transport failure reaching the releases list (by-tag succeeded
+# with 404, so the scan is still required and its failure must not be
+# treated as "no draft found").
+MOCK_TRANSPORT_FAIL_ON="list"
+assert_absent "transport failure on the releases list scan is refused, not treated as absent" fail "could not be scanned"
 
-  set +e
-  output="$(main "v9.9.9" 2>&1)"
-  exit_code=$?
-  set -e
-
-  if [[ "$exit_code" -eq 0 ]] && [[ "$output" == *"No existing GitHub Release"* ]]; then
-    echo "PASS: end-to-end main() accepts a genuine 404 as 'no release'"
-  else
-    echo "FAIL: end-to-end main() with a stubbed 404 -- expected exit 0 and a 'no release' message" >&2
-    echo "  exit=$exit_code" >&2
-    printf '%s\n' "$output" | sed 's/^/    /' >&2
-    exit 1
-  fi
-) || failures=$((failures + 1))
+unset -f curl
 
 echo
 echo "$cases_run assertion case(s) run, $failures failure(s)."

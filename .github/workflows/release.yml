@@ -3,19 +3,27 @@ name: Release
 # Policy: VERIFY FIRST, PUBLISH LAST.
 #
 # publish (the only job with contents: write) may run only after metadata,
-# verify AND guard have all succeeded. This workflow never creates a draft
-# release ahead of verification to "reserve" the tag, so no release --
-# draft or public -- should exist for a candidate tag before publish's own
-# "Create GitHub release" step runs. If one is found anyway (created
-# out-of-band, manually or otherwise), it is never silently accepted as
-# validated, merged into, replaced, or deleted automatically: the workflow
-# fails closed and a human must resolve it.
+# verify AND guard have all succeeded. No release -- draft or public --
+# should exist for a candidate tag before publish creates one itself. If
+# one is found anyway (created out-of-band, manually or otherwise), it is
+# never silently accepted as validated, merged into, replaced, or deleted
+# automatically: the workflow fails closed and a human must resolve it.
 #
-# The guard job runs the same check early (in parallel with verify) purely
-# as a fast-fail signal; the check that actually gates publication is the
-# one repeated as the last step of publish, immediately before "Create
-# GitHub release", to keep the window between check and publish as small
-# as possible.
+# The guard job runs that check early (in parallel with verify) purely as
+# a fast-fail signal. publish does not use a single find-or-create/update
+# call for the release: GET /releases/tags/{tag} alone cannot prove a
+# draft is absent (GitHub does not expose drafts through it), so the
+# authoritative check (.github/scripts/check-release-not-published.sh)
+# also scans the full releases list, and any ambiguity fails closed. To
+# avoid ever silently adopting a concurrently created release, publish
+# instead runs an explicit, ID-addressed sequence
+# (.github/scripts/release-draft.sh): create a draft only after that
+# check passes, immediately re-scan the releases list to confirm this
+# run's draft is the only one for the tag, upload the verified assets to
+# that exact release id, publish Pages, then finalize that same exact
+# release id -- refusing if it is no longer a draft by then. Nothing here
+# ever searches "by tag" again once the release id is known, and nothing
+# here deletes, replaces, or moves a tag or a release automatically.
 
 on:
   push:
@@ -38,12 +46,12 @@ jobs:
 
     steps:
       - name: Checkout tag with full history
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Set up Java 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "21"
@@ -120,7 +128,7 @@ jobs:
 
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Refuse to publish over an existing GitHub Release
         shell: bash
@@ -145,10 +153,10 @@ jobs:
 
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Java 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "21"
@@ -211,7 +219,7 @@ jobs:
             target/release-bundle/apidocs/
 
       - name: Upload verified release bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-bundle-${{ needs.metadata.outputs.version }}
           path: target/release-bundle/
@@ -239,15 +247,47 @@ jobs:
 
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Download verified release bundle
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: release-bundle-${{ needs.metadata.outputs.version }}
           path: target/release-bundle
+
+      - name: Create controlled draft release
+        id: create_release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ contains(needs.metadata.outputs.version, '-RC') }}
+        run: |
+          set -euo pipefail
+
+          release_id="$(
+            bash .github/scripts/release-draft.sh create \
+              "$GITHUB_REF_NAME" \
+              "$GITHUB_SHA" \
+              "$PRERELEASE"
+          )"
+
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload verified release assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_ID: ${{ steps.create_release.outputs.release_id }}
+        run: |
+          set -euo pipefail
+
+          bash .github/scripts/release-draft.sh upload \
+            "$RELEASE_ID" \
+            "target/release-bundle/webagent4j-cli-${VERSION}.jar" \
+            "target/release-bundle/webagent4j-cli-${VERSION}.jar.sha256"
 
       - name: Publish immutable versioned Javadocs
         shell: bash
@@ -262,32 +302,26 @@ jobs:
             "$VERSION"
 
       - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: target/pages-deploy
           include-hidden-files: true
 
       - name: Deploy GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
 
-      - name: Refuse to publish over an existing GitHub Release
+      - name: Finalize GitHub release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.create_release.outputs.release_id }}
         run: |
           set -euo pipefail
-          bash .github/scripts/check-release-not-published.sh "$GITHUB_REF_NAME"
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v3
-        with:
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          prerelease: ${{ contains(needs.metadata.outputs.version, '-RC') }}
-          files: |
-            target/release-bundle/webagent4j-cli-${{ needs.metadata.outputs.version }}.jar
-            target/release-bundle/webagent4j-cli-${{ needs.metadata.outputs.version }}.jar.sha256
+          bash .github/scripts/release-draft.sh finalize \
+            "$RELEASE_ID" \
+            "$GITHUB_REF_NAME"
 
   # Maven Central publication will be added separately when the namespace,
   # signing configuration and external publication credentials are available.
