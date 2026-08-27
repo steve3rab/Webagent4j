@@ -176,6 +176,23 @@ class HttpCrawlerNetworkPolicyTest {
     }
 
     @Test
+    void retryStillHappensNormallyForAnAllowedDestination() {
+        URI seed = URI.create("https://allowed.example.test/");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(
+                seed,
+                new HttpFetchResult(seed, 503, Map.of(), new byte[0], "text/html", Duration.ZERO));
+        fetcher.respondHtml(seed, "<html><body>ok</body></html>");
+        INetworkPolicy allowAll = context -> PolicyDecision.allow("test.network.allowed");
+        HttpCrawler crawler = crawler(fetcher).withNetworkPolicy(allowAll);
+
+        CrawlResult result = crawler.crawl(CrawlRequest.builder().seed(seed).maxPages(5).build());
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(fetcher.fetchCount(seed)).isEqualTo(2);
+    }
+
+    @Test
     void unconfiguredNetworkPolicyLeavesExistingBehaviorUnchanged() {
         URI seed = URI.create("https://example.test/");
         FakeHttpFetcher fetcher = new FakeHttpFetcher();
@@ -236,6 +253,10 @@ class HttpCrawlerNetworkPolicyTest {
                             new byte[0],
                             "text/html",
                             Duration.ZERO));
+        }
+
+        void respond(URI uri, HttpFetchResult result) {
+            enqueue(uri, result);
         }
 
         private void enqueue(URI uri, HttpFetchResult result) {
