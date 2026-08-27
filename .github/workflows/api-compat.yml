@@ -128,6 +128,25 @@ jobs:
             exit 1
           fi
 
+      - name: Seed isolated repository from cached third-party dependencies
+        shell: bash
+        working-directory: current
+        run: >-
+          bash .github/scripts/seed-api-compat-maven-repo.sh
+          "$HOME/.m2/repository"
+          "$RUNNER_TEMP/api-compat-m2"
+
+      - name: Verify the isolated repository carries no WebAgent4j artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -e "$RUNNER_TEMP/api-compat-m2/io/webagent4j" ]]; then
+            echo "Refusing to proceed: the isolated Maven repository already contains io/webagent4j artifacts before the baseline install." >&2
+            echo "This would let a stale WebAgent4j artifact from an earlier run silently reach Revapi. The seed step must never let this survive." >&2
+            exit 1
+          fi
+
       - name: Install baseline artifacts into isolated repository
         shell: bash
         working-directory: baseline
