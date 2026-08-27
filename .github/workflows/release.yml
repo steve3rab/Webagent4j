@@ -206,7 +206,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download verified release bundle
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: release-bundle-${{ needs.metadata.outputs.version }}
           path: target/release-bundle
