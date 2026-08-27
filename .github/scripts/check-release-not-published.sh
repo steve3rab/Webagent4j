@@ -76,8 +76,16 @@ MAX_RELEASE_LIST_PAGES=50
 # Returns 0 only if every page was fetched and parsed successfully,
 # regardless of how many matches were found (0 matches is a normal,
 # successful outcome for a tag with no release at all). Returns non-zero
-# on any transport failure, unexpected HTTP status, unparseable page, or
-# if the page cap is exceeded.
+# on any transport failure, unexpected HTTP status, unparseable page, a
+# page whose top-level JSON shape is not an array, or a matching entry
+# whose own id/tag_name/draft fields are not well-formed -- or if the
+# page cap is exceeded.
+#
+# A page's top-level shape is checked explicitly (rather than trusting
+# `.[]`/`length` to behave "as if empty" on the wrong shape) because jq
+# happily iterates the *values* of a JSON object with `.[]` and reports
+# `length` 0 for `{}` -- so an unexpected object response would otherwise
+# be silently indistinguishable from a real empty list.
 scan_releases_for_tag() {
   local tag="$1" matches_file="$2"
   local page_body page_status page=1
@@ -104,9 +112,33 @@ scan_releases_for_tag() {
       return 1
     fi
 
-    local page_matches page_count
-    if ! page_matches="$(jq -c --arg tag "$tag" '.[] | select(.tag_name == $tag) | {id, draft, tag_name}' "$page_body" 2>/dev/null)"; then
+    local page_type
+    if ! page_type="$(jq -r 'type' "$page_body" 2>/dev/null)"; then
       echo "Releases list page $page for tag '$tag' could not be parsed as JSON." >&2
+      rm -f "$page_body"
+      return 1
+    fi
+
+    if [[ "$page_type" != "array" ]]; then
+      echo "Releases list page $page for tag '$tag' returned valid JSON but not a JSON array (top-level type: $page_type)." >&2
+      rm -f "$page_body"
+      return 1
+    fi
+
+    local page_matches page_count
+    if ! page_matches="$(jq -c --arg tag "$tag" '
+          [ .[] | select(.tag_name == $tag) ] as $matches
+          | if ($matches | all(
+                type == "object"
+                and (.id | type) == "number" and ((.id | floor) == .id) and (.id > 0)
+                and (.tag_name | type) == "string"
+                and (.draft | type) == "boolean"
+              ))
+            then $matches[] | {id, draft, tag_name}
+            else error("malformed match")
+            end
+        ' "$page_body" 2>/dev/null)"; then
+      echo "Releases list page $page for tag '$tag' contains a release matching that tag with malformed identity fields (id/tag_name/draft)." >&2
       rm -f "$page_body"
       return 1
     fi
