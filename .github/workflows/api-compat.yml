@@ -5,11 +5,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      baseline_version:
-        description: Published WebAgent4J version to use as the API baseline
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -18,6 +13,10 @@ concurrency:
   group: api-compat-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # Modules covered by webagent4j-api-compat's oldArtifacts/newArtifacts comparison.
+  API_COMPAT_MODULES: "webagent4j-common,webagent4j-wait,webagent4j-locator-api,webagent4j-dom,webagent4j-observation-api,webagent4j-observation,webagent4j-locator,webagent4j-verification,webagent4j-action,webagent4j-browser-api,webagent4j-browser-playwright,webagent4j-core,webagent4j-extraction-api,webagent4j-extraction,webagent4j-crawler-api,webagent4j-crawler,webagent4j-browser-crawler,webagent4j-workflow,webagent4j-recording,webagent4j-plugin-api"
+
 jobs:
   revapi:
     name: Revapi
@@ -25,8 +24,10 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - name: Checkout
+      - name: Checkout current
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: current
 
       - name: Set up Java 21
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
@@ -35,42 +36,131 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Resolve API baseline
+      - name: Resolve and validate API baseline version
         id: baseline
         shell: bash
-        env:
-          MANUAL_BASELINE: ${{ inputs.baseline_version }}
-          CONFIGURED_BASELINE: ${{ vars.API_BASELINE_VERSION }}
+        working-directory: current
         run: |
           set -euo pipefail
 
-          baseline="$MANUAL_BASELINE"
-          if [[ -z "$baseline" ]]; then
-            baseline="$CONFIGURED_BASELINE"
+          baseline_file=".github/api-baseline-version"
+
+          if [[ ! -f "$baseline_file" ]]; then
+            echo "API baseline file is missing: $baseline_file" >&2
+            exit 1
           fi
 
+          baseline="$(tr -d '[:space:]' < "$baseline_file")"
+
           if [[ -z "$baseline" ]]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "API compatibility is staged but inactive until API_BASELINE_VERSION is configured."
-            exit 0
+            echo "API baseline file is empty: $baseline_file" >&2
+            exit 1
           fi
 
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          if [[ ! "$baseline" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "API baseline version is not a valid stable release version: '$baseline'" >&2
+            exit 1
+          fi
+
+          tag="v$baseline"
+
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "API baseline tag does not exist in origin: $tag" >&2
+            exit 1
+          fi
+
           echo "version=$baseline" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Install current reactor artifacts
-        if: steps.baseline.outputs.enabled == 'true'
+      - name: Checkout baseline tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: baseline
+          ref: ${{ steps.baseline.outputs.tag }}
+
+      - name: Verify baseline tag matches expected Maven version
+        shell: bash
+        working-directory: baseline
+        env:
+          EXPECTED_BASELINE_VERSION: ${{ steps.baseline.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          actual="$(
+            ./mvnw \
+              --batch-mode \
+              --no-transfer-progress \
+              -q \
+              -Dstyle.color=never \
+              -DforceStdout \
+              help:evaluate \
+              -Dexpression=project.version
+          )"
+          actual="$(printf '%s' "$actual" | tr -d '\r\n')"
+
+          if [[ "$actual" != "$EXPECTED_BASELINE_VERSION" ]]; then
+            echo "Baseline tag ${{ steps.baseline.outputs.tag }} resolves to Maven version '$actual', expected '$EXPECTED_BASELINE_VERSION'." >&2
+            exit 1
+          fi
+
+      - name: Verify current version differs from baseline
+        shell: bash
+        working-directory: current
+        env:
+          BASELINE_VERSION: ${{ steps.baseline.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          current_version="$(
+            ./mvnw \
+              --batch-mode \
+              --no-transfer-progress \
+              -q \
+              -Dstyle.color=never \
+              -DforceStdout \
+              help:evaluate \
+              -Dexpression=project.version
+          )"
+          current_version="$(printf '%s' "$current_version" | tr -d '\r\n')"
+
+          if [[ "$current_version" == "$BASELINE_VERSION" ]]; then
+            echo "Current reactor version ('$current_version') must differ from the API baseline version ('$BASELINE_VERSION')." >&2
+            exit 1
+          fi
+
+      - name: Install baseline artifacts into isolated repository
+        shell: bash
+        working-directory: baseline
         run: >-
           ./mvnw
           --batch-mode
           --no-transfer-progress
+          -Dmaven.repo.local="$RUNNER_TEMP/api-compat-m2"
+          -pl "$API_COMPAT_MODULES"
+          -am
           -DskipTests
           -Djacoco.skip=true
           -Dmaven.javadoc.skip=true
           install
 
-      - name: Compare supported API against baseline
-        if: steps.baseline.outputs.enabled == 'true'
+      - name: Install current reactor artifacts into isolated repository
+        shell: bash
+        working-directory: current
+        run: >-
+          ./mvnw
+          --batch-mode
+          --no-transfer-progress
+          -Dmaven.repo.local="$RUNNER_TEMP/api-compat-m2"
+          -pl "$API_COMPAT_MODULES"
+          -am
+          -DskipTests
+          -Djacoco.skip=true
+          -Dmaven.javadoc.skip=true
+          install
+
+      - name: Compare supported API against stable baseline
+        shell: bash
+        working-directory: current
         env:
           API_BASELINE_VERSION: ${{ steps.baseline.outputs.version }}
         run: >-
@@ -78,5 +168,6 @@ jobs:
           --batch-mode
           --no-transfer-progress
           -f webagent4j-api-compat/pom.xml
+          -Dmaven.repo.local="$RUNNER_TEMP/api-compat-m2"
           -Dapi.baseline.version="${API_BASELINE_VERSION}"
           verify
