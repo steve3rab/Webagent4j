@@ -120,7 +120,7 @@ cmd_create() {
     return 1
   fi
 
-  if ! check_release_absent "$tag"; then
+  if ! check_release_absent "$tag" >&2; then
     echo "Refusing to create a release for tag '$tag': a release already exists or its state could not be determined." >&2
     return 1
   fi

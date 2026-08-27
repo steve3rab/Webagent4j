@@ -171,6 +171,100 @@ reset_mocks
 assert_case "create succeeds when no release exists and prints the release id" pass "4242" \
   -- cmd_create "v9.9.9" "abc123sha" "false"
 
+# assert_create_stdout_contract <name> <expected_release_id> -- args...
+#
+# Proves the exact stdout/stderr contract a successful `create` must
+# honor: callers such as release.yml capture cmd_create's stdout
+# verbatim as the release id (release_id="$(... release-draft.sh create
+# ...)"), so *any* extra line on stdout -- including
+# check_release_absent's own "No existing GitHub Release..." success
+# message -- would corrupt that value. Captures stdout and stderr into
+# separate files (not merged via 2>&1, unlike assert_case above) so each
+# stream can be asserted independently. This is the test that must fail
+# if the `check_release_absent "$tag" >&2` redirection inside
+# cmd_create() is ever removed.
+assert_create_stdout_contract() {
+  local name="$1" expected_release_id="$2"
+  shift 2
+  [[ "$1" == "--" ]]
+  shift
+  cases_run=$((cases_run + 1))
+
+  local stdout_file stderr_file exit_code
+  stdout_file="$work_dir/stdout-$cases_run"
+  stderr_file="$work_dir/stderr-$cases_run"
+
+  set +e
+  "$@" >"$stdout_file" 2>"$stderr_file"
+  exit_code=$?
+  set -e
+
+  local stdout_content stdout_line_count
+  stdout_content="$(cat "$stdout_file")"
+  stdout_line_count="$(wc -l < "$stdout_file" | tr -d '[:space:]')"
+
+  local ok=1
+  local -a problems=()
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    problems+=("expected exit code 0, got $exit_code")
+    ok=0
+  fi
+
+  if [[ "$stdout_content" != "$expected_release_id" ]]; then
+    problems+=("expected stdout to be exactly '$expected_release_id', got '$stdout_content'")
+    ok=0
+  fi
+
+  if [[ "$stdout_line_count" -ne 1 ]]; then
+    problems+=("expected stdout to contain exactly one line, got $stdout_line_count")
+    ok=0
+  fi
+
+  if ! [[ "$stdout_content" =~ ^[0-9]+$ ]]; then
+    problems+=("expected stdout to match a numeric release id only, got '$stdout_content'")
+    ok=0
+  fi
+
+  if [[ "$stdout_content" == *"No existing GitHub Release"* ]]; then
+    problems+=("the 'No existing GitHub Release' diagnostic leaked onto stdout")
+    ok=0
+  fi
+
+  if [[ "$ok" -eq 1 ]]; then
+    echo "PASS: $name"
+  else
+    echo "FAIL: $name" >&2
+    local problem
+    for problem in "${problems[@]}"; do
+      echo "  - $problem" >&2
+    done
+    echo "  stdout:" >&2
+    sed 's/^/    /' "$stdout_file" >&2
+    echo "  stderr:" >&2
+    sed 's/^/    /' "$stderr_file" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+reset_mocks
+assert_create_stdout_contract "create's successful stdout contains only the numeric release id (release.yml captures this verbatim)" "4242" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+# The pre-create informational diagnostic is expected to still exist --
+# just on stderr, where it belongs, not swallowed entirely.
+reset_mocks
+create_stderr_file="$work_dir/create-diagnostic-stderr"
+cmd_create "v9.9.9" "abc123sha" "false" >/dev/null 2>"$create_stderr_file"
+cases_run=$((cases_run + 1))
+if grep -q "No existing GitHub Release" "$create_stderr_file"; then
+  echo "PASS: create's pre-flight 'No existing GitHub Release' diagnostic still reaches stderr"
+else
+  echo "FAIL: create's pre-flight 'No existing GitHub Release' diagnostic did not reach stderr" >&2
+  sed 's/^/    /' "$create_stderr_file" >&2
+  failures=$((failures + 1))
+fi
+
 reset_mocks
 MOCK_BY_TAG_STATUS=200
 MOCK_BY_TAG_BODY='{"draft": false, "tag_name": "v9.9.9"}'
