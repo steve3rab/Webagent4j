@@ -31,6 +31,18 @@ public final class BrowserBuilder {
         return this;
     }
 
+    /** Selects Firefox. */
+    public BrowserBuilder firefox() {
+        browserType = BrowserType.FIREFOX;
+        return this;
+    }
+
+    /** Selects WebKit. */
+    public BrowserBuilder webkit() {
+        browserType = BrowserType.WEBKIT;
+        return this;
+    }
+
     /** Selects whether the browser UI is hidden. */
     public BrowserBuilder headless(boolean value) {
         headless = value;

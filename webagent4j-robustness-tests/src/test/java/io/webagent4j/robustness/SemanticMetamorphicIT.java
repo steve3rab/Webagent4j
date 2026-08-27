@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IPage;
-import io.webagent4j.core.WebAgent;
 import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorNotFoundException;
@@ -28,7 +27,7 @@ class SemanticMetamorphicIT {
     @BeforeAll
     void startInfrastructure() throws Exception {
         application = RobustnessTestApplication.start();
-        browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+        browser = RobustnessBrowserLauncher.launch();
     }
 
     @AfterAll

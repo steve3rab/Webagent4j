@@ -37,4 +37,15 @@ class WebAgentTest {
                 .isInstanceOf(BrowserException.class)
                 .hasMessageContaining("webagent4j-browser-playwright");
     }
+
+    @Test
+    void selectsFirefoxAndWebkitThroughTheSamePublicBuilder() {
+        assertThatThrownBy(() -> WebAgent.browser().playwright().firefox().headless(true).launch())
+                .isInstanceOf(BrowserException.class)
+                .hasMessageContaining("webagent4j-browser-playwright");
+
+        assertThatThrownBy(() -> WebAgent.browser().playwright().webkit().headless(true).launch())
+                .isInstanceOf(BrowserException.class)
+                .hasMessageContaining("webagent4j-browser-playwright");
+    }
 }

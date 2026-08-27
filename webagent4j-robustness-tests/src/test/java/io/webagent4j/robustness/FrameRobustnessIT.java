@@ -6,7 +6,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IFrame;
 import io.webagent4j.browser.IPage;
-import io.webagent4j.core.WebAgent;
 import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.LocatorNotFoundException;
 import java.time.Duration;
@@ -39,7 +38,7 @@ class FrameRobustnessIT {
     @BeforeAll
     void startInfrastructure() throws Exception {
         application = RobustnessTestApplication.start();
-        browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+        browser = RobustnessBrowserLauncher.launch();
     }
 
     @AfterAll

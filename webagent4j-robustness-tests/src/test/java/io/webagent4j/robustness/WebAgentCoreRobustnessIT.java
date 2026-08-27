@@ -9,7 +9,6 @@ import io.webagent4j.action.ObservationCapturePolicy;
 import io.webagent4j.action.Secret;
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IPage;
-import io.webagent4j.core.WebAgent;
 import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.locator.LocatorResolutionStatus;
@@ -31,7 +30,7 @@ class WebAgentCoreRobustnessIT {
     @BeforeAll
     void startInfrastructure() throws Exception {
         application = RobustnessTestApplication.start();
-        browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+        browser = RobustnessBrowserLauncher.launch();
     }
 
     @AfterAll
