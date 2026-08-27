@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IPage;
-import io.webagent4j.core.WebAgent;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -15,8 +14,7 @@ class RobustnessStressIT {
     @Test
     void repeatedObservationsAndResolutionsRemainBoundedAndStable() throws Exception {
         try (RobustnessTestApplication application = RobustnessTestApplication.start();
-                IBrowser browser =
-                        WebAgent.browser().playwright().chromium().headless(true).launch();
+                IBrowser browser = RobustnessBrowserLauncher.launch();
                 IPage page = browser.open(application.fixtureUrl("clean/semantic-controls.html"))) {
             var expectedFingerprint = page.observe().fingerprint();
             for (int iteration = 0; iteration < 101; iteration++) {
@@ -36,8 +34,7 @@ class RobustnessStressIT {
     @Test
     void browserSupportsRepeatedPageLifecycleOperations() throws Exception {
         try (RobustnessTestApplication application = RobustnessTestApplication.start();
-                IBrowser browser =
-                        WebAgent.browser().playwright().chromium().headless(true).launch()) {
+                IBrowser browser = RobustnessBrowserLauncher.launch()) {
             for (int iteration = 0; iteration < 5; iteration++) {
                 try (IPage page =
                         browser.open(application.fixtureUrl("clean/semantic-controls.html"))) {

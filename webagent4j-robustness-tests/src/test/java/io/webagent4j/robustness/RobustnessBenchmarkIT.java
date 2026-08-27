@@ -7,7 +7,6 @@ import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.ActionStatus;
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IPage;
-import io.webagent4j.core.WebAgent;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.LocatorNotFoundException;
@@ -34,16 +33,19 @@ class RobustnessBenchmarkIT {
     private RobustnessTestApplication application;
     private IBrowser browser;
 
+    private RobustnessBrowserEngine engine;
+
     @BeforeAll
     void startInfrastructure() throws Exception {
         application = RobustnessTestApplication.start();
-        browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+        engine = RobustnessBrowserEngine.current();
+        browser = RobustnessBrowserLauncher.launch(engine);
     }
 
     @AfterAll
     void writeReportAndStopInfrastructure() throws Exception {
         try {
-            RobustnessReportWriter.write(List.copyOf(results));
+            RobustnessReportWriter.write(engine, List.copyOf(results));
             if (System.getProperty("scenario", "").isBlank()) {
                 RobustnessMetrics metrics = RobustnessMetrics.from(results);
                 assertThat(metrics.total()).isEqualTo(100);
@@ -258,10 +260,14 @@ class RobustnessBenchmarkIT {
         return Duration.ofNanos(System.nanoTime() - started);
     }
 
-    private static String reproduction(RobustnessScenario scenario) {
+    private String reproduction(RobustnessScenario scenario) {
         return "Scenario "
                 + scenario.id()
-                + " failed. Run: ./mvnw -Probustness -Dscenario="
+                + " failed on "
+                + engine
+                + ". Run: ./mvnw -Probustness -Drobustness.browser="
+                + engine.propertyValue()
+                + " -Dscenario="
                 + scenario.id()
                 + " verify";
     }

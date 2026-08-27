@@ -1,11 +1,22 @@
 name: Nightly platforms
 
-# The active development line is develop (1.1.0-SNAPSHOT), not whichever
-# ref this workflow file happens to be read from for a scheduled run, so
-# every job here checks out develop explicitly. workflow_dispatch still
-# works: it always runs the workflow definition from the ref it is
-# dispatched against, and this checkout override applies the same way in
-# both cases.
+# A scheduled run always qualifies the active development line, develop
+# (1.1.0-SNAPSHOT), regardless of whichever ref this workflow file happens
+# to be read from -- every job here checks out develop explicitly for
+# schedule. A manual workflow_dispatch run instead checks out the exact
+# immutable commit SHA of the dispatched run (github.sha), not a
+# branch/tag ref (github.ref) that could move between dispatch and
+# checkout, so an exact-head engine qualification can be run against a
+# candidate SHA before merge without waiting for the next scheduled
+# develop run. Never fall back to whatever the default branch happens to
+# be in either case.
+#
+# Note: GitHub only ever *triggers* the `schedule` event from the
+# workflow definition committed on the repository's default branch. This
+# file's presence on develop makes the three-engine robustness matrix
+# below available to a manual workflow_dispatch run against develop, but
+# scheduled nightly runs will not pick up this definition (or any other
+# change here) until it also reaches the default branch.
 on:
   schedule:
     - cron: "30 2 * * *"
@@ -29,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: develop
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.sha }}
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
@@ -52,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: develop
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.sha }}
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
@@ -72,33 +83,47 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: develop
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.sha }}
       - name: Verify headless Chromium in Docker
         run: docker build --target test --tag webagent4j-test .
 
   robustness:
-    name: Full deterministic robustness benchmark
+    name: Full deterministic robustness benchmark / ${{ matrix.browser }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Every engine runs the full 100-scenario corpus independently. fail-fast
+    # is disabled deliberately: a Firefox failure must not prevent WebKit (or
+    # Chromium) evidence from being collected in the same nightly run, and
+    # vice versa -- each engine's qualification evidence stands on its own.
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
     container:
       image: mcr.microsoft.com/playwright/java:v1.62.0-noble
       options: --user 1001
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: develop
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.sha }}
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - name: Run full Chromium robustness benchmark
-        run: ./mvnw --batch-mode --no-transfer-progress -Probustness verify
+      - name: Run full ${{ matrix.browser }} robustness benchmark
+        run: >-
+          ./mvnw
+          --batch-mode
+          --no-transfer-progress
+          -Probustness
+          -Drobustness.browser=${{ matrix.browser }}
+          verify
       - name: Upload robustness reports and failure diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: robustness-reports
+          name: robustness-reports-${{ matrix.browser }}
           path: |
             webagent4j-robustness-tests/target/robustness-report.md
             webagent4j-robustness-tests/target/robustness-report.json
@@ -113,6 +138,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: develop
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.sha }}
       - name: Verify robustness target in Docker
         run: docker build --target robustness --tag webagent4j-robustness .

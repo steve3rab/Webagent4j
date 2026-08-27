@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IPage;
-import io.webagent4j.core.WebAgent;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.observation.ElementCapability;
 import org.junit.jupiter.api.AfterAll;
@@ -23,7 +22,7 @@ class SemanticConsistencyIT {
     @BeforeAll
     void startInfrastructure() throws Exception {
         application = RobustnessTestApplication.start();
-        browser = WebAgent.browser().playwright().chromium().headless(true).launch();
+        browser = RobustnessBrowserLauncher.launch();
     }
 
     @AfterAll

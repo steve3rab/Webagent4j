@@ -45,7 +45,7 @@ Evaluation is not a sandbox or a safe-data channel. Do not interpolate secrets o
 
 ## Browser types
 
-The Playwright adapter implements Chromium, Firefox, and WebKit launch paths. Only Chromium currently has the complete deterministic robustness release gate. See [Support matrix](support-matrix.md#browser-backend) before treating engine availability as equal qualification.
+The Playwright adapter implements Chromium, Firefox, and WebKit launch paths. `develop` now contains nightly and release qualification infrastructure covering all three engines through this same public browser path, but only Chromium has actually been observed passing it, Firefox and WebKit are not yet release-gated, and scheduled nightly activation additionally depends on this workflow reaching the repository's default branch. See [Support matrix](support-matrix.md#browser-backend) before treating engine availability as equal qualification.
 
 ## Provider discovery
 
