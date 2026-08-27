@@ -14,6 +14,9 @@ import io.webagent4j.action.ActionTimings;
 import io.webagent4j.action.IActionContext;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.ObservationCapturePolicy;
+import io.webagent4j.action.policy.ActionPolicyContext;
+import io.webagent4j.action.policy.ActionPolicyMode;
+import io.webagent4j.action.policy.IActionPolicy;
 import io.webagent4j.common.LocatorFailureClassifier;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.AmbiguousLocatorException;
@@ -21,6 +24,7 @@ import io.webagent4j.locator.LocatorDiagnosticsRenderer;
 import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationDiff;
+import io.webagent4j.policy.PolicyDecision;
 import io.webagent4j.verification.IVerification;
 import io.webagent4j.verification.VerificationEngine;
 import io.webagent4j.verification.VerificationInterruptedException;
@@ -208,6 +212,35 @@ final class ActionExecutor {
                         targetDescription,
                         startedNanos));
 
+        // Authorization happens as late as practical - immediately before any backend-facing
+        // decision (the dry-run short circuit below, or the real backend call further down) -
+        // never right after resolution, so the window between "what was checked" and "what
+        // actually runs" stays as small as this single-resolution pipeline allows. A DENY, a
+        // thrown exception, and a malformed (null) decision are all treated identically: fail
+        // closed, backend never invoked, ActionExecutionMode.NOT_EXECUTED.
+        if (config.actionPolicy().isPresent()) {
+            ActionPolicyMode mode =
+                    config.dryRun() ? ActionPolicyMode.DRY_RUN : ActionPolicyMode.EXECUTE;
+            ActionResult<R> denied =
+                    authorizeAction(
+                            context,
+                            command,
+                            config,
+                            actionId,
+                            startedNanos,
+                            events,
+                            resolutionDuration,
+                            preconditionDuration,
+                            preconditions,
+                            before,
+                            target,
+                            targetDescription,
+                            mode);
+            if (denied != null) {
+                return denied;
+            }
+        }
+
         if (config.dryRun()) {
             // A dry-run never invokes the backend, so it never emits BACKEND_ACTION_STARTED or
             // BACKEND_ACTION_COMPLETED, and it never performs stabilization or postcondition
@@ -278,6 +311,41 @@ final class ActionExecutor {
                     ActionExecutionMode.NOT_EXECUTED,
                     ActionStatus.TIMEOUT,
                     "Action budget expired before the backend action could be invoked",
+                    null);
+        }
+
+        if (Thread.currentThread().isInterrupted()) {
+            // A caller-observable interrupt raised during policy evaluation (or any point up to
+            // here) must still prevent the backend from ever being invoked - identical in spirit
+            // to the budget-expired check just above.
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "interrupted-before-backend-action",
+                            targetDescription,
+                            startedNanos));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.INTERRUPTED,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.CANCELLED,
+                    "Action was interrupted before the backend action could be invoked",
                     null);
         }
 
@@ -570,6 +638,114 @@ final class ActionExecutor {
                 Optional.empty(),
                 new ActionDiagnostics(targetDescription, "", Map.of("plan", "ready")),
                 executor);
+    }
+
+    /**
+     * Evaluates {@code config.actionPolicy()} for one action and returns a terminal {@link
+     * ActionResult} if the backend must not be invoked (denied, or evaluation itself failed), or
+     * {@code null} if the caller may proceed. {@link RuntimeException}s thrown by the policy are
+     * caught here - fail-closed - but never masked as an ordinary policy DENY: only a genuine
+     * {@link RuntimeException} is caught, so a {@link Throwable} subclass signaling a fatal JVM
+     * condition (for example {@link OutOfMemoryError} or {@link StackOverflowError}) still
+     * propagates rather than being silently reinterpreted as a policy decision.
+     */
+    @SuppressWarnings("checkstyle:ParameterNumber")
+    private <R> ActionResult<R> authorizeAction(
+            IActionContext context,
+            ActionCommand<R> command,
+            ActionExecutionConfig config,
+            ActionId actionId,
+            long startedNanos,
+            List<ActionEvent> events,
+            Duration resolutionDuration,
+            Duration preconditionDuration,
+            List<VerificationResult> preconditions,
+            Observation before,
+            IElement target,
+            String targetDescription,
+            ActionPolicyMode mode) {
+        IActionPolicy policy = config.actionPolicy().orElseThrow();
+        ActionPolicyContext policyContext =
+                new ActionPolicyContext(
+                        actionId,
+                        command.type(),
+                        command.idempotency(),
+                        command.sideEffect(),
+                        mode,
+                        targetDescription);
+        PolicyDecision decision;
+        try {
+            decision = policy.evaluate(policyContext);
+        } catch (RuntimeException evaluationFailure) {
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.POLICY_EVALUATION_FAILED,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.EXECUTION_FAILED,
+                    "Action policy evaluation failed",
+                    evaluationFailure);
+        }
+        if (decision == null) {
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.POLICY_EVALUATION_FAILED,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.EXECUTION_FAILED,
+                    "Action policy returned no decision",
+                    null);
+        }
+        if (decision.isDeny()) {
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.POLICY_DENIED,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.EXECUTION_FAILED,
+                    "Action was denied by policy: " + decision.reason().code(),
+                    null);
+        }
+        return null;
     }
 
     private static List<VerificationType> expectedPostconditionTypes(ActionExecutionConfig config) {

@@ -1,5 +1,6 @@
 package io.webagent4j.action;
 
+import io.webagent4j.action.policy.IActionPolicy;
 import io.webagent4j.common.RetryPolicy;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.verification.IVerification;
@@ -66,4 +67,24 @@ public interface IPreparedAction<R> {
      * @throws IllegalStateException if {@link #dryRun()} was already called on this prepared action
      */
     IActionPlan<R> plan();
+
+    /**
+     * Configures an {@link IActionPolicy} that must {@code ALLOW} this action before its backend
+     * side effect is invoked - by {@link #execute()} directly, by {@link #dryRun()}'s validation,
+     * and by the real execution behind {@link IActionPlan#execute()} alike. A {@code DENY}, a
+     * thrown exception, or any other evaluation failure prevents the backend from ever being
+     * called; see {@code docs/governed-execution.md} for the exact pipeline position and failure
+     * shape.
+     *
+     * <p>The default implementation always throws {@link UnsupportedOperationException} - only an
+     * {@link IPreparedAction} implementation that actually enforces this configuration may override
+     * it; a caller must never be able to configure a policy that is silently ignored.
+     *
+     * @throws NullPointerException if {@code policy} is {@code null}
+     * @throws IllegalStateException if a policy is already configured on this prepared action
+     */
+    default IPreparedAction<R> policy(IActionPolicy policy) {
+        throw new UnsupportedOperationException(
+                "policy(...) is not supported by this IPreparedAction implementation");
+    }
 }

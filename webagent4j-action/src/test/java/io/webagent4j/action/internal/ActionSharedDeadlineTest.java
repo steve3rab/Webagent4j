@@ -98,7 +98,8 @@ class ActionSharedDeadlineTest {
                         List.of(neverSucceeds, countingNeverSucceeds),
                         (context, remaining) -> StabilizationResult.none(),
                         false,
-                        false);
+                        false,
+                        java.util.Optional.empty());
 
         ActionResult<Void> result =
                 new ActionExecutor(clock, verificationEngine)

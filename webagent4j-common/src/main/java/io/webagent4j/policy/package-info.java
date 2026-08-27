@@ -15,7 +15,7 @@
  * untrusted, unsandboxed Java code.
  *
  * <p>Action-specific and network-specific policy contracts live in {@code io.webagent4j.action}
- * (action authorization, {@code webagent4j-action}) and {@link io.webagent4j.policy.network}
+ * (action authorization, {@code webagent4j-action}) and {@code io.webagent4j.policy.network}
  * (network-destination governance, this module) respectively, both built on the generic contracts
  * defined here.
  */

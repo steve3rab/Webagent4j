@@ -7,6 +7,7 @@ import io.webagent4j.action.IActionContext;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.IPreparedAction;
 import io.webagent4j.action.ObservationCapturePolicy;
+import io.webagent4j.action.policy.IActionPolicy;
 import io.webagent4j.common.RetryPolicy;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.verification.ITargetVerification;
@@ -30,6 +31,7 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
     private ActionOptions options = ActionOptions.defaults();
     private boolean sensitive;
     private boolean dryRun;
+    private IActionPolicy actionPolicy;
 
     DefaultPreparedAction(IActionContext context, ActionCommand<R> command) {
         this.context = Objects.requireNonNull(context, "context");
@@ -134,6 +136,17 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
     }
 
     @Override
+    public IPreparedAction<R> policy(IActionPolicy policy) {
+        Objects.requireNonNull(policy, "policy");
+        if (this.actionPolicy != null) {
+            throw new IllegalStateException(
+                    "An action policy is already configured for this prepared action");
+        }
+        this.actionPolicy = policy;
+        return this;
+    }
+
+    @Override
     public ActionResult<R> execute() {
         return new ActionExecutor().execute(context, command, buildConfig());
     }
@@ -166,7 +179,8 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
                 List.copyOf(postconditions),
                 (current, remaining) -> io.webagent4j.action.StabilizationResult.none(),
                 sensitive,
-                dryRun);
+                dryRun,
+                java.util.Optional.ofNullable(actionPolicy));
     }
 
     private IVerification bind(IVerification verification) {
