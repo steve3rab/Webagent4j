@@ -109,6 +109,54 @@ cmd_notes() {
   rm -f "$body_file"
 }
 
+# validate_created_release_response <tag> <body_file>
+# Strictly validates the create POST's response body against the exact
+# schema/identity a freshly created draft must have, and -- only if every
+# check passes -- prints the validated release id as the sole line of
+# stdout. Prints nothing to stdout on failure; every check failure is
+# explained on stderr. A malformed, wrong-shaped, or semantically wrong
+# response (non-object body, non-numeric/non-positive/non-integer id, a
+# different tag, a draft flag that is missing, non-boolean, or false)
+# must never be treated as "no usable id" being merely absent -- it is a
+# distinct, fail-closed refusal for each condition.
+validate_created_release_response() {
+  local tag="$1" body_file="$2"
+
+  local response_type
+  if ! response_type="$(jq -r 'type' "$body_file" 2>/dev/null)"; then
+    echo "Draft release creation response for tag '$tag' could not be parsed as JSON." >&2
+    return 1
+  fi
+
+  if [[ "$response_type" != "object" ]]; then
+    echo "Draft release creation response for tag '$tag' was valid JSON but not a JSON object (top-level type: $response_type)." >&2
+    return 1
+  fi
+
+  local id_valid
+  id_valid="$(jq -r '(.id | type) == "number" and (.id | floor) == .id and (.id > 0)' "$body_file" 2>/dev/null || echo "false")"
+  if [[ "$id_valid" != "true" ]]; then
+    echo "Draft release creation response for tag '$tag' did not contain a valid positive integer id." >&2
+    return 1
+  fi
+
+  local response_tag
+  response_tag="$(jq -r 'if (.tag_name | type) == "string" then .tag_name else "" end' "$body_file" 2>/dev/null)"
+  if [[ "$response_tag" != "$tag" ]]; then
+    echo "Draft release creation returned tag '$response_tag', expected '$tag'." >&2
+    return 1
+  fi
+
+  local draft_valid
+  draft_valid="$(jq -r '(.draft | type) == "boolean" and (.draft == true)' "$body_file" 2>/dev/null || echo "false")"
+  if [[ "$draft_valid" != "true" ]]; then
+    echo "Draft release creation response for tag '$tag' did not report draft == true." >&2
+    return 1
+  fi
+
+  jq -r '.id' "$body_file"
+}
+
 # cmd_create <tag> <target_commitish> <prerelease>
 # Prints the created draft release's numeric id on stdout as the sole
 # line of output. Every diagnostic goes to stderr.
@@ -157,8 +205,8 @@ cmd_create() {
   fi
 
   local release_id
-  if ! release_id="$(jq -r '.id' "$body_file" 2>/dev/null)" || [[ -z "$release_id" || "$release_id" == "null" ]]; then
-    echo "Draft release creation for tag '$tag' returned HTTP 201 but no usable release id could be parsed from the response." >&2
+  if ! release_id="$(validate_created_release_response "$tag" "$body_file")"; then
+    echo "Refusing to proceed with an unverified draft release creation response for tag '$tag'." >&2
     rm -f "$body_file"
     return 1
   fi
@@ -168,7 +216,13 @@ cmd_create() {
   # Immediately re-scan the releases list: if any other release also
   # claims this tag now, a concurrent creation raced us and this run must
   # not proceed to touch anything further -- including the draft it just
-  # created, which is left untouched for a human to reconcile.
+  # created, which is left untouched for a human to reconcile. Proving
+  # exactly one release matches the tag is necessary but not sufficient:
+  # the workflow must also prove that the *one* matching release is the
+  # exact release this run just created (same id), still reports the
+  # exact requested tag, and is still a draft -- otherwise a same-tag
+  # release owned by someone else could be silently mistaken for this
+  # run's own draft before assets are uploaded to it.
   local matches_file match_count
   matches_file="$(mktemp)"
   if ! scan_releases_for_tag "$tag" "$matches_file"; then
@@ -179,11 +233,35 @@ cmd_create() {
   fi
 
   match_count="$(wc -l < "$matches_file" | tr -d '[:space:]')"
-  rm -f "$matches_file"
 
   if [[ "$match_count" -ne 1 ]]; then
     echo "Created draft release $release_id for tag '$tag', but $match_count releases now match that tag (expected exactly 1)." >&2
     echo "This indicates a concurrent release creation. Refusing to proceed; the created draft is left as-is for manual review." >&2
+    rm -f "$matches_file"
+    return 1
+  fi
+
+  local match_id match_tag match_draft
+  match_id="$(jq -r '.id' "$matches_file")"
+  match_tag="$(jq -r '.tag_name' "$matches_file")"
+  match_draft="$(jq -r '.draft' "$matches_file")"
+  rm -f "$matches_file"
+
+  if [[ "$match_id" != "$release_id" ]]; then
+    echo "Post-create scan found release $match_id for tag '$tag', but the create response returned release $release_id." >&2
+    echo "Created release $release_id could not be proven as the unique post-create owner of tag '$tag'. Refusing to proceed; the created draft is left as-is for manual review." >&2
+    return 1
+  fi
+
+  if [[ "$match_tag" != "$tag" ]]; then
+    echo "Post-create scan match for release $release_id has tag '$match_tag', expected '$tag'." >&2
+    echo "Created release $release_id could not be proven as the unique post-create owner of tag '$tag'. Refusing to proceed; the created draft is left as-is for manual review." >&2
+    return 1
+  fi
+
+  if [[ "$match_draft" != "true" ]]; then
+    echo "Post-create scan match for release $release_id is not a draft (draft=$match_draft)." >&2
+    echo "Created release $release_id could not be proven as the unique post-create owner of tag '$tag'. Refusing to proceed; the created draft is left as-is for manual review." >&2
     return 1
   fi
 
@@ -265,8 +343,9 @@ cmd_finalize() {
     return 1
   fi
 
-  local current_tag current_draft
+  local current_tag current_draft current_draft_type
   if ! current_tag="$(jq -r '.tag_name' "$body_file" 2>/dev/null)" || \
+     ! current_draft_type="$(jq -r '.draft | type' "$body_file" 2>/dev/null)" || \
      ! current_draft="$(jq -r '.draft' "$body_file" 2>/dev/null)"; then
     echo "Response for release $release_id could not be parsed as JSON before finalizing." >&2
     rm -f "$body_file"
@@ -279,7 +358,12 @@ cmd_finalize() {
     return 1
   fi
 
-  if [[ "$current_draft" != "true" ]]; then
+  # current_draft_type must be checked, not just current_draft's text: jq
+  # -r strips quotes from a JSON *string* the same way it renders a JSON
+  # boolean, so a malformed draft: "true" (string) response would
+  # otherwise read identically to a real draft: true and be silently
+  # accepted as proof the release is still a draft.
+  if [[ "$current_draft_type" != "boolean" || "$current_draft" != "true" ]]; then
     echo "Refusing to finalize release $release_id: it is no longer a draft (draft=$current_draft)." >&2
     echo "A rerun must not silently re-treat an already-published release as a fresh success." >&2
     return 1

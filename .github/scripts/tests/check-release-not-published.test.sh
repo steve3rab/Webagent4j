@@ -226,6 +226,43 @@ assert_absent "transport failure on the by-tag lookup is refused, not treated as
 MOCK_TRANSPORT_FAIL_ON="list"
 assert_absent "transport failure on the releases list scan is refused, not treated as absent" fail "could not be scanned"
 
+# --- releases-list shape validation -----------------------------------
+# scan_releases_for_tag() (and therefore check_release_absent()) must
+# explicitly validate that a 200 releases-list page is a JSON array
+# before trusting jq's `.[]`/`length` behavior on it: both silently treat
+# a `{}` object as if it were an empty array, which would otherwise make
+# a wrong-shaped response indistinguishable from "no release exists".
+MOCK_BY_TAG_STATUS=404
+MOCK_BY_TAG_BODY='{"message":"Not Found"}'
+unset MOCK_TRANSPORT_FAIL_ON
+
+MOCK_LIST_STATUS=200
+MOCK_LIST_BODY='{}'
+assert_absent "releases list HTTP 200 with a top-level JSON object is refused as indeterminate" fail "not a JSON array"
+
+MOCK_LIST_BODY='null'
+assert_absent "releases list HTTP 200 with a top-level JSON null is refused as indeterminate" fail "not a JSON array"
+
+MOCK_LIST_BODY='"hello"'
+assert_absent "releases list HTTP 200 with a top-level JSON string is refused as indeterminate" fail "not a JSON array"
+
+MOCK_LIST_BODY='123'
+assert_absent "releases list HTTP 200 with a top-level JSON number is refused as indeterminate" fail "not a JSON array"
+
+MOCK_LIST_BODY='true'
+assert_absent "releases list HTTP 200 with a top-level JSON boolean is refused as indeterminate" fail "not a JSON array"
+
+# A matching-tag entry with malformed/missing required fields must not be
+# silently transformed into a partially-null match record and accepted.
+MOCK_LIST_BODY='[{"tag_name": "v9.9.9", "draft": true}]'
+assert_absent "a matching-tag entry with a missing id is refused, not silently accepted" fail "malformed identity fields"
+
+MOCK_LIST_BODY='[{"id": "123", "tag_name": "v9.9.9", "draft": true}]'
+assert_absent "a matching-tag entry with a non-numeric id is refused, not silently accepted" fail "malformed identity fields"
+
+MOCK_LIST_BODY='[{"id": 123, "tag_name": "v9.9.9"}]'
+assert_absent "a matching-tag entry with a missing draft field is refused, not silently accepted" fail "malformed identity fields"
+
 unset -f curl
 
 echo
