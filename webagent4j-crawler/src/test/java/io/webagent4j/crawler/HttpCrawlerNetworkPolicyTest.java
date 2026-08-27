@@ -19,6 +19,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -190,6 +191,91 @@ class HttpCrawlerNetworkPolicyTest {
 
         assertThat(result.pages()).hasSize(1);
         assertThat(fetcher.fetchCount(seed)).isEqualTo(2);
+    }
+
+    @Test
+    void retryDenialStopsRetryingAndReportsHonestAttemptCount() {
+        URI seed = URI.create("https://allowed.example.test/");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(
+                seed,
+                new HttpFetchResult(seed, 503, Map.of(), new byte[0], "text/html", Duration.ZERO));
+        RecordingSleeper sleeper = new RecordingSleeper();
+        AtomicInteger evaluationCount = new AtomicInteger();
+        INetworkPolicy allowFirstThenDenyRetries =
+                context ->
+                        evaluationCount.incrementAndGet() <= 1
+                                ? PolicyDecision.allow("test.network.allowed")
+                                : PolicyDecision.deny("test.network.denied.retry");
+        HttpCrawler crawler =
+                new HttpCrawler(fetcher, new FakeLinkExtractor(), new HostScopePolicy(), sleeper)
+                        .withNetworkPolicy(allowFirstThenDenyRetries);
+
+        CrawlResult result = crawler.crawl(CrawlRequest.builder().seed(seed).maxPages(5).build());
+
+        // Exactly one real HTTP request was ever sent - the second (retry) attempt was denied
+        // before fetcher.fetch was ever called for it.
+        assertThat(fetcher.fetchCount(seed)).isEqualTo(1);
+        // Two policy evaluations: the initial pre-fetch check (allowed) and the fresh re-check
+        // immediately before the retry (denied).
+        assertThat(evaluationCount.get()).isEqualTo(2);
+        // The backoff sleep before the retry attempt already happened; no further sleep followed
+        // the denial, since no further retry was ever attempted.
+        assertThat(sleeper.sleeps).hasSize(1);
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.NETWORK_POLICY_DENIED);
+        // Honestly reflects the one real request already sent, not 0.
+        assertThat(failure.attempts()).isEqualTo(1);
+        // The fetch-identity budget remains spent: a real request already occurred for this URL.
+        assertThat(result.statistics().fetchedUrls()).isEqualTo(1);
+    }
+
+    @Test
+    void retryPolicyEvaluationFailureStopsRetryingWithHonestAttemptCount() {
+        URI seed = URI.create("https://allowed.example.test/");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(
+                seed,
+                new HttpFetchResult(seed, 503, Map.of(), new byte[0], "text/html", Duration.ZERO));
+        AtomicInteger evaluationCount = new AtomicInteger();
+        INetworkPolicy allowFirstThenThrowOnRetry =
+                context -> {
+                    if (evaluationCount.incrementAndGet() <= 1) {
+                        return PolicyDecision.allow("test.network.allowed");
+                    }
+                    throw new RuntimeException("policy backend unavailable for retry");
+                };
+        HttpCrawler crawler = crawler(fetcher).withNetworkPolicy(allowFirstThenThrowOnRetry);
+
+        CrawlResult result = crawler.crawl(CrawlRequest.builder().seed(seed).maxPages(5).build());
+
+        assertThat(fetcher.fetchCount(seed)).isEqualTo(1);
+        assertThat(evaluationCount.get()).isEqualTo(2);
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED);
+        assertThat(failure.attempts()).isEqualTo(1);
+    }
+
+    @Test
+    void policyDenialMessageNeverLeaksRawExceptionText() {
+        URI seed = URI.create("https://boom.example.test/");
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        String sentinel = "TOP_SECRET_POLICY_VALUE_918273";
+        INetworkPolicy throwingWithSentinel =
+                context -> {
+                    throw new RuntimeException(sentinel);
+                };
+        HttpCrawler crawler = crawler(fetcher).withNetworkPolicy(throwingWithSentinel);
+
+        CrawlResult result = crawler.crawl(CrawlRequest.builder().seed(seed).maxPages(5).build());
+
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED);
+        assertThat(failure.message()).doesNotContain(sentinel);
+        assertThat(failure.toString()).doesNotContain(sentinel);
     }
 
     @Test

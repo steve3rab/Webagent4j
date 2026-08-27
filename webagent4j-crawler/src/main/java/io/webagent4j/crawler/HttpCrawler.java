@@ -693,12 +693,34 @@ public final class HttpCrawler implements ICrawler {
          * Retries one hop's fetch per {@link CrawlRequest#retryPolicy()}, sleeping via {@link
          * IWaitSleeper}. The returned {@link RetryOutcome} always carries the real attempt count,
          * whether it ultimately succeeded or exhausted its retry budget.
+         *
+         * <p>The caller has already authorized {@code url} once, for the first attempt, before ever
+         * calling this method - so attempt 1 below fetches immediately. Every subsequent retry
+         * attempt is a genuinely new real HTTP request, so each one gets its own fresh network
+         * -policy evaluation immediately before it is sent, never reusing the first attempt's
+         * decision: a policy that resolves hostnames may legitimately see a different answer by the
+         * time a retry fires after backoff. A denial on a retry stops retrying immediately - no
+         * further HTTP request and no further retry sleep - and the returned {@code attempts}
+         * honestly reflects only the real requests already sent before the denial, never the
+         * request that was prevented.
          */
         private RetryOutcome fetchWithRetries(URI url) {
             RetryPolicy policy = request.retryPolicy();
             int attempt = 1;
             long bytesRead = 0;
             while (true) {
+                if (attempt > 1) {
+                    Optional<PolicyDenial> retryDenial = checkNetworkPolicy(url);
+                    if (retryDenial.isPresent()) {
+                        return new RetryOutcome(
+                                Optional.empty(),
+                                bytesRead,
+                                retryDenial.get().type(),
+                                retryDenial.get().message(),
+                                Optional.empty(),
+                                attempt - 1);
+                    }
+                }
                 try {
                     HttpFetchResult result = fetcher.fetch(buildFetchRequest(url));
                     bytesRead += result.responseBytes();
@@ -775,8 +797,7 @@ public final class HttpCrawler implements ICrawler {
                 return Optional.of(
                         new PolicyDenial(
                                 CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
-                                "URL could not be evaluated against the network policy: "
-                                        + malformed.getMessage()));
+                                "network destination could not be evaluated"));
             }
             PolicyDecision decision;
             try {
@@ -785,8 +806,7 @@ public final class HttpCrawler implements ICrawler {
                 return Optional.of(
                         new PolicyDenial(
                                 CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
-                                "network policy evaluation failed: "
-                                        + evaluationFailure.getMessage()));
+                                "network policy evaluation failed"));
             }
             if (decision == null) {
                 return Optional.of(

@@ -28,11 +28,16 @@ import java.util.Optional;
  *     explicit diagnostics but excluded from {@link #toString()} because backend messages may
  *     contain sensitive external data
  * @param attempts how many real HTTP requests were made for {@code failedUrl}, including the final
- *     one. {@code 0} only for a {@link CrawlFailureType#CRAWL_LIMIT_REACHED}, {@link
- *     CrawlFailureType#ALREADY_FETCHED}, {@link CrawlFailureType#NETWORK_POLICY_DENIED}, or {@link
- *     CrawlFailureType#NETWORK_POLICY_EVALUATION_FAILED} outcome, every one of which is decided
- *     before any network call - every other {@link CrawlFailureType} always sent at least one real
- *     request, so {@code attempts >= 1}
+ *     one. {@code 0} for a {@link CrawlFailureType#CRAWL_LIMIT_REACHED} or {@link
+ *     CrawlFailureType#ALREADY_FETCHED} outcome, both of which are always decided before any
+ *     network call; every other {@link CrawlFailureType} always sent at least one real request, so
+ *     {@code attempts >= 1} - <strong>except</strong> {@link
+ *     CrawlFailureType#NETWORK_POLICY_DENIED} and {@link
+ *     CrawlFailureType#NETWORK_POLICY_EVALUATION_FAILED}, which can carry either: {@code 0} when
+ *     the network policy denied the very first attempt (no request for this URL was ever sent), or
+ *     a positive count when one or more retries of an already-permitted URL succeeded in being sent
+ *     before a later retry was freshly re-evaluated and denied - every retry is re-authorized
+ *     immediately before it is sent, so a denial can happen after real attempts already occurred
  * @param discoveredFrom the page this URL was discovered on, absent only for a seed
  * @param redirectChain every redirect hop actually followed before reaching {@code failedUrl};
  *     empty when the failure occurred on the first request
@@ -65,19 +70,27 @@ public record CrawlFailure(
         if (attempts < 0) {
             throw new IllegalArgumentException("attempts cannot be negative");
         }
-        boolean neverSendsARequest =
+        // CRAWL_LIMIT_REACHED and ALREADY_FETCHED are decided by the claim gate before
+        // fetchWithRetries is ever entered, so they can never carry a positive attempt count.
+        // NETWORK_POLICY_DENIED and NETWORK_POLICY_EVALUATION_FAILED are different: every retry is
+        // freshly re-authorized immediately before it is sent, so a network-policy failure can
+        // happen either before the first attempt (attempts == 0) or after one or more real retries
+        // already succeeded in being sent (attempts > 0) - both are valid for those two types.
+        boolean alwaysZeroAttempts =
                 type == CrawlFailureType.CRAWL_LIMIT_REACHED
-                        || type == CrawlFailureType.ALREADY_FETCHED
+                        || type == CrawlFailureType.ALREADY_FETCHED;
+        boolean mayHaveZeroAttempts =
+                alwaysZeroAttempts
                         || type == CrawlFailureType.NETWORK_POLICY_DENIED
                         || type == CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED;
-        if (attempts == 0 && !neverSendsARequest) {
+        if (attempts == 0 && !mayHaveZeroAttempts) {
             throw new IllegalArgumentException(
                     "attempts == 0 is only valid for CRAWL_LIMIT_REACHED, ALREADY_FETCHED,"
                             + " NETWORK_POLICY_DENIED, or NETWORK_POLICY_EVALUATION_FAILED (no"
                             + " real HTTP request was ever sent for those), not "
                             + type);
         }
-        if (attempts > 0 && neverSendsARequest) {
+        if (attempts > 0 && alwaysZeroAttempts) {
             throw new IllegalArgumentException(
                     type
                             + " never sends a real HTTP request, so attempts must be 0, got "

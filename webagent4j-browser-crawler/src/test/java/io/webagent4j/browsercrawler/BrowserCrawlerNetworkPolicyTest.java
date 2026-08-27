@@ -102,6 +102,32 @@ class BrowserCrawlerNetworkPolicyTest {
     }
 
     @Test
+    void policyEvaluationFailureMessageNeverLeaksRawExceptionText() {
+        IPage page = scriptedPage("https://boom.example.test/", "Boom");
+        IBrowser browser = browserReturning(page);
+        String sentinel = "TOP_SECRET_POLICY_VALUE_918273";
+        INetworkPolicy throwingWithSentinel =
+                context -> {
+                    throw new RuntimeException(sentinel);
+                };
+        BrowserCrawler crawler = new BrowserCrawler().withNetworkPolicy(throwingWithSentinel);
+
+        BrowserCrawlResult result =
+                crawler.crawl(
+                        BrowserCrawlRequest.builder(browser)
+                                .seed("https://boom.example.test/")
+                                .build());
+
+        assertThat(result.failures()).hasSize(1);
+        BrowserCrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type())
+                .isEqualTo(BrowserCrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED);
+        assertThat(failure.message()).doesNotContain(sentinel);
+        assertThat(failure.toString()).doesNotContain(sentinel);
+        verify(page, never()).navigate(anyString(), any(Duration.class));
+    }
+
+    @Test
     void unconfiguredNetworkPolicyLeavesExistingBehaviorUnchanged() {
         IPage page = scriptedPage("https://plain.example.test/", "Plain");
         IBrowser browser = browserReturning(page);

@@ -462,8 +462,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
                 return Optional.of(
                         new NetworkViolation(
                                 evaluationFailureType,
-                                "URL could not be evaluated against the network policy: "
-                                        + malformed.getMessage()));
+                                "network destination could not be evaluated"));
             }
             PolicyDecision decision;
             try {
@@ -471,9 +470,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
             } catch (RuntimeException evaluationFailure) {
                 return Optional.of(
                         new NetworkViolation(
-                                evaluationFailureType,
-                                "network policy evaluation failed: "
-                                        + evaluationFailure.getMessage()));
+                                evaluationFailureType, "network policy evaluation failed"));
             }
             if (decision == null) {
                 return Optional.of(
