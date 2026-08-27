@@ -81,7 +81,7 @@ loadScripts(document, 'script');</script>
  the definition against current state rather than returning a cached node.
 
  <p>The resolution engine that turns a <code>LocatorDefinition</code> into live elements lives in
- <code>webagent4j-locator</code> (<a href="../ILocatorEngine.html" title="interface in io.webagent4j.locator"><code>ILocatorEngine</code></a>, not in this module);
+ <code>webagent4j-locator</code> (<code>io.webagent4j.locator.ILocatorEngine</code>, not in this module);
  this module exists so <code>IElement#find()</code> and <code>IPage#find()</code> can be declared without a
  dependency cycle. See <code>docs/locators.md</code> for the full resolution pipeline, ranking, and
  ambiguity contract.</div>
