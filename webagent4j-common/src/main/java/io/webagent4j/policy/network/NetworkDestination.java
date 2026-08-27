@@ -60,14 +60,7 @@ public record NetworkDestination(String scheme, String host, int port, boolean h
     }
 
     private static String canonicalizeHost(String rawHost) {
-        String withoutTrailingDot =
-                rawHost.endsWith(".") ? rawHost.substring(0, rawHost.length() - 1) : rawHost;
-        String lower = withoutTrailingDot.toLowerCase(Locale.ROOT);
-        try {
-            return IDN.toASCII(lower).toLowerCase(Locale.ROOT);
-        } catch (IllegalArgumentException notConvertible) {
-            return lower;
-        }
+        return HostCanonicalizer.canonicalizeLenient(rawHost);
     }
 
     private static int resolvePort(int explicitPort, String scheme) {

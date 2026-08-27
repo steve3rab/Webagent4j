@@ -213,6 +213,55 @@ class NetworkPoliciesTest {
     }
 
     @Test
+    void allowHostCanonicalizesUppercaseToMatchALowercaseDestination() {
+        INetworkPolicy policy = NetworkPolicies.builder().allowHost("EXAMPLE.com").build();
+        assertThat(policy.evaluate(context("https://example.com/")).isAllow()).isTrue();
+    }
+
+    @Test
+    void allowHostCanonicalizesATrailingDotToMatchADestinationWithoutOne() {
+        INetworkPolicy policy = NetworkPolicies.builder().allowHost("example.com.").build();
+        assertThat(policy.evaluate(context("https://example.com/")).isAllow()).isTrue();
+    }
+
+    @Test
+    void allowHostCanonicalizesAUnicodeIdnHostToMatchAPunycodeDestination() {
+        INetworkPolicy policy = NetworkPolicies.builder().allowHost("münchen.example").build();
+        assertThat(policy.evaluate(context("https://xn--mnchen-3ya.example/")).isAllow()).isTrue();
+    }
+
+    @Test
+    void allowHostAcceptsAnAlreadyPunycodeEncodedHost() {
+        INetworkPolicy policy =
+                NetworkPolicies.builder().allowHost("xn--mnchen-3ya.example").build();
+        assertThat(policy.evaluate(context("https://xn--mnchen-3ya.example/")).isAllow()).isTrue();
+    }
+
+    @Test
+    void allowHostSubdomainBoundaryHoldsUnderCanonicalization() {
+        INetworkPolicy policy =
+                NetworkPolicies.builder().allowHost("EXAMPLE.com.").includeSubdomains(true).build();
+        assertThat(policy.evaluate(context("https://sub.example.com/")).isAllow()).isTrue();
+        assertThat(policy.evaluate(context("https://deep.sub.example.com/")).isAllow()).isTrue();
+        assertThat(policy.evaluate(context("https://example.com/")).isAllow()).isTrue();
+        assertThat(policy.evaluate(context("https://evil-example.com/")).isDeny()).isTrue();
+    }
+
+    @Test
+    void allowHostRejectsAMalformedConfiguredHostAtConfigurationTime() {
+        assertThatThrownBy(() -> NetworkPolicies.builder().allowHost("exa mple.com"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> NetworkPolicies.builder().allowHost("example.com/path"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> NetworkPolicies.builder().allowHost("user@example.com"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> NetworkPolicies.builder().allowHost("example.com:8080"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> NetworkPolicies.builder().allowHost("."))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void builderRejectsOutOfRangePorts() {
         assertThatThrownBy(() -> NetworkPolicies.builder().allowPort(0))
                 .isInstanceOf(IllegalArgumentException.class);

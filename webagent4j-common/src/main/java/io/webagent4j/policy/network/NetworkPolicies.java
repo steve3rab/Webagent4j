@@ -65,9 +65,18 @@ public final class NetworkPolicies {
             return this;
         }
 
-        /** Restricts requests to the given host, case-insensitively. */
+        /**
+         * Restricts requests to the given host, canonicalized exactly as {@link
+         * NetworkDestination#of(java.net.URI)} canonicalizes a real request's destination host
+         * (lowercase, trailing dot removed, IDN/punycode-normalized) so a configured host and a
+         * request's actual destination are always compared on identical terms.
+         *
+         * @throws IllegalArgumentException if {@code host} is blank or is not a syntactically valid
+         *     hostname
+         */
         public Builder allowHost(String host) {
-            allowHosts.add(requireNonBlankLower(host, "host"));
+            Objects.requireNonNull(host, "host");
+            allowHosts.add(HostCanonicalizer.canonicalizeStrict(host));
             return this;
         }
 
