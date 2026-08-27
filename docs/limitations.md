@@ -51,6 +51,25 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 - Navigation/stability share a bounded timeout, but post-stability `url()`, observation, and title capture are separate calls without a common backend-native deadline.
 - A browser-initiated download is not a general crawl-document type.
 
+## Governed execution
+
+- `IActionPolicy`/`INetworkPolicy` are opt-in; nothing is governed unless a caller explicitly
+  configures one. Direct `IPage`/`IBrowser` calls made outside a governed action or crawl bypass
+  both entirely.
+- `INetworkPolicy` is not a general SSRF firewall or a defense against DNS rebinding between the
+  policy check and the actual connection - it checks the addresses a hostname resolves to at
+  evaluation time, nothing more.
+- A governed `NAVIGATE` action or `BrowserCrawler` visit can only detect, never prevent, a
+  browser-internal redirect landing somewhere a network policy would have denied - unlike
+  `HttpCrawler`, which controls its own redirect loop and can prevent every hop.
+- A configured policy is ordinary, trusted, unsandboxed Java code - the same trust posture as a
+  plugin. WebAgent4J cannot prevent or undo a side effect a malicious or buggy policy performs
+  itself during evaluation.
+- `networkPolicy(...)` only applies to a `NAVIGATE` action; no other action type has a network
+  destination knowable before its backend call.
+- No policy persistence, serialization, remote/LLM-assisted authorization, or governance DSL is
+  provided.
+
 ## Workflows
 
 - Sequential and fail-fast only.

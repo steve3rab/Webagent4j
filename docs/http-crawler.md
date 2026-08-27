@@ -55,6 +55,14 @@ Redirect handling is bounded per attempt. Each redirect target is normalized, sc
 
 A redirect does not silently escape scope or page budget.
 
+## Network-destination policy
+
+`HttpCrawler#withNetworkPolicy(policy)` returns a crawler that checks a configured `INetworkPolicy`
+against every real HTTP request - the crawl's own seed/discovered URL and every redirect hop alike -
+strictly before it is sent. A denied URL is never fetched, never retried, and never counts against
+`maxPages()`'s fetch-identity budget. Not configuring a policy leaves this crawler's behavior
+unchanged. See [Governed execution](governed-execution.md).
+
 ## Retry
 
 Retries are explicit HTTP fetch policy, not a general framework side-effect retry. Retryable transport failures/statuses follow `RetryPolicy` and configured status codes. Backoff arithmetic is finite/saturating; interruption is not swallowed.
