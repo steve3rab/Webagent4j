@@ -21,10 +21,10 @@ Passing on one operating system is not evidence that a browser backend is fully 
 | Engine | Implemented | Deterministic robustness gate | 1.0 support tier |
 | --- | ---: | ---: | --- |
 | Chromium | Yes | Yes | Tier 1: release-gated |
-| Firefox | Yes | No full adversarial corpus | Tier 2: implemented in the Playwright adapter; not part of the primary 1.0 consumer launch path or release qualification |
-| WebKit | Yes | No full adversarial corpus | Tier 2: implemented in the Playwright adapter; not part of the primary 1.0 consumer launch path or release qualification |
+| Firefox | Yes | Nightly and release qualification infrastructure exists; not yet observed passing the full corpus on an exact head | Tier 2: implemented in the Playwright adapter; not yet promoted to release qualification |
+| WebKit | Yes | Nightly and release qualification infrastructure exists; not yet observed passing the full corpus on an exact head | Tier 2: implemented in the Playwright adapter; not yet promoted to release qualification |
 
-The Playwright adapter can launch all three engines, but the deterministic wrong-target/ambiguity corpus currently gates Chromium. Firefox or WebKit must not be described as equivalently qualified until the same robustness expectations run reliably for them.
+The Playwright adapter can launch all three engines, but the deterministic wrong-target/ambiguity corpus has so far only gated Chromium. The nightly platform matrix and the release verification gate now run the identical adversarial corpus (element and frame scenarios) against Firefox and WebKit through the same public browser path, but this is qualification *infrastructure*, not qualification evidence: Firefox or WebKit must not be described as equivalently qualified until that infrastructure has actually observed the full corpus pass, with zero wrong targets, on the same intended code state.
 
 ## Functional surfaces
 

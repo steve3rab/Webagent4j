@@ -14,7 +14,7 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 ## Browser and frame boundaries
 
 - Frame criteria are intentionally limited to supported `id`, `name`, `title`, and URL matching modes; there is no arbitrary frame CSS/XPath/fuzzy DSL.
-- Browser-engine implementation is broader than full robustness qualification. Chromium is the current release-gated engine; Firefox/WebKit do not yet run the complete adversarial corpus. See [support-matrix.md](support-matrix.md).
+- Browser-engine implementation is broader than full robustness qualification. Chromium is the current release-gated engine; Firefox and WebKit now run the complete adversarial corpus in nightly and release qualification but are not yet promoted to release-gated status pending observed exact-head evidence. See [support-matrix.md](support-matrix.md).
 - Live browser objects are not generally thread-safe.
 
 ## Observation
