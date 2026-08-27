@@ -1,5 +1,11 @@
 name: Nightly platforms
 
+# The active development line is develop (1.1.0-SNAPSHOT), not whichever
+# ref this workflow file happens to be read from for a scheduled run, so
+# every job here checks out develop explicitly. workflow_dispatch still
+# works: it always runs the workflow definition from the ref it is
+# dispatched against, and this checkout override applies the same way in
+# both cases.
 on:
   schedule:
     - cron: "30 2 * * *"
@@ -22,6 +28,8 @@ jobs:
       options: --user 1001
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: develop
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -43,6 +51,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: develop
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -61,6 +71,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: develop
       - name: Verify headless Chromium in Docker
         run: docker build --target test --tag webagent4j-test .
 
@@ -73,6 +85,8 @@ jobs:
       options: --user 1001
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: develop
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -98,5 +112,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: develop
       - name: Verify robustness target in Docker
         run: docker build --target robustness --tag webagent4j-robustness .
