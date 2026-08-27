@@ -109,6 +109,25 @@ jobs:
       - name: Verify every workflow action is pinned to an immutable commit SHA
         run: bash .github/scripts/check-pinned-actions.sh
 
+  shell-regression-tests:
+    name: Shell regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # audit-cli-jar.test.sh is deliberately not run here: it is already
+      # executed inside the "Java 21 / Linux" job above, right after
+      # build-distribution.sh produces the real shaded CLI JAR its own
+      # real-distribution case audits directly. This job discovers and
+      # runs every *other* pure shell regression suite under
+      # .github/scripts/tests/, so a future suite added there is
+      # automatically exercised by CI without any workflow change.
+      - name: Run shell regression suites
+        run: bash .github/scripts/run-shell-regression-tests.sh
+
   docker:
     name: Docker / non-root smoke
     runs-on: ubuntu-latest
