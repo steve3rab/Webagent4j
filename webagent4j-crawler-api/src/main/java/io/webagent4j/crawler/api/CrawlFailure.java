@@ -28,9 +28,11 @@ import java.util.Optional;
  *     explicit diagnostics but excluded from {@link #toString()} because backend messages may
  *     contain sensitive external data
  * @param attempts how many real HTTP requests were made for {@code failedUrl}, including the final
- *     one. {@code 0} only for a {@link CrawlFailureType#CRAWL_LIMIT_REACHED} or {@link
- *     CrawlFailureType#ALREADY_FETCHED} outcome, decided before any network call - every other
- *     {@link CrawlFailureType} always sent at least one real request, so {@code attempts >= 1}
+ *     one. {@code 0} only for a {@link CrawlFailureType#CRAWL_LIMIT_REACHED}, {@link
+ *     CrawlFailureType#ALREADY_FETCHED}, {@link CrawlFailureType#NETWORK_POLICY_DENIED}, or {@link
+ *     CrawlFailureType#NETWORK_POLICY_EVALUATION_FAILED} outcome, every one of which is decided
+ *     before any network call - every other {@link CrawlFailureType} always sent at least one real
+ *     request, so {@code attempts >= 1}
  * @param discoveredFrom the page this URL was discovered on, absent only for a seed
  * @param redirectChain every redirect hop actually followed before reaching {@code failedUrl};
  *     empty when the failure occurred on the first request
@@ -65,10 +67,13 @@ public record CrawlFailure(
         }
         boolean neverSendsARequest =
                 type == CrawlFailureType.CRAWL_LIMIT_REACHED
-                        || type == CrawlFailureType.ALREADY_FETCHED;
+                        || type == CrawlFailureType.ALREADY_FETCHED
+                        || type == CrawlFailureType.NETWORK_POLICY_DENIED
+                        || type == CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED;
         if (attempts == 0 && !neverSendsARequest) {
             throw new IllegalArgumentException(
-                    "attempts == 0 is only valid for CRAWL_LIMIT_REACHED or ALREADY_FETCHED (no"
+                    "attempts == 0 is only valid for CRAWL_LIMIT_REACHED, ALREADY_FETCHED,"
+                            + " NETWORK_POLICY_DENIED, or NETWORK_POLICY_EVALUATION_FAILED (no"
                             + " real HTTP request was ever sent for those), not "
                             + type);
         }

@@ -61,5 +61,20 @@ public enum CrawlFailureType {
     ALREADY_FETCHED,
 
     /** An opaque, unexpected fetcher failure - never silently reclassified as another type. */
-    BACKEND_FAILURE
+    BACKEND_FAILURE,
+
+    /**
+     * A configured network policy evaluated to {@code DENY} for this URL (the task's own URL or a
+     * redirect hop) - checked, and this failure recorded, strictly before any HTTP request for it
+     * was ever sent. Never retried, and the URL is never counted against the crawl's fetch-identity
+     * budget.
+     */
+    NETWORK_POLICY_DENIED,
+
+    /**
+     * A configured network policy failed to evaluate for this URL - threw, or returned a malformed
+     * {@code null} decision - before any HTTP request for it was ever sent. Treated identically to
+     * {@link #NETWORK_POLICY_DENIED} for the purpose of whether the request proceeds: fail closed.
+     */
+    NETWORK_POLICY_EVALUATION_FAILED
 }

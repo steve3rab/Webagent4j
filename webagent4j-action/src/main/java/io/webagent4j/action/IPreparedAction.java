@@ -3,6 +3,7 @@ package io.webagent4j.action;
 import io.webagent4j.action.policy.IActionPolicy;
 import io.webagent4j.common.RetryPolicy;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.policy.network.INetworkPolicy;
 import io.webagent4j.verification.IVerification;
 import java.time.Duration;
 import java.util.function.Predicate;
@@ -86,5 +87,28 @@ public interface IPreparedAction<R> {
     default IPreparedAction<R> policy(IActionPolicy policy) {
         throw new UnsupportedOperationException(
                 "policy(...) is not supported by this IPreparedAction implementation");
+    }
+
+    /**
+     * Configures an {@link INetworkPolicy} that must {@code ALLOW} this action's network
+     * destination - checked before the backend call, and, for a {@code NAVIGATE} action, checked
+     * again after navigation against the final URL, since a browser's own internal redirects cannot
+     * be intercepted mid-flight. Only {@link ActionType#NAVIGATE} has a network destination known
+     * before its backend call is made; configuring this on any other action type is rejected
+     * immediately rather than silently ignored, since the framework cannot honestly enforce a
+     * network policy it cannot actually evaluate before that action's backend call.
+     *
+     * <p>The default implementation always throws {@link UnsupportedOperationException} for the
+     * same reason {@link #policy(IActionPolicy)}'s does.
+     *
+     * @throws NullPointerException if {@code networkPolicy} is {@code null}
+     * @throws IllegalStateException if a network policy is already configured on this prepared
+     *     action
+     * @throws UnsupportedOperationException if this action is not a {@code NAVIGATE} action (thrown
+     *     by an enforcing implementation; the inherited default throws it unconditionally)
+     */
+    default IPreparedAction<R> networkPolicy(INetworkPolicy networkPolicy) {
+        throw new UnsupportedOperationException(
+                "networkPolicy(...) is not supported by this IPreparedAction implementation");
     }
 }

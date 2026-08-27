@@ -25,6 +25,11 @@ import io.webagent4j.locator.LocatorNotFoundException;
 import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationDiff;
 import io.webagent4j.policy.PolicyDecision;
+import io.webagent4j.policy.network.INetworkPolicy;
+import io.webagent4j.policy.network.NetworkCheckPhase;
+import io.webagent4j.policy.network.NetworkDestination;
+import io.webagent4j.policy.network.NetworkPolicyContext;
+import io.webagent4j.policy.network.NetworkRequestKind;
 import io.webagent4j.verification.IVerification;
 import io.webagent4j.verification.VerificationEngine;
 import io.webagent4j.verification.VerificationInterruptedException;
@@ -32,6 +37,7 @@ import io.webagent4j.verification.VerificationResult;
 import io.webagent4j.verification.VerificationType;
 import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.WaitBudget;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -241,6 +247,35 @@ final class ActionExecutor {
             }
         }
 
+        // Network-destination governance is independent of action authorization above: both
+        // gates must pass. Only NAVIGATE has a network destination knowable before its backend
+        // call, so this only ever runs for that action type - see
+        // IPreparedAction#networkPolicy's rejection of every other action type at configuration
+        // time.
+        if (command.type() == io.webagent4j.action.ActionType.NAVIGATE
+                && config.networkPolicy().isPresent()) {
+            ActionResult<R> networkDenied =
+                    authorizeNetworkDestination(
+                            context,
+                            command,
+                            config,
+                            actionId,
+                            startedNanos,
+                            events,
+                            resolutionDuration,
+                            preconditionDuration,
+                            Duration.ZERO,
+                            Duration.ZERO,
+                            preconditions,
+                            before,
+                            target,
+                            command.navigationUrl().orElseThrow(),
+                            NetworkCheckPhase.PRE_REQUEST);
+            if (networkDenied != null) {
+                return networkDenied;
+            }
+        }
+
         if (config.dryRun()) {
             // A dry-run never invokes the backend, so it never emits BACKEND_ACTION_STARTED or
             // BACKEND_ACTION_COMPLETED, and it never performs stabilization or postcondition
@@ -393,6 +428,35 @@ final class ActionExecutor {
                         "executed-once",
                         targetDescription,
                         startedNanos));
+
+        // Post-navigation network-destination check: only reached for a NAVIGATE action after the
+        // browser genuinely navigated, so a DENY here is a POLICY_VIOLATION reported with
+        // ActionExecutionMode.REAL - never NOT_EXECUTED, since the navigation already happened and
+        // cannot be un-navigated. This exists only because a browser's own internal redirect
+        // handling cannot be intercepted mid-flight, unlike HttpCrawler's per-hop check.
+        if (command.type() == io.webagent4j.action.ActionType.NAVIGATE
+                && config.networkPolicy().isPresent()) {
+            ActionResult<R> networkViolation =
+                    authorizeNetworkDestination(
+                            context,
+                            command,
+                            config,
+                            actionId,
+                            startedNanos,
+                            events,
+                            resolutionDuration,
+                            preconditionDuration,
+                            executionDuration,
+                            Duration.ZERO,
+                            preconditions,
+                            before,
+                            target,
+                            context.url(),
+                            NetworkCheckPhase.POST_REQUEST);
+            if (networkViolation != null) {
+                return networkViolation;
+            }
+        }
 
         long stabilizationStartedNanos = clock.nanoTime();
         events.add(
@@ -743,6 +807,153 @@ final class ActionExecutor {
                     ActionExecutionMode.NOT_EXECUTED,
                     ActionStatus.EXECUTION_FAILED,
                     "Action was denied by policy: " + decision.reason().code(),
+                    null);
+        }
+        return null;
+    }
+
+    /**
+     * Evaluates {@code config.networkPolicy()} for one {@code NAVIGATE} action's destination and
+     * returns a terminal {@link ActionResult} if it must be treated as unauthorized, or {@code
+     * null} if the caller may proceed. The outcome shape differs by {@code phase}: at {@link
+     * NetworkCheckPhase#PRE_REQUEST} a deny or evaluation failure fails closed with {@link
+     * ActionExecutionMode#NOT_EXECUTED} (the backend has not been called yet); at {@link
+     * NetworkCheckPhase#POST_REQUEST} every failure is reported as {@link
+     * ActionFailureType#POLICY_VIOLATION} with {@link ActionExecutionMode#REAL} - the navigation
+     * already happened by the time this phase runs, so it is never reported as not executed, even
+     * when the policy itself failed to evaluate.
+     */
+    @SuppressWarnings("checkstyle:ParameterNumber")
+    private <R> ActionResult<R> authorizeNetworkDestination(
+            IActionContext context,
+            ActionCommand<R> command,
+            ActionExecutionConfig config,
+            ActionId actionId,
+            long startedNanos,
+            List<ActionEvent> events,
+            Duration resolutionDuration,
+            Duration preconditionDuration,
+            Duration executionDuration,
+            Duration verificationDuration,
+            List<VerificationResult> preconditions,
+            Observation before,
+            IElement target,
+            String requestedUrl,
+            NetworkCheckPhase phase) {
+        INetworkPolicy policy = config.networkPolicy().orElseThrow();
+        boolean postRequest = phase == NetworkCheckPhase.POST_REQUEST;
+        ActionExecutionMode modeOnFailure =
+                postRequest ? ActionExecutionMode.REAL : ActionExecutionMode.NOT_EXECUTED;
+        ActionFailureType evaluationFailureType =
+                postRequest
+                        ? ActionFailureType.POLICY_VIOLATION
+                        : ActionFailureType.POLICY_EVALUATION_FAILED;
+        ActionFailureType denyFailureType =
+                postRequest ? ActionFailureType.POLICY_VIOLATION : ActionFailureType.POLICY_DENIED;
+
+        NetworkPolicyContext networkContext;
+        try {
+            NetworkDestination destination = NetworkDestination.of(URI.create(requestedUrl));
+            networkContext =
+                    new NetworkPolicyContext(
+                            NetworkRequestKind.BROWSER_NAVIGATION, destination, phase);
+        } catch (RuntimeException malformed) {
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    executionDuration,
+                    verificationDuration,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    evaluationFailureType,
+                    modeOnFailure,
+                    ActionStatus.EXECUTION_FAILED,
+                    "Navigation URL could not be evaluated against the network policy",
+                    malformed);
+        }
+
+        PolicyDecision decision;
+        try {
+            decision = policy.evaluate(networkContext);
+        } catch (RuntimeException evaluationFailure) {
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    executionDuration,
+                    verificationDuration,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    evaluationFailureType,
+                    modeOnFailure,
+                    ActionStatus.EXECUTION_FAILED,
+                    "Network policy evaluation failed",
+                    evaluationFailure);
+        }
+        if (decision == null) {
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    executionDuration,
+                    verificationDuration,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    evaluationFailureType,
+                    modeOnFailure,
+                    ActionStatus.EXECUTION_FAILED,
+                    "Network policy returned no decision",
+                    null);
+        }
+        if (decision.isDeny()) {
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    executionDuration,
+                    verificationDuration,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    denyFailureType,
+                    modeOnFailure,
+                    ActionStatus.EXECUTION_FAILED,
+                    (postRequest
+                                    ? "Final navigated URL was denied by network policy: "
+                                    : "Navigation destination was denied by network policy: ")
+                            + decision.reason().code(),
                     null);
         }
         return null;

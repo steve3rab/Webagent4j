@@ -20,6 +20,12 @@ import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationOptions;
 import io.webagent4j.observation.ObservationStatistics;
 import io.webagent4j.observation.ObservationTruncation;
+import io.webagent4j.policy.PolicyDecision;
+import io.webagent4j.policy.network.INetworkPolicy;
+import io.webagent4j.policy.network.NetworkCheckPhase;
+import io.webagent4j.policy.network.NetworkDestination;
+import io.webagent4j.policy.network.NetworkPolicyContext;
+import io.webagent4j.policy.network.NetworkRequestKind;
 import io.webagent4j.wait.WaitBudget;
 import io.webagent4j.wait.WaitEngine;
 import java.net.URI;
@@ -27,6 +33,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -47,6 +54,7 @@ import java.util.Optional;
 public final class BrowserCrawler implements IBrowserCrawler {
 
     private final WaitEngine waitEngine;
+    private final Optional<INetworkPolicy> networkPolicy;
 
     /** Creates an engine using a real system clock and sleeper. */
     public BrowserCrawler() {
@@ -55,12 +63,31 @@ public final class BrowserCrawler implements IBrowserCrawler {
 
     /** Creates an engine using the given {@link WaitEngine} - primarily for deterministic tests. */
     public BrowserCrawler(WaitEngine waitEngine) {
+        this(waitEngine, Optional.empty());
+    }
+
+    private BrowserCrawler(WaitEngine waitEngine, Optional<INetworkPolicy> networkPolicy) {
         this.waitEngine = waitEngine;
+        this.networkPolicy = Objects.requireNonNull(networkPolicy, "networkPolicy");
+    }
+
+    /**
+     * Returns a new engine, otherwise identical to this one, that evaluates {@code policy} against
+     * every navigation this engine performs - before {@code IPage#navigate} is ever called ({@link
+     * BrowserCrawlFailureType#NETWORK_POLICY_DENIED} on deny/failure), and again after navigation
+     * against the final URL ({@link BrowserCrawlFailureType#NETWORK_POLICY_VIOLATION} on
+     * deny/failure) - since a browser's own internal redirects cannot be intercepted mid-flight.
+     * This engine instance is unaffected; {@code BrowserCrawler} is otherwise stateless and
+     * reusable, so the returned instance is independently reusable too.
+     */
+    public BrowserCrawler withNetworkPolicy(INetworkPolicy policy) {
+        return new BrowserCrawler(
+                waitEngine, Optional.of(Objects.requireNonNull(policy, "policy")));
     }
 
     @Override
     public BrowserCrawlResult crawl(BrowserCrawlRequest request) {
-        return new Session(request, waitEngine).run();
+        return new Session(request, waitEngine, networkPolicy).run();
     }
 
     /**
@@ -81,6 +108,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
 
         private final BrowserCrawlRequest request;
         private final WaitEngine waitEngine;
+        private final Optional<INetworkPolicy> networkPolicy;
         private final PageStabilityWaiter stabilityWaiter;
         private final IUrlNormalizer normalizer;
         private final ClaimGate claimGate;
@@ -100,9 +128,13 @@ public final class BrowserCrawler implements IBrowserCrawler {
         private boolean fatalFailureHit = false;
         private boolean stopRequested = false;
 
-        Session(BrowserCrawlRequest request, WaitEngine waitEngine) {
+        Session(
+                BrowserCrawlRequest request,
+                WaitEngine waitEngine,
+                Optional<INetworkPolicy> networkPolicy) {
             this.request = request;
             this.waitEngine = waitEngine;
+            this.networkPolicy = networkPolicy;
             this.stabilityWaiter = new PageStabilityWaiter();
             this.normalizer = new BrowserUrlNormalizer(request.queryParameterPolicy());
             this.claimGate = new ClaimGate(request.maxPages());
@@ -273,6 +305,14 @@ public final class BrowserCrawler implements IBrowserCrawler {
                         "cancelled before navigation began",
                         Optional.empty());
             }
+            Optional<NetworkViolation> preNavigationDenial =
+                    checkNetworkPolicy(task.url().toString(), NetworkCheckPhase.PRE_REQUEST);
+            if (preNavigationDenial.isPresent()) {
+                return new NavigationFailure(
+                        preNavigationDenial.get().type(),
+                        preNavigationDenial.get().message(),
+                        Optional.empty());
+            }
             IPage page = page();
             WaitBudget budget = WaitBudget.start(request.navigationTimeout(), waitEngine.clock());
             // budget.remaining() is computed from a live monotonic clock, so it is essentially
@@ -345,6 +385,19 @@ public final class BrowserCrawler implements IBrowserCrawler {
                             "final URL left scope: " + finalScope.reason(),
                             Optional.empty());
                 }
+                Optional<NetworkViolation> postNavigationViolation =
+                        checkNetworkPolicy(finalUrl.toString(), NetworkCheckPhase.POST_REQUEST);
+                if (postNavigationViolation.isPresent()) {
+                    // Navigation already genuinely happened - this is reported as a violation on
+                    // an otherwise-failed page (no observation, no link discovery), never as if
+                    // navigation had been prevented. See docs/governed-execution.md - a browser's
+                    // own internal redirects cannot be intercepted mid-flight, so this final-URL
+                    // check is the only place such a violation can ever be caught.
+                    return new NavigationFailure(
+                            postNavigationViolation.get().type(),
+                            postNavigationViolation.get().message(),
+                            Optional.empty());
+                }
                 Observation observation =
                         page.observe(ObservationOptions.builder().maxElements(2000).build());
                 if (observation.statistics().truncated()) {
@@ -370,6 +423,71 @@ public final class BrowserCrawler implements IBrowserCrawler {
                         e.getMessage(),
                         Optional.of(e));
             }
+        }
+
+        /**
+         * Evaluates this engine's configured network policy, if any, against {@code url} at the
+         * given {@code phase}. Returns {@link Optional#empty()} when there is no configured policy
+         * or it allows the request; a present {@link NetworkViolation} carries the exact {@link
+         * BrowserCrawlFailureType} and message the caller should record instead of proceeding.
+         *
+         * <p>At {@link NetworkCheckPhase#PRE_REQUEST} a deny is distinguished from an evaluation
+         * failure ({@link BrowserCrawlFailureType#NETWORK_POLICY_DENIED} vs. {@link
+         * BrowserCrawlFailureType#NETWORK_POLICY_EVALUATION_FAILED}) since neither has navigated
+         * yet; at {@link NetworkCheckPhase#POST_REQUEST} every failure collapses to {@link
+         * BrowserCrawlFailureType#NETWORK_POLICY_VIOLATION}, since navigation already genuinely
+         * happened by then regardless of why the check itself failed.
+         */
+        private Optional<NetworkViolation> checkNetworkPolicy(String url, NetworkCheckPhase phase) {
+            if (networkPolicy.isEmpty()) {
+                return Optional.empty();
+            }
+            boolean postRequest = phase == NetworkCheckPhase.POST_REQUEST;
+            BrowserCrawlFailureType evaluationFailureType =
+                    postRequest
+                            ? BrowserCrawlFailureType.NETWORK_POLICY_VIOLATION
+                            : BrowserCrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED;
+            BrowserCrawlFailureType denyFailureType =
+                    postRequest
+                            ? BrowserCrawlFailureType.NETWORK_POLICY_VIOLATION
+                            : BrowserCrawlFailureType.NETWORK_POLICY_DENIED;
+
+            NetworkPolicyContext policyContext;
+            try {
+                NetworkDestination destination = NetworkDestination.of(URI.create(url));
+                policyContext =
+                        new NetworkPolicyContext(
+                                NetworkRequestKind.BROWSER_NAVIGATION, destination, phase);
+            } catch (RuntimeException malformed) {
+                return Optional.of(
+                        new NetworkViolation(
+                                evaluationFailureType,
+                                "URL could not be evaluated against the network policy: "
+                                        + malformed.getMessage()));
+            }
+            PolicyDecision decision;
+            try {
+                decision = networkPolicy.get().evaluate(policyContext);
+            } catch (RuntimeException evaluationFailure) {
+                return Optional.of(
+                        new NetworkViolation(
+                                evaluationFailureType,
+                                "network policy evaluation failed: "
+                                        + evaluationFailure.getMessage()));
+            }
+            if (decision == null) {
+                return Optional.of(
+                        new NetworkViolation(
+                                evaluationFailureType, "network policy returned no decision"));
+            }
+            if (decision.isDeny()) {
+                return Optional.of(
+                        new NetworkViolation(
+                                denyFailureType,
+                                "network destination denied by policy: "
+                                        + decision.reason().code()));
+            }
+            return Optional.empty();
         }
 
         /**
@@ -535,4 +653,7 @@ public final class BrowserCrawler implements IBrowserCrawler {
     private record NavigationFailure(
             BrowserCrawlFailureType type, String message, Optional<Throwable> cause)
             implements ITaskOutcome {}
+
+    /** A network-policy check's denial: the failure type and message to record for it. */
+    private record NetworkViolation(BrowserCrawlFailureType type, String message) {}
 }

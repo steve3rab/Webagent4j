@@ -21,6 +21,12 @@ import io.webagent4j.crawler.internal.CrawlTask;
 import io.webagent4j.crawler.internal.HttpResponseClassifier;
 import io.webagent4j.crawler.internal.ICrawlFrontier;
 import io.webagent4j.crawler.internal.InMemoryCrawlDeduplicator;
+import io.webagent4j.policy.PolicyDecision;
+import io.webagent4j.policy.network.INetworkPolicy;
+import io.webagent4j.policy.network.NetworkCheckPhase;
+import io.webagent4j.policy.network.NetworkDestination;
+import io.webagent4j.policy.network.NetworkPolicyContext;
+import io.webagent4j.policy.network.NetworkRequestKind;
 import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.IWaitSleeper;
 import java.io.IOException;
@@ -68,6 +74,7 @@ public final class HttpCrawler implements ICrawler {
     private final ICrawlScopePolicy scopePolicy;
     private final IWaitSleeper sleeper;
     private final IMonotonicClock clock;
+    private final Optional<INetworkPolicy> networkPolicy;
 
     /**
      * Creates a crawler using the real network, jsoup, the default host-scope policy, and a real
@@ -104,11 +111,41 @@ public final class HttpCrawler implements ICrawler {
             ICrawlScopePolicy scopePolicy,
             IWaitSleeper sleeper,
             IMonotonicClock clock) {
+        this(fetcher, linkExtractor, scopePolicy, sleeper, clock, Optional.empty());
+    }
+
+    private HttpCrawler(
+            IHttpFetcher fetcher,
+            IHtmlLinkExtractor linkExtractor,
+            ICrawlScopePolicy scopePolicy,
+            IWaitSleeper sleeper,
+            IMonotonicClock clock,
+            Optional<INetworkPolicy> networkPolicy) {
         this.fetcher = Objects.requireNonNull(fetcher, "fetcher");
         this.linkExtractor = Objects.requireNonNull(linkExtractor, "linkExtractor");
         this.scopePolicy = Objects.requireNonNull(scopePolicy, "scopePolicy");
         this.sleeper = Objects.requireNonNull(sleeper, "sleeper");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.networkPolicy = Objects.requireNonNull(networkPolicy, "networkPolicy");
+    }
+
+    /**
+     * Returns a new crawler, otherwise identical to this one, that evaluates {@code policy} against
+     * every real HTTP request this crawler is about to send - the task's own seed/discovered URL
+     * and every redirect hop alike - strictly before that request is sent. A denied URL is recorded
+     * as a {@link io.webagent4j.crawler.api.CrawlFailureType#NETWORK_POLICY_DENIED} failure, is
+     * never retried, and never counts against {@link CrawlRequest#maxPages()}'s fetch-identity
+     * budget. This crawler instance is unaffected; {@code HttpCrawler} is otherwise stateless and
+     * reusable, so the returned instance is independently reusable too.
+     */
+    public HttpCrawler withNetworkPolicy(INetworkPolicy policy) {
+        return new HttpCrawler(
+                fetcher,
+                linkExtractor,
+                scopePolicy,
+                sleeper,
+                clock,
+                Optional.of(Objects.requireNonNull(policy, "policy")));
     }
 
     @Override
@@ -454,6 +491,19 @@ public final class HttpCrawler implements ICrawler {
             Set<URI> visited = new LinkedHashSet<>();
             long bytesRead = 0;
 
+            Optional<PolicyDenial> initialDenial = checkNetworkPolicy(current);
+            if (initialDenial.isPresent()) {
+                return FetchOutcome.failure(
+                        initialDenial.get().type(),
+                        initialDenial.get().message(),
+                        current,
+                        Optional.empty(),
+                        Optional.empty(),
+                        0,
+                        bytesRead,
+                        chain);
+            }
+
             FetchClaimOutcome initialClaim = claimFetchIdentity(current);
             if (initialClaim == FetchClaimOutcome.LIMIT_REACHED) {
                 return FetchOutcome.failure(
@@ -561,6 +611,23 @@ public final class HttpCrawler implements ICrawler {
                                 Optional.of(status),
                                 Optional.empty(),
                                 attemptsMade,
+                                bytesRead,
+                                chain);
+                    }
+                    Optional<PolicyDenial> hopDenial = checkNetworkPolicy(target);
+                    if (hopDenial.isPresent()) {
+                        // Zero, not attemptsMade: attemptsMade counts requests already sent for
+                        // the referring URL that produced this redirect, but no real HTTP request
+                        // was ever sent for "target" itself - exactly like CRAWL_LIMIT_REACHED and
+                        // ALREADY_FETCHED just below, both handled the same way for the same
+                        // reason.
+                        return FetchOutcome.failure(
+                                hopDenial.get().type(),
+                                hopDenial.get().message(),
+                                target,
+                                Optional.of(status),
+                                Optional.empty(),
+                                0,
                                 bytesRead,
                                 chain);
                     }
@@ -685,6 +752,58 @@ public final class HttpCrawler implements ICrawler {
             }
         }
 
+        /**
+         * Evaluates this crawler's configured network policy, if any, against {@code uri} - always
+         * called strictly before that URI's real HTTP request is ever sent, never after. Returns
+         * {@link Optional#empty()} when there is no configured policy or it allows the request; a
+         * present {@link PolicyDenial} carries the exact {@link CrawlFailureType} and message the
+         * caller should record instead of ever sending the request.
+         */
+        private Optional<PolicyDenial> checkNetworkPolicy(URI uri) {
+            if (networkPolicy.isEmpty()) {
+                return Optional.empty();
+            }
+            NetworkPolicyContext policyContext;
+            try {
+                NetworkDestination destination = NetworkDestination.of(uri);
+                policyContext =
+                        new NetworkPolicyContext(
+                                NetworkRequestKind.HTTP_FETCH,
+                                destination,
+                                NetworkCheckPhase.PRE_REQUEST);
+            } catch (RuntimeException malformed) {
+                return Optional.of(
+                        new PolicyDenial(
+                                CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                "URL could not be evaluated against the network policy: "
+                                        + malformed.getMessage()));
+            }
+            PolicyDecision decision;
+            try {
+                decision = networkPolicy.get().evaluate(policyContext);
+            } catch (RuntimeException evaluationFailure) {
+                return Optional.of(
+                        new PolicyDenial(
+                                CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                "network policy evaluation failed: "
+                                        + evaluationFailure.getMessage()));
+            }
+            if (decision == null) {
+                return Optional.of(
+                        new PolicyDenial(
+                                CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                "network policy returned no decision"));
+            }
+            if (decision.isDeny()) {
+                return Optional.of(
+                        new PolicyDenial(
+                                CrawlFailureType.NETWORK_POLICY_DENIED,
+                                "network destination denied by policy: "
+                                        + decision.reason().code()));
+            }
+            return Optional.empty();
+        }
+
         private HttpFetchRequest buildFetchRequest(URI url) {
             Map<String, String> headers = new LinkedHashMap<>(request.defaultHeaders());
             headers.putIfAbsent("User-Agent", request.userAgent());
@@ -705,6 +824,9 @@ public final class HttpCrawler implements ICrawler {
             }
         }
     }
+
+    /** A network-policy check's denial: the failure type and message to record for it. */
+    private record PolicyDenial(CrawlFailureType type, String message) {}
 
     /** Outcome of claiming a normalized URL against the crawl-wide fetch identity budget. */
     private enum FetchClaimOutcome {
