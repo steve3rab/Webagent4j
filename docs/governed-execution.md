@@ -44,8 +44,17 @@ public interface IExecutionPolicy<C> {
   never free-form text. There is no `UNKNOWN`, `ASK`, or deferred outcome.
 - **Fail closed.** A thrown exception, a returned `null`, or any other failure to produce a decision
   is treated identically to `DENY` by every pipeline this document describes - never as `ALLOW`.
-- **No hidden retry.** A policy is evaluated at most once per gate per pipeline pass. If it needs to
-  consult something unreliable, that unreliability must surface as an exception, not a retry loop.
+- **No hidden retry.** A policy's own decision is never retried: a caller catches at most one
+  `evaluate` outcome per real attempt and never re-invokes `evaluate` to second-guess a decision it
+  already received. This is distinct from `HttpCrawler`'s HTTP-level retry policy, which is a
+  separate, orthogonal mechanism: when a URL's real HTTP request is itself retried after a
+  transport failure, `HttpCrawler` evaluates its network policy again immediately before *each* new
+  real attempt - never reusing an earlier attempt's decision - because a policy that resolves
+  hostnames may legitimately see a different answer after retry backoff. That is a fresh decision
+  for a new attempt, not a retry of an existing one; see [HTTP crawler](http-crawler.md#retry). If a
+  policy implementation itself needs to consult something unreliable, that unreliability must
+  surface as an exception from that one evaluation, not be masked with an internal retry loop the
+  caller cannot observe.
 - **Untrusted, unsandboxed code.** A caller-supplied policy runs as ordinary Java code. WebAgent4J
   guarantees it will not invoke a governed backend before a policy allows it; it cannot prevent or
   undo a side effect a malicious or buggy policy performs itself during evaluation.
@@ -197,8 +206,8 @@ being `READY`, and it can legitimately disagree with what `decisionTrace()` repo
 - **Not a general SSRF firewall.** DNS pre-resolution checks the addresses a hostname resolves to
   at evaluation time; it is not transport-level pinning and does not by itself defend against DNS
   rebinding between the check and the actual connection. `HttpCrawler` genuinely prevents a request
-  before it is sent for every hop it controls, but a governed `NAVIGATE` action can only detect - not
-  prevent - a browser-internal redirect landing somewhere denied.
+  before it is sent for every hop and every retry attempt it controls, but a governed `NAVIGATE`
+  action can only detect - not prevent - a browser-internal redirect landing somewhere denied.
 - **Not a policy sandbox.** A configured policy is ordinary, trusted, unsandboxed Java code, exactly
   like a plugin or custom SPI (see [Security model](security-model.md#plugins-and-custom-spis)).
   WebAgent4J cannot prevent a malicious policy from reading application memory or performing its own
