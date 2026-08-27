@@ -13,7 +13,7 @@
  * the definition against current state rather than returning a cached node.
  *
  * <p>The resolution engine that turns a {@code LocatorDefinition} into live elements lives in
- * {@code webagent4j-locator} ({@link io.webagent4j.locator.ILocatorEngine}, not in this module);
+ * {@code webagent4j-locator} ({@code io.webagent4j.locator.ILocatorEngine}, not in this module);
  * this module exists so {@code IElement#find()} and {@code IPage#find()} can be declared without a
  * dependency cycle. See {@code docs/locators.md} for the full resolution pipeline, ranking, and
  * ambiguity contract.
