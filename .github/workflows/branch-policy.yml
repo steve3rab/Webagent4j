@@ -1,0 +1,31 @@
+name: Branch policy
+
+# Enforces which head branch naming patterns may open a pull request
+# against which base branch (see .github/scripts/check-branch-policy.sh
+# for the exact rules). Uses github.base_ref and github.head_ref -- the
+# PR's actual branch names -- never PR title/body text.
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  branch-policy:
+    name: Branch policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify branch policy
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/check-branch-policy.sh "$BASE_REF" "$HEAD_REF"

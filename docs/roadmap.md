@@ -20,19 +20,20 @@ The pre-1.0 program established:
 
 Historical phase labels are retained only as release-development history; user guides no longer require knowledge of those phases.
 
-## Release readiness
+## 1.0 release engineering
 
-The remaining 1.0 release-readiness work is release engineering/documentation/publication rather than a new product feature. It includes:
+`1.0.0` is published. Its release engineering covered release engineering/documentation/publication rather than a new product feature:
 
 - final API/SPI/artifact/CLI support review;
 - current security policy alignment;
 - immutable versioned Javadoc/documentation;
-- Maven/publication metadata/signing/repository configuration when public Maven distribution is selected;
 - shaded-artifact license/notice review;
 - exact-head CI/CodeQL/Dependency Review/robustness certification;
-- final migration/release notes and post-publication smoke verification.
+- migration/release notes and post-publication smoke verification.
 
-See [release.md](release.md).
+Maven/publication metadata/signing/repository configuration for public Maven distribution (for example, Maven Central) remains a separate, not-yet-selected item.
+
+See [release.md](release.md) for the runbook used for this and future releases.
 
 ## Post-1.0 candidates
 

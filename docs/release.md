@@ -11,7 +11,7 @@ This is the release-readiness runbook for WebAgent4J 1.0 and later. It separates
 
 ## 2. Version and compatibility review
 
-Before tagging final `1.0.0`:
+Before tagging any release:
 
 - replace development snapshot/candidate versions with the intended release version through the normal versioning workflow;
 - verify all supported module versions align;
@@ -99,7 +99,7 @@ Published immutable artifacts are not replaced in place to fix a defect. Issue a
 
 ## External repository files that must be aligned
 
-This `docs/` package cannot by itself make the repository release-ready. Before final 1.0.0, also align repository-root/build files such as:
+This `docs/` package cannot by itself make the repository release-ready. Before any final release, also align repository-root/build files such as:
 
 - `README.md` release/status/dependency instructions;
 - `SECURITY.md` with [security-model.md](security-model.md), especially current crawler/SSRF/robots/plugin boundaries;
