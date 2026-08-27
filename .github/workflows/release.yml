@@ -142,7 +142,17 @@ jobs:
     name: Verify release candidate
     needs: [metadata]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 60 minutes covered the standard/release-profile build plus one full
+    # Chromium robustness corpus run. The robustness gate below now runs
+    # the full corpus sequentially for Chromium, Firefox, and WebKit --
+    # each a complete Maven reactor build plus the full adversarial suite,
+    # comparable to the 45-minute budget nightly.yml already grants a single
+    # engine in its own isolated job. Budgeting for roughly three times that
+    # portion, on top of the unchanged build/artifact steps, needs
+    # meaningfully more than 60 minutes; 180 stays well inside GitHub's own
+    # per-job ceiling while giving real headroom instead of an effectively
+    # unbounded value.
+    timeout-minutes: 180
 
     permissions:
       contents: read
@@ -176,13 +186,26 @@ jobs:
           -Prelease
           verify
 
-      - name: Run full robustness suite
-        run: >-
-          ./mvnw
-          --batch-mode
-          --no-transfer-progress
-          -Probustness
-          verify
+      # A release must not publish unless the full adversarial robustness
+      # expectations pass for every qualified engine. Each iteration is a
+      # complete, independent `verify` invocation; `set -euo pipefail` stops
+      # the loop -- and the job -- immediately on the first engine that
+      # fails, with no retry, continue-on-error, or `|| true` to hide a
+      # nondeterministic result.
+      - name: Run full robustness suite for every qualified engine
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for browser in chromium firefox webkit; do
+            echo "Running full robustness suite: $browser"
+            ./mvnw \
+              --batch-mode \
+              --no-transfer-progress \
+              -Probustness \
+              -Drobustness.browser="$browser" \
+              verify
+          done
 
       - name: Inspect release artifacts and aggregate Javadoc
         shell: bash
