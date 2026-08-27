@@ -1,5 +1,22 @@
 name: Release
 
+# Policy: VERIFY FIRST, PUBLISH LAST.
+#
+# publish (the only job with contents: write) may run only after metadata,
+# verify AND guard have all succeeded. This workflow never creates a draft
+# release ahead of verification to "reserve" the tag, so no release --
+# draft or public -- should exist for a candidate tag before publish's own
+# "Create GitHub release" step runs. If one is found anyway (created
+# out-of-band, manually or otherwise), it is never silently accepted as
+# validated, merged into, replaced, or deleted automatically: the workflow
+# fails closed and a human must resolve it.
+#
+# The guard job runs the same check early (in parallel with verify) purely
+# as a fast-fail signal; the check that actually gates publication is the
+# one repeated as the last step of publish, immediately before "Create
+# GitHub release", to keep the window between check and publish as small
+# as possible.
+
 on:
   push:
     tags: ["v*"]
@@ -92,6 +109,27 @@ jobs:
             exit 1
           fi
 
+  guard:
+    name: Guard against pre-existing release
+    needs: [metadata]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+
+      - name: Refuse to publish over an existing GitHub Release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/check-release-not-published.sh "$GITHUB_REF_NAME"
+
   verify:
     name: Verify release candidate
     needs: [metadata]
@@ -181,7 +219,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [metadata, verify]
+    needs: [metadata, verify, guard]
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -232,6 +270,14 @@ jobs:
       - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+      - name: Refuse to publish over an existing GitHub Release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/check-release-not-published.sh "$GITHUB_REF_NAME"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
