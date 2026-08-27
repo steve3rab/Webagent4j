@@ -13,6 +13,8 @@ public final class NetworkPolicyReasons {
     public static final PolicyReason USERINFO_DENIED = PolicyReason.of("network.userinfo.denied");
     public static final PolicyReason RESOLUTION_REQUIRED_BUT_UNRESOLVED =
             PolicyReason.of("network.resolution.required");
+    public static final PolicyReason EVALUATION_FAILED =
+            PolicyReason.of("network.policy.evaluation-failed");
 
     private NetworkPolicyReasons() {}
 

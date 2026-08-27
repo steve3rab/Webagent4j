@@ -199,22 +199,26 @@ class ActionAuthorizationTest {
     void planExecuteInvokesBackendExactlyOnceWhenPolicyAllows() {
         IActionBackend backend = mock(IActionBackend.class);
         IElement target = actionableElement();
-        AtomicInteger policyCalls = new AtomicInteger();
-        IActionPolicy countingAllow =
+        // plan() evaluates once (PLAN mode, an informational snapshot - see policyDecisions()),
+        // and execute() always re-evaluates fresh (EXECUTE mode) rather than trusting that
+        // snapshot - so two evaluations total, never more, and the backend is still invoked
+        // exactly once regardless.
+        List<ActionPolicyMode> observedModes = new ArrayList<>();
+        IActionPolicy recordingAllow =
                 context -> {
-                    policyCalls.incrementAndGet();
+                    observedModes.add(context.mode());
                     return PolicyDecision.allow("test.allowed");
                 };
 
         IActionPlan<Void> plan =
                 new DefaultActionBuilder(context(backend))
                         .click(target)
-                        .policy(countingAllow)
+                        .policy(recordingAllow)
                         .plan();
         ActionResult<Void> result = plan.execute();
 
         assertThat(result.success()).isTrue();
-        assertThat(policyCalls.get()).isEqualTo(1);
+        assertThat(observedModes).containsExactly(ActionPolicyMode.PLAN, ActionPolicyMode.EXECUTE);
         verify(backend, times(1)).click(target);
     }
 

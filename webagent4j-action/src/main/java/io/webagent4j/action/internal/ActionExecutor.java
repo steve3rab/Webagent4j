@@ -643,6 +643,7 @@ final class ActionExecutor {
                                     "Action target resolution was interrupted",
                                     config.sensitive() ? Optional.empty() : Optional.of(failure))),
                     new ActionDiagnostics(targetDescription, "", Map.of("plan", "blocked")),
+                    List.of(),
                     executor);
         } catch (RuntimeException failure) {
             String targetDescription = describe(null);
@@ -664,6 +665,7 @@ final class ActionExecutor {
                             targetDescription,
                             renderLocatorDiagnostics(failure),
                             Map.of("plan", "blocked")),
+                    List.of(),
                     executor);
         }
         String targetDescription = describe(target);
@@ -688,6 +690,7 @@ final class ActionExecutor {
                                     "An action precondition was not satisfied",
                                     Optional.empty())),
                     new ActionDiagnostics(targetDescription, "", Map.of("plan", "blocked")),
+                    List.of(),
                     executor);
         }
         return new DefaultActionPlan<>(
@@ -701,6 +704,7 @@ final class ActionExecutor {
                 expectedPostconditions,
                 Optional.empty(),
                 new ActionDiagnostics(targetDescription, "", Map.of("plan", "ready")),
+                snapshotPolicyDecisions(command, config, actionId, targetDescription),
                 executor);
     }
 
@@ -737,10 +741,30 @@ final class ActionExecutor {
                         command.sideEffect(),
                         mode,
                         targetDescription);
+        events.add(
+                event(
+                        actionId,
+                        command,
+                        ActionStage.POLICY_EVALUATION_STARTED,
+                        "started",
+                        targetDescription,
+                        startedNanos,
+                        Map.of("policy.kind", "ACTION", "policy.phase", "PRE_EXECUTION")));
         PolicyDecision decision;
         try {
             decision = policy.evaluate(policyContext);
         } catch (RuntimeException evaluationFailure) {
+            events.add(
+                    policyCompletedEvent(
+                            actionId,
+                            command,
+                            targetDescription,
+                            startedNanos,
+                            "ACTION",
+                            "PRE_EXECUTION",
+                            "EVALUATION_FAILED",
+                            io.webagent4j.action.policy.ActionPolicyReasons.EVALUATION_FAILED
+                                    .code()));
             return failed(
                     context,
                     command,
@@ -764,6 +788,17 @@ final class ActionExecutor {
                     evaluationFailure);
         }
         if (decision == null) {
+            events.add(
+                    policyCompletedEvent(
+                            actionId,
+                            command,
+                            targetDescription,
+                            startedNanos,
+                            "ACTION",
+                            "PRE_EXECUTION",
+                            "EVALUATION_FAILED",
+                            io.webagent4j.action.policy.ActionPolicyReasons.EVALUATION_FAILED
+                                    .code()));
             return failed(
                     context,
                     command,
@@ -787,6 +822,16 @@ final class ActionExecutor {
                     null);
         }
         if (decision.isDeny()) {
+            events.add(
+                    policyCompletedEvent(
+                            actionId,
+                            command,
+                            targetDescription,
+                            startedNanos,
+                            "ACTION",
+                            "PRE_EXECUTION",
+                            "DENY",
+                            decision.reason().code()));
             return failed(
                     context,
                     command,
@@ -809,7 +854,46 @@ final class ActionExecutor {
                     "Action was denied by policy: " + decision.reason().code(),
                     null);
         }
+        events.add(
+                policyCompletedEvent(
+                        actionId,
+                        command,
+                        targetDescription,
+                        startedNanos,
+                        "ACTION",
+                        "PRE_EXECUTION",
+                        "ALLOW",
+                        decision.reason().code()));
         return null;
+    }
+
+    /**
+     * Builds a safe {@link ActionStage#POLICY_EVALUATION_COMPLETED} event carrying exactly the four
+     * structured {@code policy.*} metadata keys {@link ActionResult#decisionTrace()} parses back
+     * into an {@code ActionDecisionEntry} - never anything else about the evaluated context.
+     */
+    @SuppressWarnings("checkstyle:ParameterNumber")
+    private ActionEvent policyCompletedEvent(
+            ActionId actionId,
+            ActionCommand<?> command,
+            String targetDescription,
+            long startedNanos,
+            String kind,
+            String phase,
+            String outcome,
+            String reasonCode) {
+        return event(
+                actionId,
+                command,
+                ActionStage.POLICY_EVALUATION_COMPLETED,
+                "completed",
+                targetDescription,
+                startedNanos,
+                Map.of(
+                        "policy.kind", kind,
+                        "policy.phase", phase,
+                        "policy.outcome", outcome,
+                        "policy.reason", reasonCode));
     }
 
     /**
@@ -850,6 +934,16 @@ final class ActionExecutor {
                         : ActionFailureType.POLICY_EVALUATION_FAILED;
         ActionFailureType denyFailureType =
                 postRequest ? ActionFailureType.POLICY_VIOLATION : ActionFailureType.POLICY_DENIED;
+        String decisionPhase = postRequest ? "POST_EXECUTION" : "PRE_EXECUTION";
+        events.add(
+                event(
+                        actionId,
+                        command,
+                        ActionStage.POLICY_EVALUATION_STARTED,
+                        "started",
+                        "",
+                        startedNanos,
+                        Map.of("policy.kind", "NETWORK", "policy.phase", decisionPhase)));
 
         NetworkPolicyContext networkContext;
         try {
@@ -858,6 +952,17 @@ final class ActionExecutor {
                     new NetworkPolicyContext(
                             NetworkRequestKind.BROWSER_NAVIGATION, destination, phase);
         } catch (RuntimeException malformed) {
+            events.add(
+                    policyCompletedEvent(
+                            actionId,
+                            command,
+                            "",
+                            startedNanos,
+                            "NETWORK",
+                            decisionPhase,
+                            "EVALUATION_FAILED",
+                            io.webagent4j.policy.network.NetworkPolicyReasons.EVALUATION_FAILED
+                                    .code()));
             return failed(
                     context,
                     command,
@@ -885,6 +990,17 @@ final class ActionExecutor {
         try {
             decision = policy.evaluate(networkContext);
         } catch (RuntimeException evaluationFailure) {
+            events.add(
+                    policyCompletedEvent(
+                            actionId,
+                            command,
+                            "",
+                            startedNanos,
+                            "NETWORK",
+                            decisionPhase,
+                            "EVALUATION_FAILED",
+                            io.webagent4j.policy.network.NetworkPolicyReasons.EVALUATION_FAILED
+                                    .code()));
             return failed(
                     context,
                     command,
@@ -908,6 +1024,17 @@ final class ActionExecutor {
                     evaluationFailure);
         }
         if (decision == null) {
+            events.add(
+                    policyCompletedEvent(
+                            actionId,
+                            command,
+                            "",
+                            startedNanos,
+                            "NETWORK",
+                            decisionPhase,
+                            "EVALUATION_FAILED",
+                            io.webagent4j.policy.network.NetworkPolicyReasons.EVALUATION_FAILED
+                                    .code()));
             return failed(
                     context,
                     command,
@@ -931,6 +1058,16 @@ final class ActionExecutor {
                     null);
         }
         if (decision.isDeny()) {
+            events.add(
+                    policyCompletedEvent(
+                            actionId,
+                            command,
+                            "",
+                            startedNanos,
+                            "NETWORK",
+                            decisionPhase,
+                            "DENY",
+                            decision.reason().code()));
             return failed(
                     context,
                     command,
@@ -956,11 +1093,134 @@ final class ActionExecutor {
                             + decision.reason().code(),
                     null);
         }
+        events.add(
+                policyCompletedEvent(
+                        actionId,
+                        command,
+                        "",
+                        startedNanos,
+                        "NETWORK",
+                        decisionPhase,
+                        "ALLOW",
+                        decision.reason().code()));
         return null;
     }
 
     private static List<VerificationType> expectedPostconditionTypes(ActionExecutionConfig config) {
         return config.postconditions().stream().map(IVerification::type).toList();
+    }
+
+    /**
+     * Builds the non-authoritative {@link IActionPlan#policyDecisions()} snapshot: evaluates every
+     * configured policy once, in {@link ActionPolicyMode#PLAN} for an action policy, purely for
+     * inspection. Never throws and never blocks {@code prepare()} from returning a {@link
+     * io.webagent4j.action.ActionPlanStatus#READY} plan - an evaluation failure here becomes an
+     * {@link io.webagent4j.action.ActionDecisionOutcome#EVALUATION_FAILED} entry, not a propagated
+     * exception, since this snapshot's only purpose is inspection via {@link
+     * IActionPlan#policyDecisions()}.
+     */
+    private <R> List<io.webagent4j.action.ActionDecisionEntry> snapshotPolicyDecisions(
+            ActionCommand<R> command,
+            ActionExecutionConfig config,
+            ActionId actionId,
+            String targetDescription) {
+        List<io.webagent4j.action.ActionDecisionEntry> entries = new ArrayList<>();
+        config.actionPolicy()
+                .ifPresent(
+                        policy ->
+                                entries.add(
+                                        snapshotActionDecision(
+                                                policy, command, actionId, targetDescription)));
+        if (command.type() == io.webagent4j.action.ActionType.NAVIGATE) {
+            config.networkPolicy()
+                    .ifPresent(
+                            policy ->
+                                    command.navigationUrl()
+                                            .ifPresent(
+                                                    url ->
+                                                            entries.add(
+                                                                    snapshotNetworkDecision(
+                                                                            policy, url))));
+        }
+        return entries;
+    }
+
+    private <R> io.webagent4j.action.ActionDecisionEntry snapshotActionDecision(
+            IActionPolicy policy,
+            ActionCommand<R> command,
+            ActionId actionId,
+            String targetDescription) {
+        ActionPolicyContext policyContext =
+                new ActionPolicyContext(
+                        actionId,
+                        command.type(),
+                        command.idempotency(),
+                        command.sideEffect(),
+                        ActionPolicyMode.PLAN,
+                        targetDescription);
+        PolicyDecision decision;
+        try {
+            decision = policy.evaluate(policyContext);
+        } catch (RuntimeException evaluationFailure) {
+            return evaluationFailedActionEntry();
+        }
+        if (decision == null) {
+            return evaluationFailedActionEntry();
+        }
+        return new io.webagent4j.action.ActionDecisionEntry(
+                io.webagent4j.action.ActionDecisionKind.ACTION,
+                io.webagent4j.action.ActionDecisionPhase.PRE_EXECUTION,
+                decision.isDeny()
+                        ? io.webagent4j.action.ActionDecisionOutcome.DENY
+                        : io.webagent4j.action.ActionDecisionOutcome.ALLOW,
+                decision.reason());
+    }
+
+    private static io.webagent4j.action.ActionDecisionEntry evaluationFailedActionEntry() {
+        return new io.webagent4j.action.ActionDecisionEntry(
+                io.webagent4j.action.ActionDecisionKind.ACTION,
+                io.webagent4j.action.ActionDecisionPhase.PRE_EXECUTION,
+                io.webagent4j.action.ActionDecisionOutcome.EVALUATION_FAILED,
+                io.webagent4j.action.policy.ActionPolicyReasons.EVALUATION_FAILED);
+    }
+
+    private io.webagent4j.action.ActionDecisionEntry snapshotNetworkDecision(
+            INetworkPolicy policy, String requestedUrl) {
+        NetworkPolicyContext networkContext;
+        try {
+            NetworkDestination destination = NetworkDestination.of(URI.create(requestedUrl));
+            networkContext =
+                    new NetworkPolicyContext(
+                            NetworkRequestKind.BROWSER_NAVIGATION,
+                            destination,
+                            NetworkCheckPhase.PRE_REQUEST);
+        } catch (RuntimeException malformed) {
+            return evaluationFailedNetworkEntry();
+        }
+        PolicyDecision decision;
+        try {
+            decision = policy.evaluate(networkContext);
+        } catch (RuntimeException evaluationFailure) {
+            return evaluationFailedNetworkEntry();
+        }
+        if (decision == null) {
+            return evaluationFailedNetworkEntry();
+        }
+        return new io.webagent4j.action.ActionDecisionEntry(
+                io.webagent4j.action.ActionDecisionKind.NETWORK,
+                io.webagent4j.action.ActionDecisionPhase.PRE_EXECUTION,
+                decision.isDeny()
+                        ? io.webagent4j.action.ActionDecisionOutcome.DENY
+                        : io.webagent4j.action.ActionDecisionOutcome.ALLOW,
+                decision.reason());
+    }
+
+    private static io.webagent4j.action.ActionDecisionEntry evaluationFailedNetworkEntry() {
+        return new io.webagent4j.action.ActionDecisionEntry(
+                io.webagent4j.action.ActionDecisionKind.NETWORK,
+                io.webagent4j.action.ActionDecisionPhase.PRE_EXECUTION,
+                io.webagent4j.action.ActionDecisionOutcome.EVALUATION_FAILED,
+                io.webagent4j.policy.network.NetworkPolicyReasons.EVALUATION_FAILED);
     }
 
     private static String renderLocatorDiagnostics(RuntimeException failure) {
@@ -1106,6 +1366,25 @@ final class ActionExecutor {
             String result,
             String target,
             long startedNanos) {
+        return event(actionId, command, stage, result, target, startedNanos, Map.of());
+    }
+
+    /**
+     * Same as the five-argument overload, with additional safe, structured metadata merged in -
+     * used only for {@link ActionStage#POLICY_EVALUATION_COMPLETED}'s {@code policy.*} keys, the
+     * data {@link ActionResult#decisionTrace()} is derived from.
+     */
+    private ActionEvent event(
+            ActionId actionId,
+            ActionCommand<?> command,
+            ActionStage stage,
+            String result,
+            String target,
+            long startedNanos,
+            Map<String, String> extraMetadata) {
+        Map<String, String> metadata = new java.util.LinkedHashMap<>();
+        metadata.put("idempotency", command.idempotency().name());
+        metadata.putAll(extraMetadata);
         return new ActionEvent(
                 actionId,
                 Instant.now(),
@@ -1114,7 +1393,7 @@ final class ActionExecutor {
                 target,
                 result,
                 elapsedSince(startedNanos),
-                Map.of("idempotency", command.idempotency().name()));
+                metadata);
     }
 
     private Duration elapsedSince(long startedNanos) {
