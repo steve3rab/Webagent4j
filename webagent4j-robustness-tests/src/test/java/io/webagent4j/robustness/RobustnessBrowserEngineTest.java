@@ -8,15 +8,33 @@ import org.junit.jupiter.api.Test;
 class RobustnessBrowserEngineTest {
 
     @Test
-    void defaultsToChromiumWhenThePropertyIsAbsent() {
+    void defaultsToChromiumWhenThePropertyValueIsNull() {
+        assertThat(RobustnessBrowserEngine.fromPropertyValue(null))
+                .isEqualTo(RobustnessBrowserEngine.CHROMIUM);
+    }
+
+    @Test
+    void defaultsToChromiumWhenThePropertyValueIsAnExplicitEmptyString() {
         assertThat(RobustnessBrowserEngine.fromPropertyValue(""))
                 .isEqualTo(RobustnessBrowserEngine.CHROMIUM);
     }
 
     @Test
-    void treatsAWhitespaceOnlyValueAsAbsent() {
-        assertThat(RobustnessBrowserEngine.fromPropertyValue("   "))
-                .isEqualTo(RobustnessBrowserEngine.CHROMIUM);
+    void rejectsAWhitespaceOnlyValueRatherThanTreatingItAsAbsent() {
+        // An explicitly supplied whitespace-only value is real invalid input, not the same as
+        // the property being absent -- it must fail, not silently default to Chromium.
+        assertThatThrownBy(() -> RobustnessBrowserEngine.fromPropertyValue("   "))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsValuesWithLeadingOrTrailingWhitespaceRatherThanTrimmingThem() {
+        assertThatThrownBy(() -> RobustnessBrowserEngine.fromPropertyValue(" firefox "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RobustnessBrowserEngine.fromPropertyValue("webkit "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RobustnessBrowserEngine.fromPropertyValue(" chromium"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -57,6 +75,14 @@ class RobustnessBrowserEngineTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> RobustnessBrowserEngine.fromPropertyValue("FIREFOX"))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RobustnessBrowserEngine.fromPropertyValue("FF"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsAPaddedCaseVariantEvenThoughEachDefectAloneWouldAlsoFail() {
+        assertThatThrownBy(() -> RobustnessBrowserEngine.fromPropertyValue(" Chromium "))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -81,6 +107,28 @@ class RobustnessBrowserEngineTest {
             System.setProperty("robustness.browser", "firefox");
             assertThat(RobustnessBrowserEngine.current())
                     .isEqualTo(RobustnessBrowserEngine.FIREFOX);
+        } finally {
+            if (previous == null) {
+                System.clearProperty("robustness.browser");
+            } else {
+                System.setProperty("robustness.browser", previous);
+            }
+        }
+    }
+
+    @Test
+    void currentDistinguishesAnAbsentPropertyFromAnExplicitWhitespaceOnlyValue() {
+        String previous = System.getProperty("robustness.browser");
+        try {
+            System.clearProperty("robustness.browser");
+            assertThat(RobustnessBrowserEngine.current())
+                    .as("an absent property defaults to Chromium")
+                    .isEqualTo(RobustnessBrowserEngine.CHROMIUM);
+
+            System.setProperty("robustness.browser", "   ");
+            assertThatThrownBy(RobustnessBrowserEngine::current)
+                    .as("an explicit whitespace-only property must fail, not default")
+                    .isInstanceOf(IllegalArgumentException.class);
         } finally {
             if (previous == null) {
                 System.clearProperty("robustness.browser");

@@ -49,7 +49,7 @@ On failure, local artifacts may include structured locator diagnostics, compact 
 
 ## Platform meaning
 
-The full deterministic browser robustness gate runs against Chromium, Firefox, and WebKit through the `robustness.browser` test property (nightly matrix and release verification), but only Chromium has actually been observed passing the complete corpus. Standard CI/nightly coverage on other operating systems or browser launch implementations does not by itself imply equivalent adversarial qualification. See [Support matrix](support-matrix.md).
+The full deterministic browser robustness gate is parameterized by the `robustness.browser` test property to cover Chromium, Firefox, and WebKit. `develop` now carries nightly-matrix and release-verification infrastructure for all three, but only Chromium has actually been observed passing the complete corpus, and scheduled nightly activation additionally depends on this workflow reaching the repository's default branch. Standard CI/nightly coverage on other operating systems or browser launch implementations does not by itself imply equivalent adversarial qualification. See [Support matrix](support-matrix.md).
 
 ## When the correct result is to stop
 
