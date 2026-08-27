@@ -12,9 +12,9 @@ closed rather than guess.
 Playwright is the first browser backend.
 
 > [!IMPORTANT]
-> The repository is in release-readiness work for the first stable `1.0.0` release. Public Maven
-> artifacts are not yet published from this repository's current release workflow. Until publication
-> is enabled, build and install the artifacts locally.
+> `1.0.x` is the current stable line; `develop` is now `1.1.0-SNAPSHOT`. Public Maven artifacts are
+> not yet published from this repository's release workflow. Until publication is enabled, build and
+> install the artifacts locally.
 
 ## Design goals
 
@@ -256,7 +256,7 @@ must not be inferred from Java serialization or Java object identity.
 
 ## Project status
 
-The functional scope intended for 1.0 is implemented:
+`1.0.0` is released and is the current stable line (`1.0.x`). Its functional scope is implemented:
 
 - browser lifecycle and semantic location;
 - bounded observation;
@@ -268,10 +268,7 @@ The functional scope intended for 1.0 is implemented:
 - explicit trusted locator plugins;
 - adversarial hardening of cross-module contracts.
 
-Current work is release readiness: packaging, publication metadata, release automation,
-documentation/version alignment, artifact inspection, and final release qualification.
-
-No new product capability should be inferred from release-readiness changes.
+`develop` is the active line for the next release, currently `1.1.0-SNAPSHOT`.
 
 ## Contributing
 

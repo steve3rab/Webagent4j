@@ -8,6 +8,8 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-27
+
 ### Changed
 
 - Restructured the documentation around one authoritative source per contract instead of repeating
