@@ -41,13 +41,26 @@ import java.util.function.Supplier;
 final class ActionExecutor {
 
     private final IMonotonicClock clock;
+    private final VerificationEngine verificationEngine;
 
     ActionExecutor() {
         this(IMonotonicClock.systemClock());
     }
 
     ActionExecutor(IMonotonicClock clock) {
+        this(clock, new VerificationEngine());
+    }
+
+    /**
+     * Creates an executor with an explicit clock and postcondition-verification engine, for
+     * deterministic fake-time tests that must prove the shared action deadline/budget invariant
+     * without ever depending on real elapsed wall-clock time. {@code clock} must be the same
+     * instance backing {@code verificationEngine}'s own polling, or the shared {@link WaitBudget}
+     * this executor starts and the engine's deadline arithmetic will disagree about elapsed time.
+     */
+    ActionExecutor(IMonotonicClock clock, VerificationEngine verificationEngine) {
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.verificationEngine = Objects.requireNonNull(verificationEngine, "verificationEngine");
     }
 
     <R> ActionResult<R> execute(
@@ -345,12 +358,11 @@ final class ActionExecutor {
         List<VerificationResult> postconditions;
         try {
             postconditions =
-                    new VerificationEngine()
-                            .awaitAll(
-                                    context,
-                                    config.postconditions(),
-                                    budget,
-                                    config.options().verificationInterval());
+                    verificationEngine.awaitAll(
+                            context,
+                            config.postconditions(),
+                            budget,
+                            config.options().verificationInterval());
         } catch (VerificationInterruptedException failure) {
             Thread.currentThread().interrupt();
             return failed(
