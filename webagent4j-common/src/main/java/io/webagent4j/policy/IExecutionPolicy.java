@@ -10,11 +10,17 @@ package io.webagent4j.policy;
  *   <li><strong>Synchronous only.</strong> Implementations must not block on network I/O, an MCP
  *       call, an LLM call, a database query, or any other remote round trip. Evaluation is expected
  *       to complete quickly and deterministically given its input.
- *   <li><strong>Fail closed.</strong> A thrown exception (checked or unchecked), a returned {@code
- *       null}, or any other failure to produce a decision must be treated by the caller as if this
- *       method returned {@link PolicyDecision#deny}. This interface itself does not catch or
- *       translate exceptions - callers that invoke a policy in a governed pipeline are responsible
- *       for wrapping evaluation so that any failure denies rather than silently allows.
+ *   <li><strong>Fail closed.</strong> {@link #evaluate} declares no checked exception, so an
+ *       implementation can only ever throw an unchecked {@link RuntimeException}; a thrown {@code
+ *       RuntimeException}, a returned {@code null}, or any other failure to produce a decision must
+ *       be treated by the caller as if this method returned {@link PolicyDecision#deny}. This
+ *       interface itself does not catch or translate exceptions and does not retry a failed
+ *       evaluation - callers that invoke a policy in a governed pipeline are responsible for
+ *       catching {@code RuntimeException} and null results exactly once per evaluation, without any
+ *       hidden retry, so that any failure denies rather than silently allows. A fatal {@link Error}
+ *       (for example {@link OutOfMemoryError} or {@link StackOverflowError}) is never part of this
+ *       fail-closed contract: it must propagate uncaught, not be silently converted into a deny
+ *       decision.
  *   <li><strong>No hidden retry.</strong> An implementation must not retry the underlying decision
  *       itself; if it needs to consult something unreliable, that unreliability must be surfaced as
  *       an exception, not masked with a retry loop the caller cannot observe.
