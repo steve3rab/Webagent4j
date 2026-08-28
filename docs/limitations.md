@@ -56,12 +56,27 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 - `IActionPolicy`/`INetworkPolicy` are opt-in; nothing is governed unless a caller explicitly
   configures one. Direct `IPage`/`IBrowser` calls made outside a governed action or crawl bypass
   both entirely.
-- `INetworkPolicy` is not a general SSRF firewall or a defense against DNS rebinding between the
-  policy check and the actual connection - it checks the addresses a hostname resolves to at
-  evaluation time, nothing more.
+- Atomic action-target identity verification (`IElement#verifiedForExecution()`, which binds
+  identity revalidation and the native backend call to the exact same physical handle) is currently
+  wired for the Playwright adapter's `click()` only. Every other Playwright action method (`fill`,
+  `check`, `uncheck`, `select`, `hover`, `focus`, `blur`, `press`, `upload`, `submit`, `scrollTo`,
+  `download`, `doubleClick`) still revalidates identity via the boolean-only
+  `isStillTheOriginallyResolvedTarget()` and then performs its native call through a second,
+  independently re-resolved `Locator` - the residual TOCTOU window this method exists to close
+  remains open for those methods.
+- `INetworkPolicy` is not a general SSRF firewall. `HttpCrawler` binds its actual transport
+  connection to the exact addresses a policy verified - closing the DNS-rebinding gap between
+  check and connect - only when the configured policy implements `INetworkAddressAuthority` (the
+  built-in `NetworkPolicies` policy does; a fully custom `INetworkPolicy` lambda does not unless it
+  implements that capability too).
 - A governed `NAVIGATE` action or `BrowserCrawler` visit can only detect, never prevent, a
   browser-internal redirect landing somewhere a network policy would have denied - unlike
-  `HttpCrawler`, which controls its own redirect loop and can prevent every hop.
+  `HttpCrawler`, which controls its own redirect loop and can prevent every hop. Browser navigation
+  also has no transport-level pinning at all: its own DNS resolution for policy evaluation is never
+  bound to whatever address the browser's network stack ultimately connects to.
+- `PinnedSocketHttpTransport` (the pinned connection `HttpCrawler` uses) is GET-only, HTTP/1.1, and
+  never pools or reuses a connection across requests - matching what `HttpCrawler` itself needs, not
+  a general-purpose HTTP client.
 - A configured policy is ordinary, trusted, unsandboxed Java code - the same trust posture as a
   plugin. WebAgent4J cannot prevent or undo a side effect a malicious or buggy policy performs
   itself during evaluation.
