@@ -112,6 +112,34 @@ class HttpCrawlerNetworkPinningTest {
     }
 
     @Test
+    void np001APinningCapablePolicyIsAuthorizedThroughOneCallNeverASeparatePrecedingEvaluate()
+            throws UnknownHostException {
+        // NP-001: evaluate() and authorizeConnection() would otherwise each perform their own
+        // independent DNS resolution, so an ALLOW decision could rest on one resolver answer
+        // while the pinned address set actually used came from a second, later resolution - a
+        // narrow DNS-rebinding window between the two. For one logical attempt, both the
+        // authorization decision and the pinned addresses must derive from exactly one call.
+        URI seed = URI.create("https://single-resolution.example.test/");
+        RecordingFetcher fetcher = new RecordingFetcher();
+        fetcher.respondHtml(seed, "<html><body>ok</body></html>");
+        VerifiedNetworkAddresses verified =
+                new VerifiedNetworkAddresses(
+                        "single-resolution.example.test",
+                        443,
+                        List.of(InetAddress.getByName("93.184.216.34")));
+        CountingPinningPolicy policy = new CountingPinningPolicy(Optional.of(verified));
+
+        CrawlResult result =
+                crawler(fetcher)
+                        .withNetworkPolicy(policy)
+                        .crawl(CrawlRequest.builder().seed(seed).maxPages(5).build());
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(policy.evaluateCalls()).isZero();
+        assertThat(policy.authorizeConnectionCalls()).isEqualTo(1);
+    }
+
+    @Test
     void everyRetryAttemptIsAuthorizedAndPinnedAfresh() throws UnknownHostException {
         URI seed = URI.create("https://retried.example.test/");
         RecordingFetcher fetcher = new RecordingFetcher();
@@ -180,6 +208,39 @@ class HttpCrawlerNetworkPinningTest {
         public Optional<VerifiedNetworkAddresses> authorizeConnection(
                 NetworkDestination destination) {
             return pinnedAddresses;
+        }
+    }
+
+    /** Counts calls to each method separately, so a test can prove one of them was never used. */
+    private static final class CountingPinningPolicy
+            implements INetworkPolicy, INetworkAddressAuthority {
+        private final Optional<VerifiedNetworkAddresses> pinnedAddresses;
+        private final AtomicInteger evaluateCalls = new AtomicInteger();
+        private final AtomicInteger authorizeConnectionCalls = new AtomicInteger();
+
+        CountingPinningPolicy(Optional<VerifiedNetworkAddresses> pinnedAddresses) {
+            this.pinnedAddresses = pinnedAddresses;
+        }
+
+        @Override
+        public PolicyDecision evaluate(io.webagent4j.policy.network.NetworkPolicyContext context) {
+            evaluateCalls.incrementAndGet();
+            return PolicyDecision.allow("test.network.allowed");
+        }
+
+        @Override
+        public Optional<VerifiedNetworkAddresses> authorizeConnection(
+                NetworkDestination destination) {
+            authorizeConnectionCalls.incrementAndGet();
+            return pinnedAddresses;
+        }
+
+        int evaluateCalls() {
+            return evaluateCalls.get();
+        }
+
+        int authorizeConnectionCalls() {
+            return authorizeConnectionCalls.get();
         }
     }
 
