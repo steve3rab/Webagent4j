@@ -124,6 +124,13 @@ final class PinnedSocketHttpTransport {
                         new HttpTimeoutException("Request to " + uri + " timed out");
                 timeout.initCause(socketTimeout);
                 throw timeout;
+            } catch (TransportInterruptedException interrupted) {
+                // Interruption means "stop this operation," never "try a different transport
+                // path": it is surfaced immediately as terminal, regardless of whether
+                // transmission may already have started - unlike an ordinary connectivity
+                // failure, a caller thread asking to stop is never a reason to keep going
+                // against a different pinned address.
+                throw interrupted;
             } catch (PinnedAttemptFailure failure) {
                 if (failure.transmissionMayHaveStarted()) {
                     // The peer may already have received some or all of the request bytes for
@@ -181,15 +188,28 @@ final class PinnedSocketHttpTransport {
                     () -> {
                         writingSocket.getOutputStream().write(requestBytes);
                         writingSocket.getOutputStream().flush();
+                        return null;
                     });
             InputStream in = new BufferedInputStream(socket.getInputStream());
             ReadState readState = new ReadState(in, socket, deadline, request.uri());
-            return readResponse(readState, request);
+            // The whole response read is bounded by the same shared deadline and owned socket
+            // this call already uses for the write/handshake phases above: a caller thread
+            // interrupted while a response is still being read must stop this attempt exactly as
+            // terminally as an interruption during the write does, never merely wait out
+            // whatever per-read SO_TIMEOUT happens to be active at that moment.
+            Socket readingSocket = socket;
+            return runBoundedOnDeadline(
+                    readingSocket, deadline, request.uri(), () -> readResponse(readState, request));
         } catch (HttpTimeoutException | java.net.SocketTimeoutException timeoutLike) {
             // Handled one level up, identically regardless of phase - never wrapped as a
             // PinnedAttemptFailure, since a deadline/socket timeout is already never retried
             // against another address.
             throw timeoutLike;
+        } catch (TransportInterruptedException interrupted) {
+            // Finalized here with the transmission-observability this call site actually knows -
+            // runBoundedOnDeadline itself has no visibility into whether the write phase has
+            // already run, only this method's own local tracking does.
+            throw interrupted.withTransmissionMayHaveStarted(transmissionMayHaveStarted);
         } catch (IOException failure) {
             throw new PinnedAttemptFailure(failure, transmissionMayHaveStarted);
         } finally {
@@ -228,6 +248,50 @@ final class PinnedSocketHttpTransport {
         }
     }
 
+    /**
+     * Signals that a blocking network operation was interrupted before it could complete - a
+     * distinct, terminal outcome from an ordinary connectivity failure. Interruption means "stop
+     * this operation," never "try a different transport path": this type is never wrapped as a
+     * {@link PinnedAttemptFailure} and is never eligible for a pinned-address fallback or a
+     * crawler-level retry, regardless of {@link #transmissionMayHaveStarted()}.
+     *
+     * <p>{@link #transmissionMayHaveStarted()} preserves the same truthfulness an ordinary attempt
+     * failure already tracks: once a physical request may have reached the peer, this reports
+     * {@code true} so a caller downstream never claims certainty that the request's side effect did
+     * not happen, purely because the local thread stopped waiting for a response.
+     */
+    static final class TransportInterruptedException extends IOException {
+        private final boolean transmissionMayHaveStarted;
+
+        /**
+         * Creates an instance whose caller does not yet know whether transmission may have started;
+         * a caller with that ambient knowledge (such as {@link #attempt}) is expected to
+         * immediately reclassify it via {@link #withTransmissionMayHaveStarted(boolean)}.
+         */
+        TransportInterruptedException(InterruptedException cause) {
+            this(false, cause);
+        }
+
+        TransportInterruptedException(
+                boolean transmissionMayHaveStarted, InterruptedException cause) {
+            super("blocking network operation interrupted", cause);
+            this.transmissionMayHaveStarted = transmissionMayHaveStarted;
+        }
+
+        boolean transmissionMayHaveStarted() {
+            return transmissionMayHaveStarted;
+        }
+
+        /**
+         * Returns an equivalent exception carrying {@code value} as {@link
+         * #transmissionMayHaveStarted()} - used by a caller (such as {@link #attempt}) that knows
+         * the ambient transmission state this exception's own origin point did not.
+         */
+        TransportInterruptedException withTransmissionMayHaveStarted(boolean value) {
+            return new TransportInterruptedException(value, (InterruptedException) getCause());
+        }
+    }
+
     private static SSLSocket wrapTls(
             SSLSocketFactory factory,
             Socket plainSocket,
@@ -252,7 +316,14 @@ final class PinnedSocketHttpTransport {
         tlsSocket.setSoTimeout(requireTimeBudget(deadline, uri));
         // The handshake itself writes (ClientHello and later flights) as well as reads; SO_TIMEOUT
         // bounds only the read side, so this is bounded the same way the request write is.
-        runBoundedOnDeadline(tlsSocket, deadline, uri, tlsSocket::startHandshake);
+        runBoundedOnDeadline(
+                tlsSocket,
+                deadline,
+                uri,
+                () -> {
+                    tlsSocket.startHandshake();
+                    return null;
+                });
         return tlsSocket;
     }
 
@@ -273,20 +344,24 @@ final class PinnedSocketHttpTransport {
      * fires, or the forced socket close unblocks it immediately afterward, so the executor's own
      * close() - which waits for the task to finish - never waits on a still-live blocking
      * operation.
+     *
+     * <p>An interruption of the calling thread while it waits on {@link Future#get(long, TimeUnit)}
+     * is handled distinctly from an ordinary timeout or I/O failure: it is reported as a {@link
+     * TransportInterruptedException}, the interrupt flag is restored on this thread, the
+     * still-running task is both cancelled and force-unblocked by closing {@code socket} (closure
+     * is the mechanism that actually unblocks a plain blocking socket call; cancellation alone
+     * cannot), and the caller must treat it as terminal - never retried against another pinned
+     * address, never reinterpreted as a transient network failure.
      */
-    private static void runBoundedOnDeadline(Socket socket, Deadline deadline, URI uri, IOTask task)
+    static <T> T runBoundedOnDeadline(Socket socket, Deadline deadline, URI uri, IOSupplier<T> task)
             throws IOException {
         int remainingMillis = requireTimeBudget(deadline, uri);
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            Future<?> future =
-                    executor.submit(
-                            () -> {
-                                task.run();
-                                return null;
-                            });
+            Future<T> future = executor.submit(task::get);
             try {
-                future.get(remainingMillis, TimeUnit.MILLISECONDS);
+                return future.get(remainingMillis, TimeUnit.MILLISECONDS);
             } catch (TimeoutException expired) {
+                future.cancel(true);
                 closeQuietly(socket);
                 HttpTimeoutException timeout =
                         new HttpTimeoutException("Request to " + uri + " timed out");
@@ -306,9 +381,9 @@ final class PinnedSocketHttpTransport {
                 throw new IOException("Blocking socket operation failed", cause);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+                future.cancel(true);
                 closeQuietly(socket);
-                throw new IOException(
-                        "Interrupted during a blocking socket operation", interrupted);
+                throw new TransportInterruptedException(interrupted);
             }
         }
     }
@@ -322,12 +397,11 @@ final class PinnedSocketHttpTransport {
     }
 
     @FunctionalInterface
-    private interface IOTask {
-        void run() throws IOException;
+    interface IOSupplier<T> {
+        T get() throws IOException;
     }
 
-    private static RawResponse readResponse(ReadState state, HttpFetchRequest request)
-            throws IOException {
+    static RawResponse readResponse(ReadState state, HttpFetchRequest request) throws IOException {
         // The response text below (status line, headers, chunk sizes) is entirely
         // attacker-controlled - it comes verbatim from whatever the connected peer chose to
         // send. None of it is ever embedded in an exception message; every failure here uses a
@@ -542,14 +616,20 @@ final class PinnedSocketHttpTransport {
      * left to apply, unchanged, to however many further blocking reads the response happens to
      * require.
      */
-    private record ReadState(InputStream in, Socket socket, Deadline deadline, URI uri) {
-        void refreshTimeout() throws HttpTimeoutException {
+    record ReadState(InputStream in, Socket socket, Deadline deadline, URI uri) {
+        /**
+         * Re-derives the remaining deadline budget and applies it as this socket's blocking-read
+         * timeout - a deadline-sensitive blocking read may only begin once that has actually been
+         * installed. If installing it fails, this fails closed by throwing before the caller's next
+         * read: an unenforced timeout is never treated as an acceptable substitute for one that was
+         * never successfully applied, and the caller must not assume anything about what an
+         * unbounded read might do.
+         */
+        void refreshTimeout() throws IOException {
             try {
                 socket.setSoTimeout(requireTimeBudget(deadline, uri));
             } catch (java.net.SocketException failure) {
-                // setSoTimeout itself failing (a socket already closed by the peer) is reported
-                // as an ordinary read failure at the next actual read() call; nothing to do here
-                // beyond letting that happen.
+                throw new IOException("failed to apply the remaining request deadline", failure);
             }
         }
     }
@@ -672,7 +752,7 @@ final class PinnedSocketHttpTransport {
         return query == null ? path : path + "?" + query;
     }
 
-    private static int requireTimeBudget(Deadline deadline, URI uri) throws HttpTimeoutException {
+    static int requireTimeBudget(Deadline deadline, URI uri) throws HttpTimeoutException {
         int remaining = deadline.remainingMillis();
         if (remaining <= 0) {
             throw new HttpTimeoutException("Request to " + uri + " timed out");
@@ -680,10 +760,16 @@ final class PinnedSocketHttpTransport {
         return remaining;
     }
 
-    private record RawResponse(
+    record RawResponse(
             int statusCode, Map<String, List<String>> headers, byte[] body, String contentType) {}
 
-    private static final class Deadline {
+    /**
+     * One shared monotonic deadline for an entire fetch attempt, derived once from an injected
+     * {@link IMonotonicClock} - never re-derived from a fresh {@code Instant.now()}-style call - so
+     * a fake clock can deterministically simulate budget already having been partially or fully
+     * consumed without any real wall-clock waiting.
+     */
+    static final class Deadline {
         private final IMonotonicClock clock;
         private final long deadlineNanos;
 

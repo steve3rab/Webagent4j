@@ -777,6 +777,18 @@ public final class HttpCrawler implements ICrawler {
                             tooLarge,
                             attempt,
                             bytesRead);
+                } catch (PinnedSocketHttpTransport.TransportInterruptedException interrupted) {
+                    // Interruption means "stop this operation," never "try again": never eligible
+                    // for retry regardless of retryOnIoException or remaining attempt budget,
+                    // unlike an ordinary IOException below. The interrupt flag was already
+                    // restored by the transport layer; nothing further to do here beyond
+                    // reporting a terminal, honestly-classified failure.
+                    return RetryOutcome.failure(
+                            CrawlFailureType.NETWORK,
+                            "network request was interrupted",
+                            interrupted,
+                            attempt,
+                            bytesRead);
                 } catch (IOException io) {
                     if (request.retryOnIoException() && attempt < policy.maxAttempts()) {
                         sleeper.sleep(policy.delayBeforeAttempt(attempt + 1));

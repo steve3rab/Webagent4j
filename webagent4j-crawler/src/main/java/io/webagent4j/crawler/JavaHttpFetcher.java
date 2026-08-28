@@ -89,8 +89,16 @@ public final class JavaHttpFetcher implements IHttpFetcher {
                                     new BoundedByteArraySubscriber(
                                             request.uri(), request.maxResponseBytes()));
         } catch (InterruptedException interrupted) {
+            // Interruption means "stop this operation," never "try again" - reported as a
+            // distinct, terminal type so HttpCrawler's retry loop can never mistake it for an
+            // ordinary, retryable connectivity failure. The message is a fixed, safe string
+            // rather than one embedding the request URI, matching this codebase's diagnostics
+            // rule against caller-facing text carrying userinfo/query/fragment. HttpClient offers
+            // no way to learn whether request bytes had already reached the peer, so this is
+            // conservatively reported as "may have started" rather than falsely claiming
+            // certainty that nothing was sent.
             Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while fetching " + request.uri(), interrupted);
+            throw new PinnedSocketHttpTransport.TransportInterruptedException(true, interrupted);
         } catch (IOException wrapped) {
             // HttpClient wraps a body subscriber's exceptional completion in its own IOException
             // rather than propagating it directly - unwrap so callers can catch
