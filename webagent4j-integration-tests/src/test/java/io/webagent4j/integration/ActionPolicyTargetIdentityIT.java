@@ -69,7 +69,11 @@ class ActionPolicyTargetIdentityIT {
 
             assertThat(result.success()).isTrue();
             assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.REAL);
-            assertThat(support.clickCount("first")).isEqualTo(1);
+            // The fixture's onclick handler reports its click via an async fetch() the browser
+            // has not necessarily delivered to the server yet at the instant execute() returns -
+            // bounded polling on the existing observation timeout, not an immediate read, is what
+            // proves the side effect actually landed.
+            support.awaitClickCount("first", 1);
             assertThat(support.clickCount("replacement")).isZero();
         }
     }
