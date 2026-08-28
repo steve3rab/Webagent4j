@@ -84,6 +84,19 @@ class NetworkPoliciesTest {
     }
 
     @Test
+    void denyLoopbackDeniesAnIpv6LiteralWithoutEverCallingTheResolver() {
+        INetworkAddressResolver resolverThatMustNeverBeCalled =
+                host -> {
+                    throw new AssertionError(
+                            "resolver must never be called for an IPv6 literal destination");
+                };
+        INetworkPolicy policy =
+                NetworkPolicies.builder(resolverThatMustNeverBeCalled).denyLoopback().build();
+
+        assertThat(policy.evaluate(context("http://[::1]/")).isDeny()).isTrue();
+    }
+
+    @Test
     void denyPrivateAddressesDeniesAHostnameResolvingToAPrivateAddress()
             throws UnknownHostException {
         INetworkAddressResolver fakeResolver = host -> List.of(InetAddress.getByName("10.0.0.5"));
@@ -108,6 +121,34 @@ class NetworkPoliciesTest {
                 NetworkPolicies.builder(mixedResolver).denyPrivateAddresses().build();
 
         assertThat(policy.evaluate(context("https://mixed.example.com/")).isDeny()).isTrue();
+    }
+
+    @Test
+    void aPrivateAddressListedBeforeAnAllowedOneStillDenies() throws UnknownHostException {
+        INetworkAddressResolver privateFirstResolver =
+                host ->
+                        List.of(
+                                InetAddress.getByName("192.168.1.1"),
+                                InetAddress.getByName("8.8.8.8"));
+        INetworkPolicy policy =
+                NetworkPolicies.builder(privateFirstResolver).denyPrivateAddresses().build();
+
+        assertThat(policy.evaluate(context("https://private-first.example.com/")).isDeny())
+                .isTrue();
+    }
+
+    @Test
+    void anAllowedAddressListedBeforeAPrivateOneStillDenies() throws UnknownHostException {
+        INetworkAddressResolver allowedFirstResolver =
+                host ->
+                        List.of(
+                                InetAddress.getByName("8.8.8.8"),
+                                InetAddress.getByName("192.168.1.1"));
+        INetworkPolicy policy =
+                NetworkPolicies.builder(allowedFirstResolver).denyPrivateAddresses().build();
+
+        assertThat(policy.evaluate(context("https://allowed-first.example.com/")).isDeny())
+                .isTrue();
     }
 
     @Test
@@ -142,6 +183,48 @@ class NetworkPoliciesTest {
         assertThat(decision.isDeny()).isTrue();
         assertThat(decision.reason())
                 .isEqualTo(NetworkPolicyReasons.RESOLUTION_REQUIRED_BUT_UNRESOLVED);
+    }
+
+    /**
+     * A deny-category rule cannot be evaluated at all without at least one resolved address to
+     * classify - an empty resolution must fail closed exactly like {@code
+     * requireResolutionForHostnames()} does, even though that method was never called. Resolution
+     * is implicitly required for evaluation the moment any address-classification rule is
+     * configured; an empty result then means "classification impossible," not "nothing to deny."
+     */
+    @Test
+    void
+            emptyResolutionWithOnlyADenyCategoryRuleConfiguredStillDeniesInsteadOfFallingThroughToAllow() {
+        INetworkAddressResolver emptyResolver = host -> List.of();
+        INetworkPolicy policy =
+                NetworkPolicies.builder(emptyResolver).denyPrivateAddresses().build();
+
+        PolicyDecision decision = policy.evaluate(context("https://some-host.example/"));
+
+        assertThat(decision.isDeny()).isTrue();
+        assertThat(decision.reason())
+                .isEqualTo(NetworkPolicyReasons.RESOLUTION_REQUIRED_BUT_UNRESOLVED);
+    }
+
+    @Test
+    void emptyResolutionWithOnlyADenyLoopbackRuleConfiguredDenies() {
+        INetworkAddressResolver emptyResolver = host -> List.of();
+        INetworkPolicy policy = NetworkPolicies.builder(emptyResolver).denyLoopback().build();
+
+        assertThat(policy.evaluate(context("https://some-host.example/")).isDeny()).isTrue();
+    }
+
+    @Test
+    void emptyResolutionWithMultipleDenyCategoryRulesConfiguredDenies() {
+        INetworkAddressResolver emptyResolver = host -> List.of();
+        INetworkPolicy policy =
+                NetworkPolicies.builder(emptyResolver)
+                        .denyPrivateAddresses()
+                        .denyLoopback()
+                        .denyLinkLocal()
+                        .build();
+
+        assertThat(policy.evaluate(context("https://some-host.example/")).isDeny()).isTrue();
     }
 
     @Test
