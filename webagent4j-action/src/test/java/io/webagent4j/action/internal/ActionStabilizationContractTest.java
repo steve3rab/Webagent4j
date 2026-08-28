@@ -107,6 +107,32 @@ class ActionStabilizationContractTest {
         assertThat(stableCompletedEvents(result)).isEmpty();
     }
 
+    @Test
+    void aStabilizationExceptionCarryingASecretNeverLeaksThroughAnySafeRenderer() {
+        IActionBackend backend = mock(IActionBackend.class);
+        String secretMarker = "WEBAGENT4J_STABILIZATION_EXCEPTION_SECRET";
+        ActionResult<Void> result =
+                execute(
+                        backend,
+                        (context, remaining) -> {
+                            throw new RuntimeException(
+                                    "stabilization backend unavailable: password=" + secretMarker);
+                        });
+
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(ActionFailureType.STABILIZATION_FAILED);
+        assertThat(result.toCompactText()).doesNotContain(secretMarker);
+        assertThat(result.decisionTrace().toString()).doesNotContain(secretMarker);
+        assertThat(result.diagnostics().toString()).doesNotContain(secretMarker);
+        for (ActionEvent event : result.events()) {
+            assertThat(event.toString()).doesNotContain(secretMarker);
+        }
+        // The raw cause remains available in-process for a caller who explicitly wants it - only
+        // the safe-by-default renderers above must never surface it.
+        assertThat(result.failure().orElseThrow().cause().orElseThrow().getMessage())
+                .contains(secretMarker);
+    }
+
     private static List<ActionEvent> stableCompletedEvents(ActionResult<Void> result) {
         return result.events().stream()
                 .filter(event -> event.stage() == ActionStage.STABILIZATION_COMPLETED)
