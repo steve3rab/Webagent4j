@@ -234,6 +234,24 @@ final class ActionTestApplication implements AutoCloseable {
                               }
                             </script>
                             """);
+            case "/actions/policy-toctou-fill" ->
+                    document(
+                            "Policy TOCTOU fill",
+                            """
+                            <input id="first" type="text" aria-label="Confirm"
+                              oninput="fetch('/count-click/first')">
+                            <script>
+                              function replaceFirstInputWithReplacementSameLocator() {
+                                const old = document.getElementById('first');
+                                const replacement = document.createElement('input');
+                                replacement.id = 'replacement';
+                                replacement.type = 'text';
+                                replacement.setAttribute('aria-label', 'Confirm');
+                                replacement.oninput = () => fetch('/count-click/replacement');
+                                old.replaceWith(replacement);
+                              }
+                            </script>
+                            """);
             case "/actions/plan-precondition-invalidates" ->
                     document(
                             "Plan precondition invalidates",
