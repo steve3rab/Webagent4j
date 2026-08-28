@@ -328,16 +328,20 @@ final class PinnedSocketHttpTransport {
 
     private static RawResponse readResponse(ReadState state, HttpFetchRequest request)
             throws IOException {
+        // The response text below (status line, headers, chunk sizes) is entirely
+        // attacker-controlled - it comes verbatim from whatever the connected peer chose to
+        // send. None of it is ever embedded in an exception message; every failure here uses a
+        // fixed, safe classification instead.
         String statusLine = readLine(state, MAX_STATUS_LINE_LENGTH);
         if (statusLine == null || statusLine.isEmpty()) {
-            throw new IOException("Empty response from " + request.uri());
+            throw new IOException("empty HTTP response");
         }
         if (!statusLine.startsWith("HTTP/1.")) {
-            throw new IOException("Unsupported HTTP response line: " + statusLine);
+            throw new IOException("unsupported HTTP response version");
         }
         int firstSpace = statusLine.indexOf(' ');
         if (firstSpace < 0) {
-            throw new IOException("Malformed status line: " + statusLine);
+            throw new IOException("malformed HTTP status line");
         }
         int secondSpace = statusLine.indexOf(' ', firstSpace + 1);
         String statusCodeText =
@@ -348,7 +352,7 @@ final class PinnedSocketHttpTransport {
         try {
             statusCode = Integer.parseInt(statusCodeText.trim());
         } catch (NumberFormatException malformed) {
-            throw new IOException("Malformed status code: " + statusLine);
+            throw new IOException("malformed HTTP status code");
         }
 
         Map<String, List<String>> headers = new LinkedHashMap<>();
@@ -366,7 +370,7 @@ final class PinnedSocketHttpTransport {
             }
             int colon = line.indexOf(':');
             if (colon <= 0) {
-                throw new IOException("Malformed response header: " + line);
+                throw new IOException("malformed HTTP response header");
             }
             String name = line.substring(0, colon).trim();
             String value = line.substring(colon + 1).trim();
@@ -398,10 +402,10 @@ final class PinnedSocketHttpTransport {
             try {
                 contentLength = Long.parseLong(contentLengthHeader.get().trim());
             } catch (NumberFormatException malformed) {
-                throw new IOException("Malformed Content-Length: " + contentLengthHeader.get());
+                throw new IOException("malformed HTTP Content-Length header");
             }
             if (contentLength < 0) {
-                throw new IOException("Negative Content-Length: " + contentLength);
+                throw new IOException("negative HTTP Content-Length header");
             }
             if (contentLength > request.maxResponseBytes()) {
                 throw new ResponseTooLargeException(request.uri(), request.maxResponseBytes());
@@ -426,10 +430,10 @@ final class PinnedSocketHttpTransport {
             try {
                 chunkSize = Long.parseLong(sizeText, 16);
             } catch (NumberFormatException malformed) {
-                throw new IOException("Malformed chunk size: " + sizeLine);
+                throw new IOException("malformed HTTP chunk size");
             }
             if (chunkSize < 0) {
-                throw new IOException("Negative chunk size: " + sizeLine);
+                throw new IOException("negative HTTP chunk size");
             }
             if (chunkSize == 0) {
                 while (true) {
@@ -605,7 +609,7 @@ final class PinnedSocketHttpTransport {
     private static boolean tlsForScheme(URI uri) throws IOException {
         String scheme = uri.getScheme();
         if (scheme == null) {
-            throw new IOException("Request URI has no scheme: " + uri);
+            throw new IOException("request URI has no scheme");
         }
         return switch (scheme.toLowerCase(Locale.ROOT)) {
             case "https" -> true;
@@ -654,7 +658,7 @@ final class PinnedSocketHttpTransport {
     private static String requireHost(URI uri) throws IOException {
         String host = uri.getHost();
         if (host == null || host.isBlank()) {
-            throw new IOException("Request URI has no host: " + uri);
+            throw new IOException("request URI has no host");
         }
         return host;
     }

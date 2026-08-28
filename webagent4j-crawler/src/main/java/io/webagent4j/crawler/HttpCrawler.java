@@ -276,10 +276,14 @@ public final class HttpCrawler implements ICrawler {
             try {
                 html = new String(response.body(), charset);
             } catch (RuntimeException malformed) {
+                // A fixed, safe classification - never the raw exception message, which could in
+                // principle echo attacker-controlled response bytes back into a caller-visible
+                // diagnostic. The real exception remains available in-process via the structured
+                // cause field below.
                 recordFailure(
                         task,
                         CrawlFailureType.INVALID_CONTENT,
-                        "could not decode response body: " + malformed.getMessage(),
+                        "response body could not be decoded as text",
                         finalUrl,
                         Optional.of(response.statusCode()),
                         Optional.of(malformed),
@@ -342,14 +346,16 @@ public final class HttpCrawler implements ICrawler {
             try {
                 normalizedCandidate = normalizer.normalize(link.resolvedUrl());
             } catch (IllegalArgumentException notNormalizable) {
+                // A fixed, safe classification - never the raw exception message. The link's own
+                // resolvedUrl() field already carries the structured URL a caller can inspect;
+                // this text is never the place a query string, userinfo, or fragment belongs.
                 DiscoveredLink rejected =
                         rejectedLink(
                                 link,
                                 Optional.empty(),
                                 CrawlDecision.reject(
                                         CrawlDecisionType.REJECT_URL_FILTER,
-                                        "could not be normalized: "
-                                                + notNormalizable.getMessage()));
+                                        "URL could not be normalized"));
                 rejectedUrls.add(rejected);
                 return rejected;
             }
@@ -584,13 +590,16 @@ public final class HttpCrawler implements ICrawler {
                     try {
                         target = normalizer.normalize(locationRaw.get());
                     } catch (IllegalArgumentException notNormalizable) {
+                        // A fixed, safe classification - never the raw exception message, which
+                        // could otherwise echo a redirect Location header's userinfo or query
+                        // text. The real exception is preserved in the structured cause field
+                        // below instead of being discarded.
                         return FetchOutcome.failure(
                                 CrawlFailureType.INVALID_REDIRECT,
-                                "redirect target could not be normalized: "
-                                        + notNormalizable.getMessage(),
+                                "redirect target could not be normalized",
                                 current,
                                 Optional.of(status),
-                                Optional.empty(),
+                                Optional.of(notNormalizable),
                                 attemptsMade,
                                 bytesRead,
                                 chain);
@@ -774,16 +783,20 @@ public final class HttpCrawler implements ICrawler {
                         attempt++;
                         continue;
                     }
+                    // A fixed, safe classification - never the raw exception message, which may
+                    // originate from a transport layer that has no reason to keep its own text
+                    // free of connection details, protocol lines, or other unsafe data. The real
+                    // exception is preserved in the structured cause field, not this text.
                     return RetryOutcome.failure(
                             CrawlFailureType.NETWORK,
-                            String.valueOf(io.getMessage()),
+                            "network request failed",
                             io,
                             attempt,
                             bytesRead);
                 } catch (RuntimeException opaque) {
                     return RetryOutcome.failure(
                             CrawlFailureType.BACKEND_FAILURE,
-                            String.valueOf(opaque.getMessage()),
+                            "backend request failed unexpectedly",
                             opaque,
                             attempt,
                             bytesRead);

@@ -251,6 +251,50 @@ class HttpCrawlerTest {
     }
 
     @Test
+    void anIoExceptionMessageContainingASecretNeverLeaksIntoTheFailureMessage() {
+        // DG: a transport-layer IOException's own message is never assumed safe - it could
+        // contain connection details, protocol text, or worse. This must never automatically
+        // become CrawlFailure.message() or toString(), even though the raw cause remains
+        // available in-process for a caller who explicitly wants it.
+        String secretMarker = "PRIVATE_SENTINEL_582719";
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.throwIo(SEED, new IOException("connection reset: " + secretMarker));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(SEED).maxDepth(0));
+
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.NETWORK);
+        assertThat(failure.message()).doesNotContain(secretMarker);
+        assertThat(failure.toString()).doesNotContain(secretMarker);
+        assertThat(failure.cause().orElseThrow().getMessage()).contains(secretMarker);
+    }
+
+    @Test
+    void aRuntimeExceptionMessageContainingASecretNeverLeaksIntoTheFailureMessage() {
+        String secretMarker = "PRIVATE_SENTINEL_582719";
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.throwRuntime(SEED, new IllegalStateException("backend state: " + secretMarker));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(SEED).maxDepth(0));
+
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.BACKEND_FAILURE);
+        assertThat(failure.message()).doesNotContain(secretMarker);
+        assertThat(failure.toString()).doesNotContain(secretMarker);
+        assertThat(failure.cause().orElseThrow().getMessage()).contains(secretMarker);
+    }
+
+    @Test
     void aTimeoutIsAStructuredFailure() {
         FakeHttpFetcher fetcher = new FakeHttpFetcher();
         fetcher.throwIo(SEED, new HttpTimeoutException("timed out"));

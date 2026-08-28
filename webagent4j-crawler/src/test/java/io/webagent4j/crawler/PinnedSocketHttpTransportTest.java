@@ -108,6 +108,43 @@ class PinnedSocketHttpTransportTest {
     }
 
     @Test
+    void aMalformedResponseHeaderNeverLeaksItsRawTextIntoTheExceptionMessage() throws Exception {
+        // DG: the response text is entirely attacker/peer-controlled - a malformed header line
+        // carrying a secret-shaped marker must never have that marker echoed back into the
+        // exception this transport raises.
+        String secretMarker = "PRIVATE_SENTINEL_582719";
+        try (TestHttpServer server =
+                TestHttpServer.respondingWith(
+                        "HTTP/1.1 200 OK\r\nX-No-Colon-Header-" + secretMarker + "\r\n\r\n")) {
+            assertThatThrownBy(
+                            () -> fetch(server.port(), "/", Map.of(), 1_000, Duration.ofSeconds(5)))
+                    .isInstanceOf(IOException.class)
+                    .satisfies(
+                            exception ->
+                                    assertThat(exception.getMessage())
+                                            .doesNotContain(secretMarker));
+        }
+    }
+
+    @Test
+    void aMalformedChunkSizeNeverLeaksItsRawTextIntoTheExceptionMessage() throws Exception {
+        String secretMarker = "PRIVATE_SENTINEL_582719";
+        try (TestHttpServer server =
+                TestHttpServer.respondingWith(
+                        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                + secretMarker
+                                + "\r\n")) {
+            assertThatThrownBy(
+                            () -> fetch(server.port(), "/", Map.of(), 1_000, Duration.ofSeconds(5)))
+                    .isInstanceOf(IOException.class)
+                    .satisfies(
+                            exception ->
+                                    assertThat(exception.getMessage())
+                                            .doesNotContain(secretMarker));
+        }
+    }
+
+    @Test
     void triesTheNextPinnedAddressWhenTheFirstIsUnreachable() throws Exception {
         // The entire 127.0.0.0/8 range is loopback, so 127.0.0.3 with nothing listening on it
         // fails fast with connection-refused rather than hanging, while 127.0.0.2 hosts the real
