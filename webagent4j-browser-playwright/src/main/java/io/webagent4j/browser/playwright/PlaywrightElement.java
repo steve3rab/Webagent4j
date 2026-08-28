@@ -317,17 +317,20 @@ final class PlaywrightElement implements IElement, AutoCloseable {
      *
      * <p>Returns {@link Optional#empty()} whenever identity cannot be reproven - detached,
      * replaced, ambiguous, or any inspection failure - uniformly "not proven," exactly like {@link
-     * #isStillTheOriginallyResolvedTarget()}. Returns the unchanged {@code this} (no verified
-     * handle attached) when no identity was ever captured for this element, since there is nothing
-     * to disprove it against; a caller then falls back to its ordinary re-resolving path with no
-     * added cost, preserving this backend's existing best-effort behavior for elements that never
-     * opted into identity tracking.
+     * #isStillTheOriginallyResolvedTarget()}. An element that never captured an identity at all
+     * ({@link #capturedIdentity} is {@code null}) fails exactly the same way: absence of a
+     * capability to prove identity is never treated as proof that identity still holds, matching
+     * {@link IElement#verifiedForExecution()}'s own fail-closed default. This never costs an
+     * ungoverned action anything extra - {@code ActionExecutor} only ever calls this method when a
+     * caller has explicitly opted into governed, exact-target verification; every ordinary
+     * (ungoverned) action still reaches the backend through the unchanged, re-resolving {@link
+     * Locator} path this class always used, without this method ever being consulted.
      */
     @Override
     public Optional<IElement> verifiedForExecution() {
         validateScopeIdentity();
         if (capturedIdentity == null) {
-            return Optional.of(this);
+            return Optional.empty();
         }
         PlaywrightLocatorBackend.VerifiedHandle verified;
         try {

@@ -32,9 +32,11 @@ import java.util.function.Consumer;
  * {@link ElementHandle} identity verification captured and checked, so the native operation acts on
  * precisely that node - never on a second, independently re-resolved {@link Locator} lookup that
  * could silently observe a different physical node satisfying the same locator between the check
- * and the use. An element with no verified handle (an ungoverned resolution, or a governed one for
- * which identity was never captured) falls back to the ordinary, re-resolving {@link Locator} path
- * unchanged - see {@link #bindToVerifiedTarget}.
+ * and the use. An element with no verified handle falls back to the ordinary, re-resolving {@link
+ * Locator} path unchanged - see {@link #bindToVerifiedTarget}. In practice this only ever happens
+ * for an ungoverned resolution: a governed resolution with no captured identity to verify fails
+ * closed one layer up, in {@link PlaywrightElement#verifiedForExecution()}, so this class's methods
+ * are never even invoked for it.
  */
 final class PlaywrightActionBackend implements IActionBackend {
 
@@ -240,9 +242,11 @@ final class PlaywrightActionBackend implements IActionBackend {
      * independent {@link Locator} resolution for the actual native call - the residual
      * time-of-check-to-time-of-use window a caller combining a boolean identity check with a
      * separate native call would otherwise reopen. An element that never captured a verified handle
-     * - every ungoverned resolution, and any governed one for which the backend could not
-     * atomically bind identity - takes the exact same {@link Locator} path this class always took,
-     * so an ungoverned action's behavior and cost are completely unchanged.
+     * takes the exact same {@link Locator} path this class always took, so an ungoverned action's
+     * behavior and cost are completely unchanged. A governed resolution that had nothing to verify
+     * an identity against (no captured identity) or that could not reprove it never reaches this
+     * method at all - {@link PlaywrightElement#verifiedForExecution()} fails closed one layer up,
+     * before the backend is ever invoked.
      */
     private static void bindToVerifiedTarget(
             IElement element,
