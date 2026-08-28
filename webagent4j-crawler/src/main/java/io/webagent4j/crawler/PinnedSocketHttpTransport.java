@@ -21,6 +21,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -163,8 +169,19 @@ final class PinnedSocketHttpTransport {
             // onward is therefore "may have been observed by the peer," never "definitely not
             // sent" - see the REQUEST_STARTED boundary this flag models.
             transmissionMayHaveStarted = true;
-            socket.getOutputStream().write(requestBytes);
-            socket.getOutputStream().flush();
+            // A plain Socket exposes no write-side timeout: SO_TIMEOUT bounds only blocking
+            // reads, so a peer applying TCP receive-window backpressure could otherwise stall
+            // write()/flush() past the request's own deadline. Bounding this call itself closes
+            // that gap - see runBoundedOnDeadline.
+            Socket writingSocket = socket;
+            runBoundedOnDeadline(
+                    writingSocket,
+                    deadline,
+                    request.uri(),
+                    () -> {
+                        writingSocket.getOutputStream().write(requestBytes);
+                        writingSocket.getOutputStream().flush();
+                    });
             InputStream in = new BufferedInputStream(socket.getInputStream());
             ReadState readState = new ReadState(in, socket, deadline, request.uri());
             return readResponse(readState, request);
@@ -233,8 +250,80 @@ final class PinnedSocketHttpTransport {
         }
         tlsSocket.setSSLParameters(parameters);
         tlsSocket.setSoTimeout(requireTimeBudget(deadline, uri));
-        tlsSocket.startHandshake();
+        // The handshake itself writes (ClientHello and later flights) as well as reads; SO_TIMEOUT
+        // bounds only the read side, so this is bounded the same way the request write is.
+        runBoundedOnDeadline(tlsSocket, deadline, uri, tlsSocket::startHandshake);
         return tlsSocket;
+    }
+
+    /**
+     * Runs one blocking socket operation - anything that may write, such as a request body or a TLS
+     * handshake - under the same shared monotonic deadline every other phase of this fetch already
+     * uses, closing the gap {@code Socket#setSoTimeout} leaves open: that option bounds only
+     * blocking reads, never writes, so a peer applying TCP receive-window backpressure could
+     * otherwise stall a write call arbitrarily far past this request's real deadline.
+     *
+     * <p>{@code task} runs on a dedicated virtual thread owned entirely by this call: if it does
+     * not complete within the deadline's remaining budget, {@code socket} is closed to force it to
+     * unblock (a blocked read or write on a closed socket fails promptly), and a {@link
+     * HttpTimeoutException} is thrown - identical in every caller-visible respect to a timeout from
+     * any other phase, including never being retried against another pinned address. The executor
+     * is scoped to this one call (try-with-resources) and is not returned or retained, so no
+     * background work outlives this method: either the task already finished before the timeout
+     * fires, or the forced socket close unblocks it immediately afterward, so the executor's own
+     * close() - which waits for the task to finish - never waits on a still-live blocking
+     * operation.
+     */
+    private static void runBoundedOnDeadline(Socket socket, Deadline deadline, URI uri, IOTask task)
+            throws IOException {
+        int remainingMillis = requireTimeBudget(deadline, uri);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> future =
+                    executor.submit(
+                            () -> {
+                                task.run();
+                                return null;
+                            });
+            try {
+                future.get(remainingMillis, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException expired) {
+                closeQuietly(socket);
+                HttpTimeoutException timeout =
+                        new HttpTimeoutException("Request to " + uri + " timed out");
+                timeout.initCause(expired);
+                throw timeout;
+            } catch (ExecutionException wrapped) {
+                Throwable cause = wrapped.getCause();
+                if (cause instanceof IOException ioFailure) {
+                    throw ioFailure;
+                }
+                if (cause instanceof RuntimeException runtimeFailure) {
+                    throw runtimeFailure;
+                }
+                if (cause instanceof Error error) {
+                    throw error;
+                }
+                throw new IOException("Blocking socket operation failed", cause);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                closeQuietly(socket);
+                throw new IOException(
+                        "Interrupted during a blocking socket operation", interrupted);
+            }
+        }
+    }
+
+    private static void closeQuietly(Socket socket) {
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // Best-effort: the only purpose here is unblocking the operation racing this close.
+        }
+    }
+
+    @FunctionalInterface
+    private interface IOTask {
+        void run() throws IOException;
     }
 
     private static RawResponse readResponse(ReadState state, HttpFetchRequest request)
