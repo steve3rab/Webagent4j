@@ -108,4 +108,59 @@ class NetworkDestinationTest {
         assertThat(new NetworkDestination("customscheme", "example.com", -1, false).port())
                 .isEqualTo(-1);
     }
+
+    @Test
+    void directConstructorCanonicalizesSchemeAndHostToLowercaseJustLikeTheFactory() {
+        NetworkDestination destination = new NetworkDestination("HTTPS", "Example.COM", 443, false);
+        assertThat(destination.scheme()).isEqualTo("https");
+        assertThat(destination.host()).isEqualTo("example.com");
+    }
+
+    @Test
+    void directConstructorStripsATrailingDotFromHostJustLikeTheFactory() {
+        assertThat(new NetworkDestination("https", "example.com.", 443, false).host())
+                .isEqualTo("example.com");
+    }
+
+    @Test
+    void directConstructorConvertsInternationalHostToPunycodeJustLikeTheFactory() {
+        String punycode = java.net.IDN.toASCII("例え.jp").toLowerCase(java.util.Locale.ROOT);
+        NetworkDestination viaConstructor = new NetworkDestination("https", "例え.jp", 443, false);
+        NetworkDestination viaFactory = NetworkDestination.of(URI.create("https://" + punycode));
+        assertThat(viaConstructor.host()).isEqualTo(punycode);
+        assertThat(viaConstructor.host()).isEqualTo(viaFactory.host());
+    }
+
+    @Test
+    void constructorAndFactoryAgreeOnTheCanonicalFormOfTheSameUppercaseTrailingDottedHost() {
+        NetworkDestination viaFactory =
+                NetworkDestination.of(URI.create("HTTPS://Example.COM./path"));
+        NetworkDestination viaConstructor =
+                new NetworkDestination("HTTPS", "Example.COM.", 443, false);
+        assertThat(viaConstructor).isEqualTo(viaFactory);
+    }
+
+    @Test
+    void ipv4LiteralHostIsPreservedUnchangedByBothPublicConstructionPaths() {
+        assertThat(NetworkDestination.of(URI.create("https://127.0.0.1/")).host())
+                .isEqualTo("127.0.0.1");
+        assertThat(new NetworkDestination("https", "127.0.0.1", 443, false).host())
+                .isEqualTo("127.0.0.1");
+    }
+
+    @Test
+    void ipv6LiteralHostIsPreservedUnchangedByBothPublicConstructionPaths() {
+        // java.net.URI.getHost() keeps the brackets for an IPv6 literal; the constructor's
+        // canonicalization must not disturb that either, so both paths agree on the same form.
+        assertThat(NetworkDestination.of(URI.create("https://[::1]/")).host()).isEqualTo("[::1]");
+        assertThat(new NetworkDestination("https", "[::1]", 443, false).host()).isEqualTo("[::1]");
+    }
+
+    @Test
+    void rejectsInvalidPortInDirectConstructorJustLikeTheFactoryWouldRejectAnInvalidUri() {
+        assertThatThrownBy(() -> new NetworkDestination("https", "example.com", -2, false))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new NetworkDestination("https", "example.com", 70000, false))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }
