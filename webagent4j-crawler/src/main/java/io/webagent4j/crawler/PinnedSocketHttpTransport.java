@@ -116,8 +116,20 @@ final class PinnedSocketHttpTransport {
                         new HttpTimeoutException("Request to " + uri + " timed out");
                 timeout.initCause(socketTimeout);
                 throw timeout;
-            } catch (IOException failure) {
-                lastFailure = failure;
+            } catch (PinnedAttemptFailure failure) {
+                if (failure.transmissionMayHaveStarted()) {
+                    // The peer may already have received some or all of the request bytes for
+                    // this attempt - falling back to a different pinned address here would risk
+                    // silently sending the same request a second time. This failure is surfaced
+                    // immediately instead, exactly as terminal as it would be for an unpinned,
+                    // single-address request.
+                    throw failure.original();
+                }
+                // Nothing was ever written to this address's socket, so no request has been
+                // observable to any peer yet - trying the next pinned address is the same
+                // single logical request choosing a different equally-authorized destination,
+                // never a second physical send of an already-attempted one.
+                lastFailure = failure.original();
             }
         }
         throw lastFailure;
@@ -133,6 +145,7 @@ final class PinnedSocketHttpTransport {
             Deadline deadline)
             throws IOException {
         Socket socket = new Socket();
+        boolean transmissionMayHaveStarted = false;
         try {
             socket.connect(
                     new InetSocketAddress(address, port),
@@ -141,16 +154,57 @@ final class PinnedSocketHttpTransport {
                 socket = wrapTls(sslSocketFactory, socket, host, port, deadline, request.uri());
             }
             socket.setSoTimeout(requireTimeBudget(deadline, request.uri()));
+            // Once the write below is attempted, a failure can never again prove the peer saw
+            // nothing: a partial write is indistinguishable from a complete one at this API
+            // level, and even a fully successful write only proves bytes reached the local
+            // socket buffer, not that the peer failed to act on them. Everything from here
+            // onward is therefore "may have been observed by the peer," never "definitely not
+            // sent" - see the REQUEST_STARTED boundary this flag models.
+            transmissionMayHaveStarted = true;
             socket.getOutputStream().write(requestBytes);
             socket.getOutputStream().flush();
             InputStream in = new BufferedInputStream(socket.getInputStream());
             return readResponse(in, request);
+        } catch (HttpTimeoutException | java.net.SocketTimeoutException timeoutLike) {
+            // Handled one level up, identically regardless of phase - never wrapped as a
+            // PinnedAttemptFailure, since a deadline/socket timeout is already never retried
+            // against another address.
+            throw timeoutLike;
+        } catch (IOException failure) {
+            throw new PinnedAttemptFailure(failure, transmissionMayHaveStarted);
         } finally {
             try {
                 socket.close();
             } catch (IOException ignored) {
                 // Best-effort cleanup only. Never replace the semantic result/failure above.
             }
+        }
+    }
+
+    /**
+     * Internal-only signal from one pinned-address attempt distinguishing "definitely no request
+     * bytes were sent" from "the peer may already have observed this request" - the boundary that
+     * gates whether {@link #fetch} may retry against a different pinned address. Always unwrapped
+     * back to {@link #original()} before crossing this class's boundary, so a caller-visible
+     * exception type (for example {@link ResponseTooLargeException}) is never masked by this
+     * control-flow-only wrapper.
+     */
+    private static final class PinnedAttemptFailure extends IOException {
+        private final IOException original;
+        private final boolean transmissionMayHaveStarted;
+
+        PinnedAttemptFailure(IOException original, boolean transmissionMayHaveStarted) {
+            super(original.getMessage(), original);
+            this.original = original;
+            this.transmissionMayHaveStarted = transmissionMayHaveStarted;
+        }
+
+        IOException original() {
+            return original;
+        }
+
+        boolean transmissionMayHaveStarted() {
+            return transmissionMayHaveStarted;
         }
     }
 
