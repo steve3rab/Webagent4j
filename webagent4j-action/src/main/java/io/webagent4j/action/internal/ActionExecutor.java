@@ -736,6 +736,41 @@ final class ActionExecutor {
                     List.of(),
                     executor);
         }
+        List<io.webagent4j.action.ActionDecisionEntry> policyDecisions =
+                snapshotPolicyDecisions(command, config, actionId, targetDescription);
+        // Unlike the snapshot itself (informational only - execute() always re-evaluates fresh,
+        // never trusting this), the plan's own status must not claim READY over a policy that has
+        // already refused this action: a plan a caller inspects and decides to keep is a real,
+        // caller-visible signal, and reporting READY for something the same policy would reject a
+        // moment later at execute() is exactly the kind of authorization-shaped promise this
+        // framework never makes. A DENY or evaluation failure seen here blocks the plan; only an
+        // outright ALLOW (or no policy configured at all) is READY.
+        for (io.webagent4j.action.ActionDecisionEntry entry : policyDecisions) {
+            if (entry.outcome() == io.webagent4j.action.ActionDecisionOutcome.DENY) {
+                return blockedByPolicy(
+                        actionId,
+                        command,
+                        targetDescription,
+                        preconditions,
+                        expectedPostconditions,
+                        policyDecisions,
+                        ActionFailureType.POLICY_DENIED,
+                        "An action policy denied this action",
+                        executor);
+            }
+            if (entry.outcome() == io.webagent4j.action.ActionDecisionOutcome.EVALUATION_FAILED) {
+                return blockedByPolicy(
+                        actionId,
+                        command,
+                        targetDescription,
+                        preconditions,
+                        expectedPostconditions,
+                        policyDecisions,
+                        ActionFailureType.POLICY_EVALUATION_FAILED,
+                        "Action policy evaluation failed",
+                        executor);
+            }
+        }
         return new DefaultActionPlan<>(
                 actionId,
                 command.type(),
@@ -747,7 +782,38 @@ final class ActionExecutor {
                 expectedPostconditions,
                 Optional.empty(),
                 new ActionDiagnostics(targetDescription, "", Map.of("plan", "ready")),
-                snapshotPolicyDecisions(command, config, actionId, targetDescription),
+                policyDecisions,
+                executor);
+    }
+
+    /**
+     * Builds a {@link ActionPlanStatus#BLOCKED} plan for a policy that has already refused this
+     * action (or failed to evaluate) during {@link #prepare}'s snapshot pass - shared by the DENY
+     * and evaluation-failure cases so both carry the exact same shape.
+     */
+    @SuppressWarnings("checkstyle:ParameterNumber")
+    private <R> IActionPlan<R> blockedByPolicy(
+            ActionId actionId,
+            ActionCommand<R> command,
+            String targetDescription,
+            List<VerificationResult> preconditions,
+            List<VerificationType> expectedPostconditions,
+            List<io.webagent4j.action.ActionDecisionEntry> policyDecisions,
+            ActionFailureType failureType,
+            String message,
+            Supplier<ActionResult<R>> executor) {
+        return new DefaultActionPlan<>(
+                actionId,
+                command.type(),
+                command.idempotency(),
+                command.sideEffect(),
+                ActionPlanStatus.BLOCKED,
+                targetDescription,
+                preconditions,
+                expectedPostconditions,
+                Optional.of(new ActionFailure(failureType, message, Optional.empty())),
+                new ActionDiagnostics(targetDescription, "", Map.of("plan", "blocked")),
+                policyDecisions,
                 executor);
     }
 

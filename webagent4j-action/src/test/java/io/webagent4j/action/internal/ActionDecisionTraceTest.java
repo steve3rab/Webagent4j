@@ -9,6 +9,7 @@ import io.webagent4j.action.ActionDecisionKind;
 import io.webagent4j.action.ActionDecisionOutcome;
 import io.webagent4j.action.ActionDecisionPhase;
 import io.webagent4j.action.ActionDecisionTrace;
+import io.webagent4j.action.ActionExecutionMode;
 import io.webagent4j.action.ActionResult;
 import io.webagent4j.action.IActionBackend;
 import io.webagent4j.action.IActionContext;
@@ -171,7 +172,7 @@ class ActionDecisionTraceTest {
     }
 
     @Test
-    void planPolicyDecisionsSnapshotIsInformationalAndNeverGatesExecute() {
+    void deniedPlanPolicySnapshotBlocksThePlanButStillNeverGatesExecute() {
         IActionBackend backend = mock(IActionBackend.class);
         IActionPlan<Void> plan =
                 new DefaultActionBuilder(context(backend))
@@ -182,8 +183,53 @@ class ActionDecisionTraceTest {
         assertThat(plan.policyDecisions()).hasSize(1);
         assertThat(plan.policyDecisions().get(0).outcome()).isEqualTo(ActionDecisionOutcome.DENY);
 
-        // Denied in the snapshot, yet the plan is still READY - execute() re-evaluates fresh.
+        // Denied in the snapshot: the plan itself is BLOCKED, never a false READY promise.
+        assertThat(plan.status()).isEqualTo(io.webagent4j.action.ActionPlanStatus.BLOCKED);
+        assertThat(plan.failure().orElseThrow().type())
+                .isEqualTo(io.webagent4j.action.ActionFailureType.POLICY_DENIED);
+
+        // The snapshot still never gates execute() itself: the same, still-denying policy is
+        // re-evaluated fresh, and execute() reports that live decision independently.
+        ActionResult<Void> result = plan.execute();
+        assertThat(result.success()).isFalse();
+        assertThat(result.failure().orElseThrow().type())
+                .isEqualTo(io.webagent4j.action.ActionFailureType.POLICY_DENIED);
+        assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+    }
+
+    @Test
+    void allowedPlanPolicySnapshotKeepsThePlanReady() {
+        IActionBackend backend = mock(IActionBackend.class);
+        IActionPlan<Void> plan =
+                new DefaultActionBuilder(context(backend))
+                        .click(actionableElement())
+                        .policy(ctx -> PolicyDecision.allow("test.plan.allowed"))
+                        .plan();
+
+        assertThat(plan.policyDecisions()).hasSize(1);
+        assertThat(plan.policyDecisions().get(0).outcome()).isEqualTo(ActionDecisionOutcome.ALLOW);
         assertThat(plan.status()).isEqualTo(io.webagent4j.action.ActionPlanStatus.READY);
+        assertThat(plan.failure()).isEmpty();
+    }
+
+    @Test
+    void planPolicyEvaluationFailureBlocksThePlan() {
+        IActionBackend backend = mock(IActionBackend.class);
+        IActionPlan<Void> plan =
+                new DefaultActionBuilder(context(backend))
+                        .click(actionableElement())
+                        .policy(
+                                ctx -> {
+                                    throw new RuntimeException("plan-time policy boom");
+                                })
+                        .plan();
+
+        assertThat(plan.policyDecisions()).hasSize(1);
+        assertThat(plan.policyDecisions().get(0).outcome())
+                .isEqualTo(ActionDecisionOutcome.EVALUATION_FAILED);
+        assertThat(plan.status()).isEqualTo(io.webagent4j.action.ActionPlanStatus.BLOCKED);
+        assertThat(plan.failure().orElseThrow().type())
+                .isEqualTo(io.webagent4j.action.ActionFailureType.POLICY_EVALUATION_FAILED);
     }
 
     @Test
@@ -223,6 +269,10 @@ class ActionDecisionTraceTest {
                         new ElementState(
                                 true, true, true, false, false, false, false, false, true, true,
                                 false, true));
+        // A mock never inherits IElement's real default implementation, so it must be told
+        // explicitly that it is still the same target - matching what a backend without physical
+        // -node identity tracking would report through that default method.
+        when(element.isStillTheOriginallyResolvedTarget()).thenReturn(true);
         return element;
     }
 
