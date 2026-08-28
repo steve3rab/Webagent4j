@@ -1,5 +1,6 @@
 package io.webagent4j.crawler;
 
+import io.webagent4j.policy.network.NetworkDestination;
 import io.webagent4j.policy.network.VerifiedNetworkAddresses;
 import io.webagent4j.wait.IMonotonicClock;
 import java.io.BufferedInputStream;
@@ -84,6 +85,7 @@ final class PinnedSocketHttpTransport {
                 uri.getPort() != -1
                         ? uri.getPort()
                         : (tls ? HTTPS_DEFAULT_PORT : HTTP_DEFAULT_PORT);
+        requireVerifiedAuthorityMatchesRequest(tls ? "https" : "http", host, port, pinnedAddresses);
         String requestTarget = requestTarget(uri);
         requireSafeHeaderText(requestTarget, "request target");
         byte[] requestBytes = buildRequestBytes(request, host, port, tls, requestTarget);
@@ -522,6 +524,42 @@ final class PinnedSocketHttpTransport {
             default ->
                     throw new IOException("Unsupported scheme for a pinned connection: " + scheme);
         };
+    }
+
+    /**
+     * Verifies that the exact host and port this request is about to connect to are the same host
+     * and port {@code pinnedAddresses} was authorized for - using {@link NetworkDestination}'s own
+     * canonicalization and default-port rules, the identical ones a network policy already applied
+     * when it produced {@code pinnedAddresses}, rather than a second, independently written
+     * comparison that could silently drift out of agreement with it over time.
+     *
+     * <p>The already-resolved physical IP addresses being reachable is never sufficient on its own:
+     * a hostname mismatch is rejected here even when every pinned address happens to also be
+     * reachable under the requested host's own resolution, since authority identity is the
+     * hostname/port pair a policy actually reasoned about, never merely "some IP that responds."
+     * Every parameter here has already been validated non-blank/in-range by this method's own
+     * caller and by {@link VerifiedNetworkAddresses}'s constructor respectively, so a mismatch
+     * exception from constructing either side would indicate a defect in this class rather than
+     * caller input - defensive only, not a normally reachable path.
+     */
+    private static void requireVerifiedAuthorityMatchesRequest(
+            String scheme, String requestedHost, int requestedPort, VerifiedNetworkAddresses pinned)
+            throws IOException {
+        NetworkDestination requested;
+        NetworkDestination verified;
+        try {
+            requested = new NetworkDestination(scheme, requestedHost, requestedPort, false);
+            verified = new NetworkDestination(scheme, pinned.host(), pinned.port(), false);
+        } catch (RuntimeException malformed) {
+            throw new IOException("Network authority could not be evaluated for this request");
+        }
+        if (!requested.host().equals(verified.host()) || requested.port() != verified.port()) {
+            // Never includes the actual host/port values here: this is a security-relevant
+            // mismatch, not an ordinary connectivity failure, and the safe diagnostics rule this
+            // codebase applies elsewhere to policy denials applies here too.
+            throw new IOException(
+                    "Requested network authority does not match the verified, pinned authority");
+        }
     }
 
     private static String requireHost(URI uri) throws IOException {
