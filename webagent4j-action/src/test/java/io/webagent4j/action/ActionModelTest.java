@@ -347,7 +347,8 @@ class ActionModelTest {
                                         || failureType == ActionFailureType.BACKEND_FAILURE
                                         || failureType == ActionFailureType.UPLOAD_FAILURE
                                         || failureType == ActionFailureType.DOWNLOAD_FAILURE
-                                        || failureType == ActionFailureType.POLICY_VIOLATION;
+                                        || failureType == ActionFailureType.POLICY_VIOLATION
+                                        || failureType == ActionFailureType.STABILIZATION_FAILED;
                         case DRY_RUN -> false;
                     };
             case VERIFICATION_FAILED ->

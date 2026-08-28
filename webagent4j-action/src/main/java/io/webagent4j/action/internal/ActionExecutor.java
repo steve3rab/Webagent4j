@@ -14,6 +14,7 @@ import io.webagent4j.action.ActionTimings;
 import io.webagent4j.action.IActionContext;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.ObservationCapturePolicy;
+import io.webagent4j.action.StabilizationResult;
 import io.webagent4j.action.policy.ActionPolicyContext;
 import io.webagent4j.action.policy.ActionPolicyMode;
 import io.webagent4j.action.policy.IActionPolicy;
@@ -510,8 +511,79 @@ final class ActionExecutor {
                         "started",
                         targetDescription,
                         startedNanos));
-        config.stabilization().await(context, budget.remaining());
+        StabilizationResult stabilization;
+        try {
+            stabilization = config.stabilization().await(context, budget.remaining());
+        } catch (RuntimeException failure) {
+            // The backend side effect has already happened by this point, so this can never be
+            // reported as NOT_EXECUTED regardless of what stabilization itself did - a caller must
+            // never be misled into believing it is safe to retry.
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "stabilization-failed",
+                            targetDescription,
+                            startedNanos));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    executionDuration,
+                    elapsedSince(stabilizationStartedNanos),
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.STABILIZATION_FAILED,
+                    ActionExecutionMode.REAL,
+                    ActionStatus.EXECUTION_FAILED,
+                    "Stabilization failed after the backend action already executed",
+                    failure);
+        }
         Duration stabilizationDuration = elapsedSince(stabilizationStartedNanos);
+        if (stabilization == null || !stabilization.stable()) {
+            // A null result and an explicit stable()==false result are both treated as failure to
+            // stabilize - never as success just because nothing explicitly threw. The pipeline must
+            // never proceed to postcondition verification, and must never emit a "stable" event, on
+            // an outcome the strategy itself did not report as stable.
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "stabilization-not-stable",
+                            targetDescription,
+                            startedNanos));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    executionDuration,
+                    stabilizationDuration,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.STABILIZATION_FAILED,
+                    ActionExecutionMode.REAL,
+                    ActionStatus.EXECUTION_FAILED,
+                    "The environment did not stabilize after the backend action already executed",
+                    null);
+        }
         events.add(
                 event(
                         actionId,
