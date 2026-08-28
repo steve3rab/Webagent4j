@@ -14,6 +14,7 @@ import io.webagent4j.action.ActionTimings;
 import io.webagent4j.action.IActionContext;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.ObservationCapturePolicy;
+import io.webagent4j.action.StabilizationResult;
 import io.webagent4j.action.policy.ActionPolicyContext;
 import io.webagent4j.action.policy.ActionPolicyMode;
 import io.webagent4j.action.policy.IActionPolicy;
@@ -392,39 +393,50 @@ final class ActionExecutor {
         // a concrete target to revalidate) so an ungoverned action's behavior is completely
         // unchanged - no new backend cost, no new failure mode. Shares this same action's deadline;
         // it is not given a fresh timeout of its own.
-        if (config.actionPolicy().isPresent()
-                && target != null
-                && !target.isStillTheOriginallyResolvedTarget()) {
-            events.add(
-                    event(
-                            actionId,
-                            command,
-                            ActionStage.ACTION_FAILED,
-                            "target-changed-before-backend-action",
-                            targetDescription,
-                            startedNanos));
-            return failed(
-                    context,
-                    command,
-                    config,
-                    actionId,
-                    startedNanos,
-                    events,
-                    resolutionDuration,
-                    preconditionDuration,
-                    Duration.ZERO,
-                    Duration.ZERO,
-                    preconditions,
-                    List.of(),
-                    before,
-                    target,
-                    "",
-                    ActionFailureType.TARGET_CHANGED,
-                    ActionExecutionMode.NOT_EXECUTED,
-                    ActionStatus.EXECUTION_FAILED,
-                    "The action target could not be proven unchanged immediately before backend"
-                            + " execution",
-                    null);
+        //
+        // Verification and backend execution both act through executionTarget, the same IElement
+        // verifiedForExecution() just proved identity on - never through a second, independent
+        // resolution presumed to find the same physical node. A backend without an atomic-handle
+        // concept degrades to the previous boolean-only check; one that has it (see
+        // IElement#verifiedForExecution()) closes the residual gap between checking and using.
+        IElement executionTarget = target;
+        boolean disposeExecutionTarget = false;
+        if (config.actionPolicy().isPresent() && target != null) {
+            Optional<IElement> verified = target.verifiedForExecution();
+            if (verified.isEmpty()) {
+                events.add(
+                        event(
+                                actionId,
+                                command,
+                                ActionStage.ACTION_FAILED,
+                                "target-changed-before-backend-action",
+                                targetDescription,
+                                startedNanos));
+                return failed(
+                        context,
+                        command,
+                        config,
+                        actionId,
+                        startedNanos,
+                        events,
+                        resolutionDuration,
+                        preconditionDuration,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        preconditions,
+                        List.of(),
+                        before,
+                        target,
+                        "",
+                        ActionFailureType.TARGET_CHANGED,
+                        ActionExecutionMode.NOT_EXECUTED,
+                        ActionStatus.EXECUTION_FAILED,
+                        "The action target could not be proven unchanged immediately before"
+                                + " backend execution",
+                        null);
+            }
+            executionTarget = verified.get();
+            disposeExecutionTarget = true;
         }
 
         R value;
@@ -438,7 +450,7 @@ final class ActionExecutor {
                         targetDescription,
                         startedNanos));
         try {
-            value = command.executeBackend(context.actionBackend(), target);
+            value = command.executeBackend(context.actionBackend(), executionTarget);
         } catch (RuntimeException failure) {
             return failed(
                     context,
@@ -461,6 +473,15 @@ final class ActionExecutor {
                     ActionStatus.EXECUTION_FAILED,
                     "Backend action execution failed",
                     failure);
+        } finally {
+            if (disposeExecutionTarget && executionTarget instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception ignored) {
+                    // Best-effort cleanup only. Never replace the semantic result/failure of the
+                    // backend call.
+                }
+            }
         }
         Duration executionDuration = elapsedSince(executionStartedNanos);
         events.add(
@@ -510,8 +531,79 @@ final class ActionExecutor {
                         "started",
                         targetDescription,
                         startedNanos));
-        config.stabilization().await(context, budget.remaining());
+        StabilizationResult stabilization;
+        try {
+            stabilization = config.stabilization().await(context, budget.remaining());
+        } catch (RuntimeException failure) {
+            // The backend side effect has already happened by this point, so this can never be
+            // reported as NOT_EXECUTED regardless of what stabilization itself did - a caller must
+            // never be misled into believing it is safe to retry.
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "stabilization-failed",
+                            targetDescription,
+                            startedNanos));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    executionDuration,
+                    elapsedSince(stabilizationStartedNanos),
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.STABILIZATION_FAILED,
+                    ActionExecutionMode.REAL,
+                    ActionStatus.EXECUTION_FAILED,
+                    "Stabilization failed after the backend action already executed",
+                    failure);
+        }
         Duration stabilizationDuration = elapsedSince(stabilizationStartedNanos);
+        if (stabilization == null || !stabilization.stable()) {
+            // A null result and an explicit stable()==false result are both treated as failure to
+            // stabilize - never as success just because nothing explicitly threw. The pipeline must
+            // never proceed to postcondition verification, and must never emit a "stable" event, on
+            // an outcome the strategy itself did not report as stable.
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "stabilization-not-stable",
+                            targetDescription,
+                            startedNanos));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    executionDuration,
+                    stabilizationDuration,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.STABILIZATION_FAILED,
+                    ActionExecutionMode.REAL,
+                    ActionStatus.EXECUTION_FAILED,
+                    "The environment did not stabilize after the backend action already executed",
+                    null);
+        }
         events.add(
                 event(
                         actionId,

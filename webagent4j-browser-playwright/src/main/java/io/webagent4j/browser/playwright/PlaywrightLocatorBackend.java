@@ -266,6 +266,80 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         return Map.of("identity", identity, "domOrder", (int) rawOrder);
     }
 
+    /**
+     * The exact {@link ElementHandle} whose identity was just re-verified to still match {@code
+     * identity}. Ownership passes to whoever received this record: the whole reason to hand back
+     * the live handle instead of a boolean is so a caller performs its one subsequent native
+     * operation on precisely the physical node that was just checked, never on a second,
+     * independently re-resolved lookup that could silently land on a different one - so the
+     * recipient must dispose {@code handle} once done acting on it.
+     */
+    record VerifiedHandle(ElementHandle handle, String identity) {
+        VerifiedHandle {
+            Objects.requireNonNull(handle, "handle");
+            Objects.requireNonNull(identity, "identity");
+        }
+    }
+
+    /**
+     * Atomically re-verifies {@code expectedIdentity} against {@code item}'s current live-DOM
+     * resolution and, only when it is reproven, returns the exact, still-open {@link ElementHandle}
+     * that was just inspected - the same handle a caller must then use for its native operation,
+     * never a second, independent resolution presumed to find the same physical node. This is what
+     * makes the check-then-act sequence atomic: unlike {@link #identifyOrNull}, which always
+     * disposes its handle before returning only an identity token, this method keeps the handle
+     * open exactly when identity was reproven, so the caller can act on that precise node.
+     *
+     * <p>Returns {@code null} whenever identity cannot be reproven - the candidate is gone, became
+     * ambiguous then resolved to nothing, or its fresh identity does not equal {@code
+     * expectedIdentity} (including when it was replaced by a different node that happens to satisfy
+     * the same locator) - and every one of the same transient document-transition races {@link
+     * #identifyOrNull} already classifies as retryable is classified identically here. Whenever
+     * this method returns {@code null}, any handle it captured along the way has already been
+     * disposed; nothing is left for the caller to release.
+     */
+    static VerifiedHandle resolveVerifiedHandleOrNull(Locator item, String expectedIdentity) {
+        Objects.requireNonNull(expectedIdentity, "expectedIdentity");
+        List<ElementHandle> handles = List.of();
+        boolean releaseHandles = true;
+        try {
+            handles = item.elementHandles();
+            if (handles.isEmpty()) {
+                return null;
+            }
+            if (handles.size() > 1) {
+                throw new AmbiguousLocatorException(
+                        "Candidate locator became ambiguous during atomic identity verification");
+            }
+            ElementHandle handle = handles.getFirst();
+            Object inspected =
+                    handle.evaluate(
+                            IDENTITY_SCRIPT, PlaywrightCandidateIdentityBridge.bridgeName());
+            Map<String, Object> identity = validatedIdentityOrNull(item, inspected);
+            if (identity == null || !expectedIdentity.equals(identity.get("identity"))) {
+                return null;
+            }
+            releaseHandles = false;
+            return new VerifiedHandle(handle, expectedIdentity);
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
+                return null;
+            }
+            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)) {
+                if (confirmedAbsent(item, failure)) {
+                    return null;
+                }
+                throw new LocatorNotFoundException(
+                        "Candidate identity verification raced a document transition");
+            }
+            throw failure;
+        } finally {
+            if (releaseHandles) {
+                dispose(handles);
+            }
+        }
+    }
+
     private static void dispose(List<ElementHandle> handles) {
         for (ElementHandle handle : handles) {
             try {

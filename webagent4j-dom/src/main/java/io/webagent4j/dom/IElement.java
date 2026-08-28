@@ -132,6 +132,35 @@ public interface IElement {
         return true;
     }
 
+    /**
+     * Atomically re-verifies this handle's identity and, only when it is reproven, returns an
+     * {@link IElement} view guaranteed to act on that exact same verified physical node for
+     * whatever single native operation a caller performs next - never on a second, independently
+     * re-resolved lookup that could silently observe a different node satisfying the same query.
+     *
+     * <p>This exists for exactly the same reason as {@link #isStillTheOriginallyResolvedTarget()},
+     * but closes a residual gap that method cannot: a boolean answer and a subsequent, separate
+     * native operation are still two distinct resolutions, so a caller combining them can still
+     * observe a different physical node for the second one than the first one just verified - a new
+     * time-of-check-to-time-of-use window, even though each half individually looks correct. A
+     * caller that needs the guarantee this method provides discards the boolean-only check and
+     * instead performs its side effect only through the {@link IElement} this method returns,
+     * treating {@link Optional#empty()} identically to how it would treat {@code false} from {@link
+     * #isStillTheOriginallyResolvedTarget()}: fail closed, the side effect must not proceed.
+     *
+     * <p>The returned instance may hold backend-owned resources scoped to that single subsequent
+     * operation; callers that also implement {@link AutoCloseable} handling should close it once
+     * done, though every backend remains safe to simply discard it after use.
+     *
+     * <p>The default implementation has no atomic-handle concept to offer and falls back to {@link
+     * #isStillTheOriginallyResolvedTarget()}, which still leaves the residual gap above open for
+     * any backend that does not override this method - exactly this interface's pre-existing
+     * best-effort behavior, unchanged for such backends.
+     */
+    default Optional<IElement> verifiedForExecution() {
+        return isStillTheOriginallyResolvedTarget() ? Optional.of(this) : Optional.empty();
+    }
+
     /** Starts a semantic query scoped to this element's descendants. */
     default IFind<IElement> find() {
         throw new UnsupportedOperationException(

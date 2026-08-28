@@ -40,8 +40,12 @@ prevents a denied request from ever being sent, for every hop it controls. A gov
 action or `BrowserCrawler` visit can only detect - never prevent - a browser-internal redirect that
 lands somewhere denied, since browser redirect handling cannot be intercepted mid-flight; that case
 is reported honestly as a post-execution violation on an action that already ran, never as a
-prevented request. Neither this nor `NetworkPolicies`'s DNS pre-resolution checks constitute a
-general SSRF firewall or defense against DNS rebinding between check and connect. A configured
+prevented request. `HttpCrawler` additionally binds its actual transport connection to the exact
+addresses a policy verified - closing the DNS-rebinding gap between check and connect - whenever
+the configured policy implements `INetworkAddressAuthority` (the built-in `NetworkPolicies` policy
+does); a fully custom `INetworkPolicy` gets no pinning unless it implements that capability too,
+and browser navigation has no equivalent transport-level seam at all. None of this constitutes a
+general SSRF firewall. A configured
 policy is untrusted, unsandboxed Java code with the same trust posture as a plugin (see
 [Plugins and custom SPIs](#plugins-and-custom-spis) below) - WebAgent4J guarantees it will not
 invoke a governed backend before a policy allows it, and nothing more. See

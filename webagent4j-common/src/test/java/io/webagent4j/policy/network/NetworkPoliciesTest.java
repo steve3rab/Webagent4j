@@ -8,6 +8,7 @@ import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -376,6 +377,117 @@ class NetworkPoliciesTest {
     void systemResolverFactoryProducesAWorkingResolverForLoopback() throws UnknownHostException {
         List<InetAddress> resolved = INetworkAddressResolver.system().resolve("localhost");
         assertThat(resolved).isNotEmpty();
+    }
+
+    @Test
+    void authorizeConnectionReturnsEveryResolvedAddressWhenNoneAreDenied()
+            throws UnknownHostException {
+        InetAddress first = InetAddress.getByName("93.184.216.34");
+        InetAddress second = InetAddress.getByName("93.184.216.35");
+        INetworkAddressResolver fake = host -> List.of(first, second);
+        INetworkPolicy policy = NetworkPolicies.builder(fake).denyLoopback().build();
+        INetworkAddressAuthority authority = (INetworkAddressAuthority) policy;
+
+        Optional<VerifiedNetworkAddresses> verified =
+                authority.authorizeConnection(destination("https://example.com/"));
+
+        assertThat(verified).isPresent();
+        assertThat(verified.orElseThrow().host()).isEqualTo("example.com");
+        assertThat(verified.orElseThrow().port()).isEqualTo(443);
+        assertThat(verified.orElseThrow().addresses()).containsExactlyInAnyOrder(first, second);
+    }
+
+    @Test
+    void authorizeConnectionDeniesTheWholeSetWhenAnyResolvedAddressIsDenied()
+            throws UnknownHostException {
+        InetAddress publicAddress = InetAddress.getByName("93.184.216.34");
+        InetAddress loopback = InetAddress.getByName("127.0.0.1");
+        INetworkAddressResolver fake = host -> List.of(publicAddress, loopback);
+        INetworkPolicy policy = NetworkPolicies.builder(fake).denyLoopback().build();
+        INetworkAddressAuthority authority = (INetworkAddressAuthority) policy;
+
+        // evaluate() denies this destination for exactly the same reason - the two must agree.
+        assertThat(policy.evaluate(context("https://example.com/")).isDeny()).isTrue();
+        assertThat(authority.authorizeConnection(destination("https://example.com/"))).isEmpty();
+    }
+
+    @Test
+    void authorizeConnectionFailsClosedWhenResolutionYieldsNoAddresses() {
+        INetworkAddressResolver empty = host -> List.of();
+        INetworkPolicy policy = NetworkPolicies.builder(empty).build();
+        INetworkAddressAuthority authority = (INetworkAddressAuthority) policy;
+
+        assertThat(authority.authorizeConnection(destination("https://example.com/"))).isEmpty();
+    }
+
+    @Test
+    void authorizeConnectionFailsClosedWhenTheResolverThrows() {
+        INetworkAddressResolver failing =
+                host -> {
+                    throw new UnknownHostException("dns unavailable");
+                };
+        INetworkPolicy policy = NetworkPolicies.builder(failing).build();
+        INetworkAddressAuthority authority = (INetworkAddressAuthority) policy;
+
+        assertThat(authority.authorizeConnection(destination("https://example.com/"))).isEmpty();
+    }
+
+    @Test
+    void authorizeConnectionNeverCallsTheResolverForAnIpLiteralDestination() {
+        INetworkAddressResolver resolverThatMustNeverBeCalled =
+                host -> {
+                    throw new AssertionError(
+                            "resolver must never be called for an IP literal destination");
+                };
+        INetworkPolicy policy = NetworkPolicies.builder(resolverThatMustNeverBeCalled).build();
+        INetworkAddressAuthority authority = (INetworkAddressAuthority) policy;
+
+        Optional<VerifiedNetworkAddresses> verified =
+                authority.authorizeConnection(destination("http://127.0.0.1/"));
+
+        assertThat(verified).isPresent();
+        assertThat(verified.orElseThrow().addresses()).hasSize(1);
+    }
+
+    @Test
+    void authorizeConnectionRespectsTheSameSchemeHostPortAndUserInfoRulesAsEvaluate() {
+        INetworkAddressResolver fake = host -> List.of(loopbackFreeAddress());
+        INetworkPolicy policy = NetworkPolicies.builder(fake).allowHost("example.com").build();
+        INetworkAddressAuthority authority = (INetworkAddressAuthority) policy;
+
+        assertThat(authority.authorizeConnection(destination("https://attacker.test/"))).isEmpty();
+        assertThat(authority.authorizeConnection(destination("https://example.com/"))).isPresent();
+    }
+
+    @Test
+    void authorizeConnectionResolvesEvenWithoutAnyCategoryRuleConfigured()
+            throws UnknownHostException {
+        // Distinct from evaluate(), which never resolves at all when no deny-category rule and no
+        // requireResolutionForHostnames() are configured: producing a verified address set for
+        // pinning is this method's entire purpose, so it always resolves a non-literal host.
+        InetAddress resolved = InetAddress.getByName("93.184.216.34");
+        List<String> resolvedHosts = new java.util.ArrayList<>();
+        INetworkAddressResolver countingFake =
+                host -> {
+                    resolvedHosts.add(host);
+                    return List.of(resolved);
+                };
+        INetworkPolicy policy = NetworkPolicies.builder(countingFake).build();
+        INetworkAddressAuthority authority = (INetworkAddressAuthority) policy;
+
+        Optional<VerifiedNetworkAddresses> verified =
+                authority.authorizeConnection(destination("https://example.com/"));
+
+        assertThat(verified).isPresent();
+        assertThat(resolvedHosts).containsExactly("example.com");
+    }
+
+    private static InetAddress loopbackFreeAddress() throws UnknownHostException {
+        return InetAddress.getByName("93.184.216.34");
+    }
+
+    private static NetworkDestination destination(String uri) {
+        return NetworkDestination.of(URI.create(uri));
     }
 
     private static NetworkPolicyContext context(String uri) {

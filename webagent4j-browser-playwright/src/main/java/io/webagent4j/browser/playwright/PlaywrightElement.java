@@ -28,7 +28,7 @@ import java.util.Optional;
  * selector is resolved exactly once in its own world and is not re-resolved through {@link
  * Locator#evaluateAll(String)} in the main world.
  */
-final class PlaywrightElement implements IElement {
+final class PlaywrightElement implements IElement, AutoCloseable {
 
     private final Locator locator;
     private final ElementRole knownRole;
@@ -37,6 +37,7 @@ final class PlaywrightElement implements IElement {
     private final LocatorConfig locatorConfig;
     private final Runnable scopeIdentityValidator;
     private final String capturedIdentity;
+    private final ElementHandle verifiedHandle;
 
     PlaywrightElement(
             Locator locator,
@@ -117,6 +118,24 @@ final class PlaywrightElement implements IElement {
         this.locatorConfig = locatorConfig;
         this.scopeIdentityValidator = scopeIdentityValidator;
         this.capturedIdentity = capturedIdentity;
+        this.verifiedHandle = null;
+    }
+
+    /**
+     * Copy constructor used only by {@link #verifiedForExecution()} to attach an already-verified,
+     * still-open {@link ElementHandle} to an otherwise-identical view of {@code source}, so a
+     * caller's very next native operation can act on precisely the physical node identity was just
+     * reproven against - never on a second, independently re-resolved lookup.
+     */
+    private PlaywrightElement(PlaywrightElement source, ElementHandle verifiedHandle) {
+        this.locator = source.locator;
+        this.knownRole = source.knownRole;
+        this.locatorBackend = source.locatorBackend;
+        this.originatingScope = source.originatingScope;
+        this.locatorConfig = source.locatorConfig;
+        this.scopeIdentityValidator = source.scopeIdentityValidator;
+        this.capturedIdentity = source.capturedIdentity;
+        this.verifiedHandle = verifiedHandle;
     }
 
     @Override
@@ -283,6 +302,70 @@ final class PlaywrightElement implements IElement {
             return capturedIdentity.equals(freshIdentity.get("identity"));
         } catch (RuntimeException inconclusive) {
             return false;
+        }
+    }
+
+    /**
+     * Atomically re-verifies {@link #capturedIdentity} and, only when it is reproven, returns a
+     * view of this exact same element carrying the already-verified, still-open {@link
+     * ElementHandle} that proved it - never a second, independent {@link Locator} resolution a
+     * caller might otherwise use for the actual native operation. This is the fix for the residual
+     * gap {@link #isStillTheOriginallyResolvedTarget()} cannot close on its own: that method's
+     * boolean answer and a subsequent, separately-resolved native call are still two distinct
+     * lookups, so between them the live DOM could still substitute a different node satisfying the
+     * same locator.
+     *
+     * <p>Returns {@link Optional#empty()} whenever identity cannot be reproven - detached,
+     * replaced, ambiguous, or any inspection failure - uniformly "not proven," exactly like {@link
+     * #isStillTheOriginallyResolvedTarget()}. Returns the unchanged {@code this} (no verified
+     * handle attached) when no identity was ever captured for this element, since there is nothing
+     * to disprove it against; a caller then falls back to its ordinary re-resolving path with no
+     * added cost, preserving this backend's existing best-effort behavior for elements that never
+     * opted into identity tracking.
+     */
+    @Override
+    public Optional<IElement> verifiedForExecution() {
+        validateScopeIdentity();
+        if (capturedIdentity == null) {
+            return Optional.of(this);
+        }
+        PlaywrightLocatorBackend.VerifiedHandle verified;
+        try {
+            verified =
+                    PlaywrightLocatorBackend.resolveVerifiedHandleOrNull(locator, capturedIdentity);
+        } catch (RuntimeException inconclusive) {
+            return Optional.empty();
+        }
+        if (verified == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new PlaywrightElement(this, verified.handle()));
+    }
+
+    /**
+     * Returns the already-verified, still-open {@link ElementHandle} attached by {@link
+     * #verifiedForExecution()}, or {@link Optional#empty()} for every ordinary element - only a
+     * view returned by that method ever carries one. A backend consumes this instead of {@link
+     * #locator()} to perform its native operation on precisely the physical node whose identity was
+     * just proven, rather than triggering another, independently re-resolved lookup.
+     */
+    Optional<ElementHandle> verifiedHandle() {
+        return Optional.ofNullable(verifiedHandle);
+    }
+
+    /**
+     * Disposes this view's attached verified handle, if any. Safe to call on every {@link
+     * PlaywrightElement}: a no-op unless {@link #verifiedForExecution()} produced this instance.
+     */
+    @Override
+    public void close() {
+        if (verifiedHandle != null) {
+            try {
+                verifiedHandle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup only. Never replace the semantic result of the caller's
+                // action.
+            }
         }
     }
 

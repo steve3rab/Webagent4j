@@ -42,5 +42,17 @@ public enum ActionFailureType {
      * is reported. Distinct from {@link #POLICY_DENIED} because the policy itself may have allowed
      * the original target; the authorization was never transferable to a different one.
      */
-    TARGET_CHANGED
+    TARGET_CHANGED,
+
+    /**
+     * A backend side effect already happened ({@link ActionExecutionMode#REAL}) but the configured
+     * {@link IStabilizationStrategy} reported {@link StabilizationResult#stable()} {@code false},
+     * returned {@code null}, or itself threw before the pipeline could proceed to postcondition
+     * verification. Never paired with {@link ActionExecutionMode#NOT_EXECUTED}: once a side effect
+     * may have happened, it is never reported as not executed. Distinct from {@link
+     * #POSTCONDITION_FAILED}, which means an explicit caller-supplied postcondition did not hold -
+     * this instead means the environment never reached the settled state stabilization itself is
+     * responsible for proving, before any postcondition was even evaluated.
+     */
+    STABILIZATION_FAILED
 }

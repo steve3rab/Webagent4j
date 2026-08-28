@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -192,7 +193,8 @@ public final class NetworkPolicies {
     }
 
     /** The immutable policy a {@link Builder} produces. */
-    private static final class DeclarativeNetworkPolicy implements INetworkPolicy {
+    private static final class DeclarativeNetworkPolicy
+            implements INetworkPolicy, INetworkAddressAuthority {
 
         private static final Pattern IPV4_LITERAL =
                 Pattern.compile("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$");
@@ -266,31 +268,11 @@ public final class NetworkPolicies {
          * was itself called.
          */
         private PolicyDecision evaluateAddressCategories(String host) {
-            InetAddress literal = parseLiteral(host);
-            List<InetAddress> addresses;
-            if (literal != null) {
-                addresses = List.of(literal);
-            } else {
-                try {
-                    addresses = resolver.resolve(host);
-                } catch (UnknownHostException unresolved) {
-                    throw new NetworkResolutionFailedException(
-                            "could not resolve network destination host", unresolved);
-                }
-                if (addresses == null) {
-                    throw new NetworkResolutionFailedException(
-                            "resolver returned a null address list", null);
-                }
-                if (addresses.isEmpty()) {
-                    return PolicyDecision.deny(
-                            NetworkPolicyReasons.RESOLUTION_REQUIRED_BUT_UNRESOLVED);
-                }
+            AddressResolution resolution = resolveAndClassify(host);
+            if (!resolution.resolvedAtLeastOne()) {
+                return PolicyDecision.deny(NetworkPolicyReasons.RESOLUTION_REQUIRED_BUT_UNRESOLVED);
             }
-            for (InetAddress address : addresses) {
-                if (address == null) {
-                    throw new NetworkResolutionFailedException(
-                            "resolver returned a null address entry", null);
-                }
+            for (InetAddress address : resolution.addresses()) {
                 NetworkAddressCategory category = NetworkAddressClassifier.classify(address);
                 if (deniedCategories.contains(category)) {
                     return PolicyDecision.deny(
@@ -298,6 +280,102 @@ public final class NetworkPolicies {
                 }
             }
             return null;
+        }
+
+        /**
+         * Resolves {@code host} - or parses it as an already-known IP literal - exactly once,
+         * shared by both {@link #evaluateAddressCategories} and {@link #authorizeConnection} so
+         * neither can drift from the other about which addresses a given hostname resolved to
+         * within one call.
+         */
+        private AddressResolution resolveAndClassify(String host) {
+            InetAddress literal = parseLiteral(host);
+            if (literal != null) {
+                return AddressResolution.resolved(List.of(literal));
+            }
+            List<InetAddress> addresses;
+            try {
+                addresses = resolver.resolve(host);
+            } catch (UnknownHostException unresolved) {
+                throw new NetworkResolutionFailedException(
+                        "could not resolve network destination host", unresolved);
+            }
+            if (addresses == null) {
+                throw new NetworkResolutionFailedException(
+                        "resolver returned a null address list", null);
+            }
+            if (addresses.isEmpty()) {
+                return AddressResolution.unresolved();
+            }
+            for (InetAddress address : addresses) {
+                if (address == null) {
+                    throw new NetworkResolutionFailedException(
+                            "resolver returned a null address entry", null);
+                }
+            }
+            return AddressResolution.resolved(List.copyOf(addresses));
+        }
+
+        /**
+         * Resolves and authorizes {@code destination} for one connection attempt, so a transport
+         * can pin its actual connection to precisely the addresses this method just individually
+         * confirmed are not denied - never a second, independent resolution that could silently
+         * observe a different result. Applies the exact same scheme/host/port/userinfo and
+         * address-category rules {@link #evaluate} applies, reading the same instance fields, so an
+         * ALLOW from {@code evaluate} and a present result here never disagree about which
+         * destinations and addresses are authorized.
+         *
+         * <p>Unlike {@link #evaluate}, this always resolves a non-literal host - regardless of
+         * whether any {@code deny*} category rule is configured - since producing a verified
+         * address set is this method's entire purpose. A policy built purely from
+         * scheme/host/port/userinfo allow-list rules therefore incurs one additional DNS resolution
+         * per connection attempt once a caller starts requesting transport pinning, versus the
+         * zero-DNS fast path {@link #evaluate} alone still takes for such a policy.
+         */
+        @Override
+        public Optional<VerifiedNetworkAddresses> authorizeConnection(
+                NetworkDestination destination) {
+            Objects.requireNonNull(destination, "destination");
+            if (!allowSchemes.isEmpty() && !allowSchemes.contains(destination.scheme())) {
+                return Optional.empty();
+            }
+            if (!allowHosts.isEmpty() && !hostAllowed(destination.host())) {
+                return Optional.empty();
+            }
+            if (!allowPorts.isEmpty() && !allowPorts.contains(destination.port())) {
+                return Optional.empty();
+            }
+            if (denyUserInfo && destination.hasUserInfo()) {
+                return Optional.empty();
+            }
+            AddressResolution resolution;
+            try {
+                resolution = resolveAndClassify(destination.host());
+            } catch (NetworkResolutionFailedException unresolvable) {
+                return Optional.empty();
+            }
+            if (!resolution.resolvedAtLeastOne()) {
+                return Optional.empty();
+            }
+            for (InetAddress address : resolution.addresses()) {
+                if (deniedCategories.contains(NetworkAddressClassifier.classify(address))) {
+                    return Optional.empty();
+                }
+            }
+            return Optional.of(
+                    new VerifiedNetworkAddresses(
+                            destination.host(), destination.port(), resolution.addresses()));
+        }
+
+        /** At least one resolved address, or none - {@code addresses} is empty only when not. */
+        private record AddressResolution(boolean resolvedAtLeastOne, List<InetAddress> addresses) {
+            static AddressResolution unresolved() {
+                return new AddressResolution(false, List.of());
+            }
+
+            static AddressResolution resolved(List<InetAddress> addresses) {
+                return new AddressResolution(true, addresses);
+            }
         }
 
         private boolean hostAllowed(String host) {

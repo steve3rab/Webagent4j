@@ -113,17 +113,38 @@ exact same locator - takes its place before the backend call, that replacement i
 
 Immediately before the backend call, and only when an action policy is configured, WebAgent4J
 revalidates that the target is still the exact same concrete, currently-attached element it was
-when originally resolved (`IElement#isStillTheOriginallyResolvedTarget()`). A backend capable of
-tracking physical element identity (the Playwright adapter) returns `false` whenever that identity
-cannot be proven - detachment, replacement, or an inspection failure are all treated as "not
-proven," never as "still the same." Failure to prove identity fails closed exactly like a policy
-`DENY`: zero backend invocations, `ActionExecutionMode.NOT_EXECUTED`, classified as the additive
+when originally resolved, through `IElement#verifiedForExecution()`. A boolean-only recheck
+(`IElement#isStillTheOriginallyResolvedTarget()`, still available for that narrower question) is
+not enough on its own: a caller that re-resolves the element a second time to perform the actual
+backend call - even immediately after a `true` answer - can still observe a different physical node
+than the one just verified, if the DOM changed in between. `verifiedForExecution()` closes that
+residual window by verifying identity and handing back a view bound to the exact same physical
+handle in one atomic operation; the backend then acts through that returned view, never through a
+second, independent resolution. The Playwright adapter implements this by capturing the live
+`ElementHandle` during identity verification and consuming that exact handle for the native
+operation (currently `click()`; every other Playwright action method still takes the older,
+non-atomic path - see [Limitations](limitations.md)). `Optional.empty()` here - detachment,
+replacement, ambiguity, or an inspection failure - is treated uniformly as "not proven," never as
+"still the same." Failure to prove identity fails closed exactly like a policy `DENY`: zero backend
+invocations, `ActionExecutionMode.NOT_EXECUTED`, classified as the additive
 `ActionFailureType.TARGET_CHANGED` - distinct from `POLICY_DENIED` because the policy itself may
 have allowed the original target, and distinct from `BACKEND_FAILURE` because the backend was never
 invoked. This revalidation shares the action's own deadline; it is never given a fresh timeout of
 its own, and there is no fallback re-resolution or retry against a different candidate. An
 ungoverned action (no policy configured) never consults target identity at all, so its behavior and
 cost are completely unchanged.
+
+### Stabilization contract
+
+`IStabilizationStrategy#await(...)` runs after the backend side effect has already executed and
+before postcondition verification. Its result is never discarded: a `null` result, a
+`StabilizationResult#stable()` of `false`, or the strategy itself throwing all produce a structured
+`EXECUTION_FAILED` outcome (`ActionFailureType.STABILIZATION_FAILED`) rather than silently
+proceeding to `SUCCESS`. `ActionExecutionMode` stays `REAL` in every one of these cases - the
+backend already ran by the time stabilization is ever consulted, so it is never reported as
+`NOT_EXECUTED` - and the backend is never invoked a second time; a stabilization failure is never
+treated as a reason to retry the side effect. The `ActionStage.STABILIZATION_COMPLETED` ("stable")
+event is only ever emitted on the genuinely-stable path, never on a failure this contract catches.
 
 `ActionPolicies` provides standard declarative policies: `allowAll()`, `denyAll()`,
 `allowOnlyTypes(...)`, `denyTypes(...)`, `allowOnlySideEffects(...)`, `denySideEffects(...)`,
@@ -200,6 +221,41 @@ reported as `ActionFailureType.POLICY_VIOLATION` with `ActionExecutionMode.REAL`
 navigation already genuinely happened, so it is never misreported as prevented. The page is still
 recorded as a failure with no observation or link discovery performed on it.
 
+### Transport-bound address pinning (`HttpCrawler` only)
+
+DNS pre-resolution by itself only proves a hostname resolved to a safe address *at evaluation
+time*; `java.net.http.HttpClient` (the JDK HTTP client `JavaHttpFetcher` builds on) then performs
+its own, entirely independent resolution to actually open the connection, so nothing by default
+ties the address a policy checked to the address a request is physically sent to - a DNS-rebinding
+window between check and connect. `HttpCrawler` closes this window for the specific case where the
+network policy can offer proof: `INetworkAddressAuthority` is a capability an `INetworkPolicy` may
+additionally implement, exposing `authorizeConnection(NetworkDestination)`, which resolves and
+individually category-checks a destination's addresses and returns a `VerifiedNetworkAddresses` -
+the address set and the destination they were resolved for - or `Optional.empty()` when it cannot
+confirm one. `NetworkPolicies.builder()`'s built-in declarative policy implements this
+automatically; a fully custom `INetworkPolicy` lambda does not, and gets no pinning.
+
+`HttpCrawler` requests this immediately before every real HTTP attempt - the crawl's own seed,
+every redirect hop, and every retry - never reusing an earlier attempt's address set. When present,
+`JavaHttpFetcher` routes the request through `PinnedSocketHttpTransport`, a minimal, `GET`-only
+HTTP/1.1(+TLS) client built directly on `Socket`/`SSLSocket`: it connects to one of the verified
+addresses while still sending the destination's logical hostname for the request line, `Host`
+header, TLS SNI, and certificate hostname verification - the physical address is never a substitute
+for a certificate matching the hostname, and hostname verification is never weakened or skipped.
+Each connection is used for exactly one request (`Connection: close`, no pooling), so a pinned
+connection can never be silently reused for a different destination.
+
+When the configured policy allowed a destination through `evaluate()` but its
+`authorizeConnection(...)` cannot re-confirm an address set for that same connection attempt, the
+request is denied rather than silently falling back to an unpinned connection - a policy that
+claims this capability is held to it. A policy that never implements `INetworkAddressAuthority`, or
+no policy at all, keeps calling the exact same `IHttpFetcher#fetch(HttpFetchRequest)` overload as
+before this capability existed: zero added cost or behavior change for that case.
+
+This is deliberately scoped to `HttpCrawler`; browser navigation has no equivalent transport-level
+seam to pin (see [What this is not](#what-this-is-not) and
+[Browser crawler](browser-crawler.md#network-destination-policy)).
+
 ### Relationship to crawl-scope policy
 
 Network-destination policy is independent of, and complementary to, crawl-scope policy
@@ -258,20 +314,29 @@ which limits length and character set but cannot verify semantic safety.
   type) gained a field; `ActionResult`, `CrawlRequest`, `BrowserCrawlRequest`, and every other
   existing public record are unchanged in shape.
 - Every new interface method (`IPreparedAction#policy`/`#networkPolicy`,
-  `IActionPlan#policyDecisions`, `IElement#isStillTheOriginallyResolvedTarget`) is an additive
-  default method; a backend that does not track physical element identity needs no changes at all.
-- Every new enum constant (`ActionFailureType` - including `TARGET_CHANGED` - `ActionStage`,
-  `CrawlFailureType`, `BrowserCrawlFailureType`) is additive, appended after every existing 1.0
-  constant so ordinal-sensitive code is unaffected; no existing constant was renamed, removed, or
-  reordered.
+  `IActionPlan#policyDecisions`, `IElement#isStillTheOriginallyResolvedTarget`/
+  `#verifiedForExecution`, `IHttpFetcher#fetch(HttpFetchRequest, Optional<VerifiedNetworkAddresses>)`)
+  is an additive default method; a backend that does not track physical element identity, or a
+  fetcher that offers no pinning, needs no changes at all.
+- Every new enum constant (`ActionFailureType` - including `TARGET_CHANGED` and
+  `STABILIZATION_FAILED` - `ActionStage`, `CrawlFailureType`, `BrowserCrawlFailureType`) is
+  additive, appended after every existing 1.0 constant so ordinal-sensitive code is unaffected; no
+  existing constant was renamed, removed, or reordered.
+- `INetworkAddressAuthority` and `VerifiedNetworkAddresses` are new, minimal, additive types in
+  `io.webagent4j.policy.network`; no existing type in that package changed shape.
 
 ## What this is not
 
-- **Not a general SSRF firewall.** DNS pre-resolution checks the addresses a hostname resolves to
-  at evaluation time; it is not transport-level pinning and does not by itself defend against DNS
-  rebinding between the check and the actual connection. `HttpCrawler` genuinely prevents a request
-  before it is sent for every hop and every retry attempt it controls, but a governed `NAVIGATE`
-  action can only detect - not prevent - a browser-internal redirect landing somewhere denied.
+- **Not a general SSRF firewall.** `HttpCrawler` genuinely prevents a request before it is sent for
+  every hop and every retry attempt it controls, and - only when the configured policy implements
+  `INetworkAddressAuthority` (the built-in `NetworkPolicies` policy does; a fully custom
+  `INetworkPolicy` does not unless it implements it too) - binds the actual transport connection to
+  the exact addresses it verified (see
+  [Transport-bound address pinning](#transport-bound-address-pinning-httpcrawler-only)). A governed
+  `NAVIGATE` action or `BrowserCrawler` visit has no equivalent transport-level seam: it can only
+  detect, never prevent, a browser-internal redirect landing somewhere denied, and its own DNS
+  resolution for policy evaluation is never bound to whatever address the browser's own network
+  stack ultimately connects to.
 - **Not a policy sandbox.** A configured policy is ordinary, trusted, unsandboxed Java code, exactly
   like a plugin or custom SPI (see [Security model](security-model.md#plugins-and-custom-spis)).
   WebAgent4J cannot prevent a malicious policy from reading application memory or performing its own

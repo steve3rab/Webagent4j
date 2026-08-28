@@ -73,11 +73,17 @@ undone, and the resulting failure's attempt count honestly reflects the real req
 attempted. Not configuring a policy leaves this crawler's behavior unchanged. See [Governed
 execution](governed-execution.md).
 
-This mechanism authorizes *destinations*, not DNS resolution paths: it does not by itself provide
-complete protection against DNS-rebinding attacks, where a hostname resolves to one address at
-policy-evaluation time and a different address by the time the underlying HTTP client actually
-connects. A policy that also enables address-category checks (see
-[Governed execution](governed-execution.md)) narrows, but does not eliminate, that window.
+By default this mechanism authorizes *destinations*, not resolved addresses: it does not by itself
+provide complete protection against DNS-rebinding attacks, where a hostname resolves to one address
+at policy-evaluation time and a different address by the time the underlying HTTP client actually
+connects. When the configured policy also implements `INetworkAddressAuthority` - the built-in
+`NetworkPolicies` policy does automatically - this crawler closes that window instead of merely
+narrowing it: it binds the actual transport connection to the exact, freshly re-verified address set
+the policy offers for that specific attempt, using a dedicated pinned-socket transport rather than
+letting the JDK's `HttpClient` resolve the destination independently. See [Governed
+execution](governed-execution.md#transport-bound-address-pinning-httpcrawler-only) for the full
+contract, including the (deliberate) case where a custom `INetworkPolicy` that does not implement
+this capability still only narrows, rather than eliminates, the window.
 
 ## Retry
 

@@ -19,6 +19,7 @@ import io.webagent4j.dom.ElementState;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.policy.PolicyDecision;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,7 @@ class ActionTargetIdentityRevalidationTest {
         assertThat(result.success()).isTrue();
         verify(backend, times(1)).click(target);
         verify(target, never()).isStillTheOriginallyResolvedTarget();
+        verify(target, never()).verifiedForExecution();
     }
 
     @Test
@@ -104,6 +106,7 @@ class ActionTargetIdentityRevalidationTest {
         // immediately before the backend call), so this simulates identity already having become
         // unprovable by the time execute() performs that one, real, revalidating check.
         when(target.isStillTheOriginallyResolvedTarget()).thenReturn(false);
+        when(target.verifiedForExecution()).thenReturn(Optional.empty());
 
         IActionPlan<Void> plan =
                 new DefaultActionBuilder(context(backend))
@@ -194,6 +197,9 @@ class ActionTargetIdentityRevalidationTest {
                                 false, true));
         when(element.isStillTheOriginallyResolvedTarget())
                 .thenReturn(stillOriginallyResolvedTarget);
+        when(element.verifiedForExecution())
+                .thenReturn(
+                        stillOriginallyResolvedTarget ? Optional.of(element) : Optional.empty());
         return element;
     }
 }
