@@ -164,7 +164,8 @@ final class PinnedSocketHttpTransport {
             socket.getOutputStream().write(requestBytes);
             socket.getOutputStream().flush();
             InputStream in = new BufferedInputStream(socket.getInputStream());
-            return readResponse(in, request);
+            ReadState readState = new ReadState(in, socket, deadline, request.uri());
+            return readResponse(readState, request);
         } catch (HttpTimeoutException | java.net.SocketTimeoutException timeoutLike) {
             // Handled one level up, identically regardless of phase - never wrapped as a
             // PinnedAttemptFailure, since a deadline/socket timeout is already never retried
@@ -234,9 +235,9 @@ final class PinnedSocketHttpTransport {
         return tlsSocket;
     }
 
-    private static RawResponse readResponse(InputStream in, HttpFetchRequest request)
+    private static RawResponse readResponse(ReadState state, HttpFetchRequest request)
             throws IOException {
-        String statusLine = readLine(in, MAX_STATUS_LINE_LENGTH);
+        String statusLine = readLine(state, MAX_STATUS_LINE_LENGTH);
         if (statusLine == null || statusLine.isEmpty()) {
             throw new IOException("Empty response from " + request.uri());
         }
@@ -265,7 +266,7 @@ final class PinnedSocketHttpTransport {
                 throw new IOException(
                         "Response carried more than " + MAX_HEADER_COUNT + " headers");
             }
-            String line = readLine(in, MAX_HEADER_LINE_LENGTH);
+            String line = readLine(state, MAX_HEADER_LINE_LENGTH);
             if (line == null) {
                 throw new IOException("Connection closed while reading response headers");
             }
@@ -281,13 +282,13 @@ final class PinnedSocketHttpTransport {
             headers.computeIfAbsent(name, key -> new ArrayList<>()).add(value);
         }
 
-        byte[] body = readBody(in, headers, statusCode, request);
+        byte[] body = readBody(state, headers, statusCode, request);
         String contentType = firstHeaderIgnoreCase(headers, "Content-Type").orElse("");
         return new RawResponse(statusCode, headers, body, contentType);
     }
 
     private static byte[] readBody(
-            InputStream in,
+            ReadState state,
             Map<String, List<String>> headers,
             int statusCode,
             HttpFetchRequest request)
@@ -298,7 +299,7 @@ final class PinnedSocketHttpTransport {
         Optional<String> transferEncoding = firstHeaderIgnoreCase(headers, "Transfer-Encoding");
         if (transferEncoding.isPresent()
                 && transferEncoding.get().toLowerCase(Locale.ROOT).contains("chunked")) {
-            return readChunkedBody(in, request);
+            return readChunkedBody(state, request);
         }
         Optional<String> contentLengthHeader = firstHeaderIgnoreCase(headers, "Content-Length");
         if (contentLengthHeader.isPresent()) {
@@ -314,17 +315,17 @@ final class PinnedSocketHttpTransport {
             if (contentLength > request.maxResponseBytes()) {
                 throw new ResponseTooLargeException(request.uri(), request.maxResponseBytes());
             }
-            return readExactly(in, contentLength);
+            return readExactly(state, contentLength);
         }
-        return readUntilEofBounded(in, request);
+        return readUntilEofBounded(state, request);
     }
 
-    private static byte[] readChunkedBody(InputStream in, HttpFetchRequest request)
+    private static byte[] readChunkedBody(ReadState state, HttpFetchRequest request)
             throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         long total = 0;
         while (true) {
-            String sizeLine = readLine(in, MAX_HEADER_LINE_LENGTH);
+            String sizeLine = readLine(state, MAX_HEADER_LINE_LENGTH);
             if (sizeLine == null) {
                 throw new IOException("Connection closed while reading a chunk size");
             }
@@ -341,7 +342,7 @@ final class PinnedSocketHttpTransport {
             }
             if (chunkSize == 0) {
                 while (true) {
-                    String trailer = readLine(in, MAX_HEADER_LINE_LENGTH);
+                    String trailer = readLine(state, MAX_HEADER_LINE_LENGTH);
                     if (trailer == null) {
                         throw new IOException("Connection closed while reading chunk trailers");
                     }
@@ -355,8 +356,8 @@ final class PinnedSocketHttpTransport {
             if (total > request.maxResponseBytes()) {
                 throw new ResponseTooLargeException(request.uri(), request.maxResponseBytes());
             }
-            buffer.write(readExactly(in, chunkSize));
-            String terminator = readLine(in, 2);
+            buffer.write(readExactly(state, chunkSize));
+            String terminator = readLine(state, 2);
             if (terminator == null || !terminator.isEmpty()) {
                 throw new IOException("Malformed chunk terminator");
             }
@@ -364,14 +365,20 @@ final class PinnedSocketHttpTransport {
         return buffer.toByteArray();
     }
 
-    private static byte[] readExactly(InputStream in, long length) throws IOException {
+    private static byte[] readExactly(ReadState state, long length) throws IOException {
         ByteArrayOutputStream buffer =
                 new ByteArrayOutputStream((int) Math.min(length, READ_CHUNK_SIZE));
         byte[] chunk = new byte[READ_CHUNK_SIZE];
         long remaining = length;
         while (remaining > 0) {
             int toRead = (int) Math.min(chunk.length, remaining);
-            int read = in.read(chunk, 0, toRead);
+            // Re-derived from the shared deadline before every blocking read, never the fixed
+            // per-call SO_TIMEOUT set once at the start of the response: a slow peer that
+            // trickles bytes just under that fixed timeout could otherwise keep resetting its
+            // own clock indefinitely, letting one logical response read run far longer than the
+            // action's overall shared budget.
+            state.refreshTimeout();
+            int read = state.in().read(chunk, 0, toRead);
             if (read < 0) {
                 throw new IOException("Connection closed before Content-Length bytes were read");
             }
@@ -381,13 +388,18 @@ final class PinnedSocketHttpTransport {
         return buffer.toByteArray();
     }
 
-    private static byte[] readUntilEofBounded(InputStream in, HttpFetchRequest request)
+    private static byte[] readUntilEofBounded(ReadState state, HttpFetchRequest request)
             throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         byte[] chunk = new byte[READ_CHUNK_SIZE];
         long total = 0;
         int read;
-        while ((read = in.read(chunk)) >= 0) {
+        while (true) {
+            state.refreshTimeout();
+            read = state.in().read(chunk);
+            if (read < 0) {
+                break;
+            }
             total += read;
             if (total > request.maxResponseBytes()) {
                 throw new ResponseTooLargeException(request.uri(), request.maxResponseBytes());
@@ -397,11 +409,21 @@ final class PinnedSocketHttpTransport {
         return buffer.toByteArray();
     }
 
-    private static String readLine(InputStream in, int maxLength) throws IOException {
+    private static String readLine(ReadState state, int maxLength) throws IOException {
         ByteArrayOutputStream line = new ByteArrayOutputStream();
         int previous = -1;
         int current;
-        while ((current = in.read()) >= 0) {
+        while (true) {
+            // Refreshed before every single byte, not just once per line: SO_TIMEOUT bounds one
+            // blocking read call, not the cumulative time spent reading a whole line, so a peer
+            // trickling one byte at a time - each individual read() call comfortably inside the
+            // per-call timeout - could otherwise stall a single line arbitrarily far past the
+            // request's overall shared deadline.
+            state.refreshTimeout();
+            current = state.in().read();
+            if (current < 0) {
+                break;
+            }
             if (previous == '\r' && current == '\n') {
                 byte[] bytes = line.toByteArray();
                 return new String(bytes, 0, bytes.length - 1, StandardCharsets.ISO_8859_1);
@@ -416,6 +438,25 @@ final class PinnedSocketHttpTransport {
             return null;
         }
         throw new IOException("Connection closed before a complete line was received");
+    }
+
+    /**
+     * Bundles the response {@link InputStream} with everything needed to re-derive and re-apply the
+     * socket's blocking-read timeout from the one shared action deadline before every individual
+     * blocking read - never a fixed timeout computed once at the start of the response and then
+     * left to apply, unchanged, to however many further blocking reads the response happens to
+     * require.
+     */
+    private record ReadState(InputStream in, Socket socket, Deadline deadline, URI uri) {
+        void refreshTimeout() throws HttpTimeoutException {
+            try {
+                socket.setSoTimeout(requireTimeBudget(deadline, uri));
+            } catch (java.net.SocketException failure) {
+                // setSoTimeout itself failing (a socket already closed by the peer) is reported
+                // as an ordinary read failure at the next actual read() call; nothing to do here
+                // beyond letting that happen.
+            }
+        }
     }
 
     private static Optional<String> firstHeaderIgnoreCase(
