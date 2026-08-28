@@ -13,23 +13,99 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /**
- * INT-001 through INT-003: interruption of the calling thread is a terminal outcome, never an
- * ordinary connectivity failure eligible for a pinned-address fallback. Each test blocks a real
- * fetch on a fixture server that deliberately never completes the phase under test, waits (via a
- * {@link CountDownLatch} the fixture itself signals, never a sleep) until that phase has genuinely
- * begun, interrupts the fetching thread, and asserts the resulting exception type, the interrupt
- * flag, and that a second pinned address was never contacted - never on elapsed wall-clock time.
- * INT-004 (a configured crawler retry policy must not retry after interruption) lives in {@link
- * HttpCrawlerTest} instead, next to the rest of that class's retry-classification coverage.
+ * INT-001 through INT-003 (TLS/write/read) and INT-CONNECT-001 (connect): interruption of the
+ * calling thread is a terminal outcome, never an ordinary connectivity failure eligible for a
+ * pinned-address fallback, regardless of which phase of one attempt it happens during. Each test
+ * blocks a real fetch on a fixture that deliberately never completes the phase under test, waits
+ * (via a {@link CountDownLatch} the fixture itself signals, never a sleep) until that phase has
+ * genuinely begun, interrupts the fetching thread, and asserts the resulting exception type, the
+ * interrupt flag, and that a second pinned address was never contacted - never on elapsed
+ * wall-clock time.
+ *
+ * <p>The connect phase needs a different synchronization technique than TLS/write/read: unlike
+ * those phases, a real, silently-dropped connect attempt gives no peer-observable event (nothing is
+ * ever accepted) a test could synchronize on. {@link
+ * #intConnect001InterruptDuringConnectNeverFallsBackToASecondPinnedAddress} instead injects a
+ * deterministic, test-controlled {@link PinnedSocketHttpTransport.ISocketConnector} - the
+ * package-private seam the production code exercises through the real {@code Socket::connect} -
+ * that signals a latch the instant it is invoked and then blocks until interrupted, exactly as a
+ * real connect attempt that never receives a response would.
+ *
+ * <p>INT-004 (a configured crawler retry policy must not retry after interruption) lives in {@link
+ * HttpCrawlerTest} instead, next to the rest of that class's retry-classification coverage; since
+ * HttpCrawler dispatches on the interruption exception's type alone, that one test already covers
+ * every phase an interruption could originate from, connect included.
  */
 class TransportInterruptionTest {
+
+    @Test
+    void intConnect001InterruptDuringConnectNeverFallsBackToASecondPinnedAddress()
+            throws Exception {
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.10");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.11");
+        CountDownLatch connectStarted = new CountDownLatch(1);
+        AtomicInteger connectInvocations = new AtomicInteger();
+        PinnedSocketHttpTransport.ISocketConnector blockingUntilInterruptedConnector =
+                (socket, address, timeoutMillis) -> {
+                    connectInvocations.incrementAndGet();
+                    connectStarted.countDown();
+                    try {
+                        // Blocks exactly like a real connect attempt to a peer that never
+                        // responds at all would - unblocked only by the interruption this test
+                        // triggers (through Future#cancel(true) inside runBoundedOnDeadline),
+                        // never by a real or simulated timeout.
+                        new CountDownLatch(1).await();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("simulated connect interrupted", interrupted);
+                    }
+                };
+        try (CountingHealthyServer second =
+                CountingHealthyServer.bindingToEphemeralPort(secondAddress)) {
+            int port = second.port();
+            URI uri = URI.create("http://pinned.example.test:" + port + "/");
+            VerifiedNetworkAddresses pinned =
+                    new VerifiedNetworkAddresses(
+                            "pinned.example.test", port, List.of(firstAddress, secondAddress));
+
+            FetchOutcome outcome =
+                    fetchOnInterruptibleThread(
+                            uri,
+                            pinned,
+                            () -> {
+                                boolean reached = connectStarted.await(10, TimeUnit.SECONDS);
+                                assertThat(reached)
+                                        .as("the fake connector's connect() was invoked")
+                                        .isTrue();
+                            },
+                            Map.of(),
+                            Optional.of(blockingUntilInterruptedConnector));
+
+            assertThat(outcome.thrown())
+                    .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
+            PinnedSocketHttpTransport.TransportInterruptedException interrupted =
+                    (PinnedSocketHttpTransport.TransportInterruptedException) outcome.thrown();
+            assertThat(interrupted.transmissionMayHaveStarted())
+                    .as("connect precedes TLS and the HTTP request write entirely")
+                    .isFalse();
+            assertThat(outcome.interruptFlagPreserved()).isTrue();
+            assertThat(connectInvocations.get())
+                    .as("the first pinned address's connect was attempted exactly once")
+                    .isEqualTo(1);
+            assertThat(second.acceptedConnectionCount())
+                    .as("the second pinned address was never contacted")
+                    .isEqualTo(0);
+        }
+    }
 
     @Test
     void int001InterruptDuringTlsHandshakeNeverFallsBackToASecondPinnedAddress() throws Exception {
@@ -120,7 +196,8 @@ class TransportInterruptionTest {
     private static FetchOutcome fetchOnInterruptibleThread(
             URI uri, VerifiedNetworkAddresses pinned, ThrowingRunnable awaitPhaseStarted)
             throws Exception {
-        return fetchOnInterruptibleThread(uri, pinned, awaitPhaseStarted, Map.of());
+        return fetchOnInterruptibleThread(
+                uri, pinned, awaitPhaseStarted, Map.of(), Optional.empty());
     }
 
     private static FetchOutcome fetchOnInterruptibleThread(
@@ -129,17 +206,38 @@ class TransportInterruptionTest {
             ThrowingRunnable awaitPhaseStarted,
             Map<String, String> headers)
             throws Exception {
+        return fetchOnInterruptibleThread(
+                uri, pinned, awaitPhaseStarted, headers, Optional.empty());
+    }
+
+    private static FetchOutcome fetchOnInterruptibleThread(
+            URI uri,
+            VerifiedNetworkAddresses pinned,
+            ThrowingRunnable awaitPhaseStarted,
+            Map<String, String> headers,
+            Optional<PinnedSocketHttpTransport.ISocketConnector> socketConnector)
+            throws Exception {
         AtomicReference<Throwable> thrown = new AtomicReference<>();
         AtomicBoolean interruptFlagPreserved = new AtomicBoolean();
         CountDownLatch finished = new CountDownLatch(1);
         HttpFetchRequest request =
                 new HttpFetchRequest(uri, Duration.ofSeconds(30), headers, 10_000);
+        PinnedSocketHttpTransport transport =
+                socketConnector
+                        .map(
+                                connector ->
+                                        new PinnedSocketHttpTransport(
+                                                IMonotonicClock.systemClock(),
+                                                (javax.net.ssl.SSLSocketFactory)
+                                                        javax.net.ssl.SSLSocketFactory.getDefault(),
+                                                connector))
+                        .orElseGet(
+                                () -> new PinnedSocketHttpTransport(IMonotonicClock.systemClock()));
         Thread fetchThread =
                 new Thread(
                         () -> {
                             try {
-                                new PinnedSocketHttpTransport(IMonotonicClock.systemClock())
-                                        .fetch(request, pinned);
+                                transport.fetch(request, pinned);
                             } catch (Throwable failure) {
                                 thrown.set(failure);
                             } finally {
@@ -353,6 +451,15 @@ class TransportInterruptionTest {
 
         static CountingHealthyServer bindingTo(InetAddress address, int port) throws IOException {
             return new CountingHealthyServer(new ServerSocket(port, 1, address));
+        }
+
+        static CountingHealthyServer bindingToEphemeralPort(InetAddress address)
+                throws IOException {
+            return new CountingHealthyServer(new ServerSocket(0, 1, address));
+        }
+
+        int port() {
+            return serverSocket.getLocalPort();
         }
 
         int acceptedConnectionCount() {
