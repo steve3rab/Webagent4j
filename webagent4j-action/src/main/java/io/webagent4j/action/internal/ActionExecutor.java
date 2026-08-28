@@ -393,39 +393,50 @@ final class ActionExecutor {
         // a concrete target to revalidate) so an ungoverned action's behavior is completely
         // unchanged - no new backend cost, no new failure mode. Shares this same action's deadline;
         // it is not given a fresh timeout of its own.
-        if (config.actionPolicy().isPresent()
-                && target != null
-                && !target.isStillTheOriginallyResolvedTarget()) {
-            events.add(
-                    event(
-                            actionId,
-                            command,
-                            ActionStage.ACTION_FAILED,
-                            "target-changed-before-backend-action",
-                            targetDescription,
-                            startedNanos));
-            return failed(
-                    context,
-                    command,
-                    config,
-                    actionId,
-                    startedNanos,
-                    events,
-                    resolutionDuration,
-                    preconditionDuration,
-                    Duration.ZERO,
-                    Duration.ZERO,
-                    preconditions,
-                    List.of(),
-                    before,
-                    target,
-                    "",
-                    ActionFailureType.TARGET_CHANGED,
-                    ActionExecutionMode.NOT_EXECUTED,
-                    ActionStatus.EXECUTION_FAILED,
-                    "The action target could not be proven unchanged immediately before backend"
-                            + " execution",
-                    null);
+        //
+        // Verification and backend execution both act through executionTarget, the same IElement
+        // verifiedForExecution() just proved identity on - never through a second, independent
+        // resolution presumed to find the same physical node. A backend without an atomic-handle
+        // concept degrades to the previous boolean-only check; one that has it (see
+        // IElement#verifiedForExecution()) closes the residual gap between checking and using.
+        IElement executionTarget = target;
+        boolean disposeExecutionTarget = false;
+        if (config.actionPolicy().isPresent() && target != null) {
+            Optional<IElement> verified = target.verifiedForExecution();
+            if (verified.isEmpty()) {
+                events.add(
+                        event(
+                                actionId,
+                                command,
+                                ActionStage.ACTION_FAILED,
+                                "target-changed-before-backend-action",
+                                targetDescription,
+                                startedNanos));
+                return failed(
+                        context,
+                        command,
+                        config,
+                        actionId,
+                        startedNanos,
+                        events,
+                        resolutionDuration,
+                        preconditionDuration,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        preconditions,
+                        List.of(),
+                        before,
+                        target,
+                        "",
+                        ActionFailureType.TARGET_CHANGED,
+                        ActionExecutionMode.NOT_EXECUTED,
+                        ActionStatus.EXECUTION_FAILED,
+                        "The action target could not be proven unchanged immediately before"
+                                + " backend execution",
+                        null);
+            }
+            executionTarget = verified.get();
+            disposeExecutionTarget = true;
         }
 
         R value;
@@ -439,7 +450,7 @@ final class ActionExecutor {
                         targetDescription,
                         startedNanos));
         try {
-            value = command.executeBackend(context.actionBackend(), target);
+            value = command.executeBackend(context.actionBackend(), executionTarget);
         } catch (RuntimeException failure) {
             return failed(
                     context,
@@ -462,6 +473,15 @@ final class ActionExecutor {
                     ActionStatus.EXECUTION_FAILED,
                     "Backend action execution failed",
                     failure);
+        } finally {
+            if (disposeExecutionTarget && executionTarget instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception ignored) {
+                    // Best-effort cleanup only. Never replace the semantic result/failure of the
+                    // backend call.
+                }
+            }
         }
         Duration executionDuration = elapsedSince(executionStartedNanos);
         events.add(

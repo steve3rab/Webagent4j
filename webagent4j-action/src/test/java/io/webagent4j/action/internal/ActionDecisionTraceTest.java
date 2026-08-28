@@ -273,6 +273,7 @@ class ActionDecisionTraceTest {
         // explicitly that it is still the same target - matching what a backend without physical
         // -node identity tracking would report through that default method.
         when(element.isStillTheOriginallyResolvedTarget()).thenReturn(true);
+        when(element.verifiedForExecution()).thenReturn(Optional.of(element));
         return element;
     }
 

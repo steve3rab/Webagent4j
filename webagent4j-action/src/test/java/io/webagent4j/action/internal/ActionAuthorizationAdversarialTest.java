@@ -18,6 +18,7 @@ import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.policy.PolicyDecision;
 import io.webagent4j.policy.network.INetworkPolicy;
 import io.webagent4j.policy.network.NetworkCheckPhase;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -170,6 +171,7 @@ class ActionAuthorizationAdversarialTest {
         // explicitly that it is still the same target - matching what a backend without physical
         // -node identity tracking would report through that default method.
         org.mockito.Mockito.when(element.isStillTheOriginallyResolvedTarget()).thenReturn(true);
+        org.mockito.Mockito.when(element.verifiedForExecution()).thenReturn(Optional.of(element));
         return element;
     }
 

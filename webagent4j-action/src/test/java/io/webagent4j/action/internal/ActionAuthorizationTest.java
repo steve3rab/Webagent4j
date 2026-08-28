@@ -26,6 +26,7 @@ import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.policy.PolicyDecision;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -336,6 +337,7 @@ class ActionAuthorizationTest {
         // explicitly that it is still the same target - matching what a backend without physical
         // -node identity tracking would report through that default method.
         when(element.isStillTheOriginallyResolvedTarget()).thenReturn(true);
+        when(element.verifiedForExecution()).thenReturn(Optional.of(element));
         return element;
     }
 

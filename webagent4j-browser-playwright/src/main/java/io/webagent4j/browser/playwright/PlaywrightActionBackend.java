@@ -1,6 +1,7 @@
 package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.Download;
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.SelectOption;
@@ -35,7 +36,16 @@ final class PlaywrightActionBackend implements IActionBackend {
 
     @Override
     public void click(IElement element) {
-        locator(element).click();
+        PlaywrightElement target = asPlaywrightElement(element);
+        Optional<ElementHandle> verifiedHandle = target.verifiedHandle();
+        if (verifiedHandle.isPresent()) {
+            // The exact handle policy-driven identity verification just reproved - never a
+            // second, independently re-resolved Locator lookup that could silently land on a
+            // different physical node satisfying the same locator.
+            verifiedHandle.get().click();
+            return;
+        }
+        target.locator().click();
     }
 
     @Override
@@ -197,8 +207,12 @@ final class PlaywrightActionBackend implements IActionBackend {
     }
 
     private static Locator locator(IElement element) {
+        return asPlaywrightElement(element).locator();
+    }
+
+    private static PlaywrightElement asPlaywrightElement(IElement element) {
         if (element instanceof PlaywrightElement playwrightElement) {
-            return playwrightElement.locator();
+            return playwrightElement;
         }
         throw new IllegalArgumentException("Element does not belong to the Playwright backend");
     }
