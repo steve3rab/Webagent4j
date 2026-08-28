@@ -12,11 +12,13 @@ import java.util.Optional;
  * precondition evaluation used by {@link IPreparedAction#execute()} and {@link
  * IPreparedAction#dryRun()}, but it never invokes the backend: building a plan never clicks, types,
  * submits, navigates, or otherwise touches the page. A plan is {@link ActionPlanStatus#READY} only
- * when the semantic target resolved to a single unambiguous candidate and every precondition passed
- * at the moment {@code plan()} was called; otherwise it is {@link ActionPlanStatus#BLOCKED} with a
- * structured {@link #failure()} reusing the same {@link ActionFailureType} taxonomy as {@link
- * ActionResult}. An interruption while retrying target resolution is preserved on the caller thread
- * and produces a blocked plan with {@link ActionFailureType#INTERRUPTED}.
+ * when the semantic target resolved to a single unambiguous candidate, every precondition passed,
+ * and every configured policy's plan-time snapshot evaluation ({@link #policyDecisions()}) allowed
+ * the action, all at the moment {@code plan()} was called; otherwise it is {@link
+ * ActionPlanStatus#BLOCKED} with a structured {@link #failure()} reusing the same {@link
+ * ActionFailureType} taxonomy as {@link ActionResult}. An interruption while retrying target
+ * resolution is preserved on the caller thread and produces a blocked plan with {@link
+ * ActionFailureType#INTERRUPTED}.
  *
  * <p>A plan is a snapshot, not a guarantee. Page state can change between {@code plan()} and {@link
  * #execute()}, so {@code execute()} never trusts the snapshot: it revalidates target resolution,
@@ -102,13 +104,18 @@ public interface IActionPlan<R> {
     ActionResult<R> execute();
 
     /**
-     * Returns a non-authoritative snapshot of the governed-execution decisions evaluated while
-     * building this plan, if any policy was configured on the prepared action - empty by default.
+     * Returns a snapshot of the governed-execution decisions evaluated while building this plan, if
+     * any policy was configured on the prepared action - empty by default.
      *
-     * <p>This snapshot never gates anything: {@link #execute()} always re-evaluates every
+     * <p>A {@code DENY} or evaluation failure recorded here is exactly what makes this plan {@link
+     * ActionPlanStatus#BLOCKED} (see {@link #status()}); an {@code ALLOW} here is one of the
+     * conditions for {@link ActionPlanStatus#READY}. It is still only a snapshot, though, never a
+     * capability a caller can bank for later: {@link #execute()} always re-evaluates every
      * configured policy fresh against current state before any backend call, exactly as if this
-     * snapshot did not exist. A {@code DENY} recorded here does not prevent {@link #execute()} from
-     * running, and a value recorded here can disagree with what {@link
+     * snapshot did not exist. Neither direction is trusted - an {@code ALLOW} recorded here never
+     * authorizes {@link #execute()} to skip its own fresh evaluation, and a {@code DENY} recorded
+     * here does not prevent {@link #execute()} from running if the policy's live decision has since
+     * changed. A value recorded here can therefore disagree with what {@link
      * ActionResult#decisionTrace()} reports after {@link #execute()} - both are honest, since page
      * state (and therefore a policy's own view of it) can change between the two.
      */

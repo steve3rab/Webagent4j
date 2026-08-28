@@ -108,6 +108,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 continue;
             }
             ElementRole knownRole = knownRole(query);
+            String identityToken = String.valueOf(identity.get("identity"));
             PlaywrightElement element =
                     new PlaywrightElement(
                             item,
@@ -116,10 +117,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             scope,
                             config,
                             candidateInspectionTimeout,
-                            scopeIdentityValidator);
+                            scopeIdentityValidator,
+                            identityToken);
             candidates.add(
                     new LocatorBackendCandidate(
-                            String.valueOf(identity.get("identity")),
+                            identityToken,
                             element,
                             ((Number) identity.get("domOrder")).intValue()));
         }
@@ -148,8 +150,12 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * <p>This avoids re-resolving a locator containing the isolated structured-scope selector in
      * Playwright's main world. The selector engine establishes the physical match first; identity
      * is then inspected on that exact node. No nested locator wait is introduced.
+     *
+     * <p>Package-visible so {@link PlaywrightElement#isStillTheOriginallyResolvedTarget()} can
+     * reuse the exact same inspection this class uses at discovery time, rather than a second,
+     * potentially inconsistent implementation.
      */
-    private static Map<String, Object> identifyOrNull(Locator item) {
+    static Map<String, Object> identifyOrNull(Locator item) {
         List<ElementHandle> handles = List.of();
         try {
             handles = item.elementHandles();
@@ -429,7 +435,8 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 context.scope(),
                 context.config(),
                 operationTimeoutMillis(timeout, 1),
-                validator);
+                validator,
+                stableIdentity);
     }
 
     private static String nextStructuredScopeLease() {

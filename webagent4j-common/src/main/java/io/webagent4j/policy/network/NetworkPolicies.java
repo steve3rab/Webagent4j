@@ -253,7 +253,18 @@ public final class NetworkPolicies {
             return PolicyDecision.allow(NetworkPolicyReasons.ALLOWED);
         }
 
-        /** Returns a DENY decision, or {@code null} if address-category checks did not deny. */
+        /**
+         * Returns a DENY decision, or {@code null} if address-category checks did not deny.
+         *
+         * <p>This method is only ever called when resolution is required for evaluation - either
+         * {@code requireResolutionForHostnames} is set, or at least one deny-category rule is
+         * configured (see the call site's guard). In either case, an empty resolution means
+         * classification is genuinely impossible, not that nothing was found to deny: a
+         * deny-category rule cannot be proven satisfied without at least one resolved address to
+         * check it against, so an empty result fails closed exactly like an explicit {@code
+         * requireResolutionForHostnames()} unresolved host does - regardless of whether that method
+         * was itself called.
+         */
         private PolicyDecision evaluateAddressCategories(String host) {
             InetAddress literal = parseLiteral(host);
             List<InetAddress> addresses;
@@ -270,7 +281,7 @@ public final class NetworkPolicies {
                     throw new NetworkResolutionFailedException(
                             "resolver returned a null address list", null);
                 }
-                if (addresses.isEmpty() && requireResolutionForHostnames) {
+                if (addresses.isEmpty()) {
                     return PolicyDecision.deny(
                             NetworkPolicyReasons.RESOLUTION_REQUIRED_BUT_UNRESOLVED);
                 }

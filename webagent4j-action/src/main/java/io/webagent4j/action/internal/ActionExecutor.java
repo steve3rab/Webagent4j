@@ -384,6 +384,49 @@ final class ActionExecutor {
                     null);
         }
 
+        // Closes the window between "the policy authorized this concrete target" and "the backend
+        // side effect runs against it": an action policy's ALLOW describes a specific,
+        // already-resolved target, and that authorization must never silently transfer to a
+        // different element that happens to satisfy the same semantic locator by the time the
+        // backend is actually invoked. Only runs when an action policy is configured (and there is
+        // a concrete target to revalidate) so an ungoverned action's behavior is completely
+        // unchanged - no new backend cost, no new failure mode. Shares this same action's deadline;
+        // it is not given a fresh timeout of its own.
+        if (config.actionPolicy().isPresent()
+                && target != null
+                && !target.isStillTheOriginallyResolvedTarget()) {
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "target-changed-before-backend-action",
+                            targetDescription,
+                            startedNanos));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.TARGET_CHANGED,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.EXECUTION_FAILED,
+                    "The action target could not be proven unchanged immediately before backend"
+                            + " execution",
+                    null);
+        }
+
         R value;
         long executionStartedNanos = clock.nanoTime();
         events.add(
@@ -693,6 +736,41 @@ final class ActionExecutor {
                     List.of(),
                     executor);
         }
+        List<io.webagent4j.action.ActionDecisionEntry> policyDecisions =
+                snapshotPolicyDecisions(command, config, actionId, targetDescription);
+        // Unlike the snapshot itself (informational only - execute() always re-evaluates fresh,
+        // never trusting this), the plan's own status must not claim READY over a policy that has
+        // already refused this action: a plan a caller inspects and decides to keep is a real,
+        // caller-visible signal, and reporting READY for something the same policy would reject a
+        // moment later at execute() is exactly the kind of authorization-shaped promise this
+        // framework never makes. A DENY or evaluation failure seen here blocks the plan; only an
+        // outright ALLOW (or no policy configured at all) is READY.
+        for (io.webagent4j.action.ActionDecisionEntry entry : policyDecisions) {
+            if (entry.outcome() == io.webagent4j.action.ActionDecisionOutcome.DENY) {
+                return blockedByPolicy(
+                        actionId,
+                        command,
+                        targetDescription,
+                        preconditions,
+                        expectedPostconditions,
+                        policyDecisions,
+                        ActionFailureType.POLICY_DENIED,
+                        "An action policy denied this action",
+                        executor);
+            }
+            if (entry.outcome() == io.webagent4j.action.ActionDecisionOutcome.EVALUATION_FAILED) {
+                return blockedByPolicy(
+                        actionId,
+                        command,
+                        targetDescription,
+                        preconditions,
+                        expectedPostconditions,
+                        policyDecisions,
+                        ActionFailureType.POLICY_EVALUATION_FAILED,
+                        "Action policy evaluation failed",
+                        executor);
+            }
+        }
         return new DefaultActionPlan<>(
                 actionId,
                 command.type(),
@@ -704,7 +782,38 @@ final class ActionExecutor {
                 expectedPostconditions,
                 Optional.empty(),
                 new ActionDiagnostics(targetDescription, "", Map.of("plan", "ready")),
-                snapshotPolicyDecisions(command, config, actionId, targetDescription),
+                policyDecisions,
+                executor);
+    }
+
+    /**
+     * Builds a {@link ActionPlanStatus#BLOCKED} plan for a policy that has already refused this
+     * action (or failed to evaluate) during {@link #prepare}'s snapshot pass - shared by the DENY
+     * and evaluation-failure cases so both carry the exact same shape.
+     */
+    @SuppressWarnings("checkstyle:ParameterNumber")
+    private <R> IActionPlan<R> blockedByPolicy(
+            ActionId actionId,
+            ActionCommand<R> command,
+            String targetDescription,
+            List<VerificationResult> preconditions,
+            List<VerificationType> expectedPostconditions,
+            List<io.webagent4j.action.ActionDecisionEntry> policyDecisions,
+            ActionFailureType failureType,
+            String message,
+            Supplier<ActionResult<R>> executor) {
+        return new DefaultActionPlan<>(
+                actionId,
+                command.type(),
+                command.idempotency(),
+                command.sideEffect(),
+                ActionPlanStatus.BLOCKED,
+                targetDescription,
+                preconditions,
+                expectedPostconditions,
+                Optional.of(new ActionFailure(failureType, message, Optional.empty())),
+                new ActionDiagnostics(targetDescription, "", Map.of("plan", "blocked")),
+                policyDecisions,
                 executor);
     }
 

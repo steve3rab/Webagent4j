@@ -24,7 +24,14 @@ import java.util.Objects;
  */
 public record NetworkDestination(String scheme, String host, int port, boolean hasUserInfo) {
 
-    /** Validates that every field is present and the port is in range. */
+    /**
+     * Validates that every field is present and the port is in range, and canonicalizes {@code
+     * scheme} and {@code host} exactly the same way regardless of which public entry point - {@link
+     * #of(URI)} or this constructor directly - was used to build this instance. Both must agree on
+     * the same requested destination, so canonicalization lives here, in the one place every
+     * construction path already passes through, rather than being duplicated (and risking drifting
+     * out of sync) in {@link #of(URI)} alone.
+     */
     public NetworkDestination {
         Objects.requireNonNull(scheme, "scheme");
         Objects.requireNonNull(host, "host");
@@ -38,6 +45,8 @@ public record NetworkDestination(String scheme, String host, int port, boolean h
             throw new IllegalArgumentException(
                     "port must be -1 or between 1 and 65535, was " + port);
         }
+        scheme = scheme.toLowerCase(Locale.ROOT);
+        host = HostCanonicalizer.canonicalizeLenient(host);
     }
 
     /**
@@ -52,15 +61,14 @@ public record NetworkDestination(String scheme, String host, int port, boolean h
         if (rawHost == null || rawHost.isBlank()) {
             throw new IllegalArgumentException("uri must have a host: " + safeSchemeOnly(uri));
         }
-        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
-        String host = canonicalizeHost(rawHost);
-        int port = resolvePort(uri.getPort(), scheme);
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme();
+        int port = resolvePort(uri.getPort(), scheme.toLowerCase(Locale.ROOT));
         boolean hasUserInfo = uri.getRawUserInfo() != null;
-        return new NetworkDestination(scheme, host, port, hasUserInfo);
-    }
-
-    private static String canonicalizeHost(String rawHost) {
-        return HostCanonicalizer.canonicalizeLenient(rawHost);
+        // The canonical constructor above applies the exact same scheme/host canonicalization
+        // this factory used to duplicate inline - passing the raw values through here rather than
+        // pre-canonicalizing them keeps the two public creation paths structurally unable to
+        // disagree, instead of merely happening to agree today.
+        return new NetworkDestination(scheme, rawHost, port, hasUserInfo);
     }
 
     private static int resolvePort(int explicitPort, String scheme) {

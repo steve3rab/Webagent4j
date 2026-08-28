@@ -36,6 +36,7 @@ final class PlaywrightElement implements IElement {
     private final LocatorScope originatingScope;
     private final LocatorConfig locatorConfig;
     private final Runnable scopeIdentityValidator;
+    private final String capturedIdentity;
 
     PlaywrightElement(
             Locator locator,
@@ -50,6 +51,7 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 PlaywrightLocatorBackend.inspectionTimeoutMillis(locatorConfig.defaultTimeout(), 1),
+                null,
                 null);
     }
 
@@ -67,6 +69,7 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 inspectionTimeoutMillis,
+                null,
                 null);
     }
 
@@ -78,6 +81,32 @@ final class PlaywrightElement implements IElement {
             LocatorConfig locatorConfig,
             double inspectionTimeoutMillis,
             Runnable scopeIdentityValidator) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                inspectionTimeoutMillis,
+                scopeIdentityValidator,
+                null);
+    }
+
+    /**
+     * @param capturedIdentity the stable per-physical-node identity token captured at the moment
+     *     this handle was resolved, or {@code null} when no such token was captured (in which case
+     *     {@link #isStillTheOriginallyResolvedTarget()} conservatively returns {@code true}, since
+     *     there is nothing to disprove it against).
+     */
+    PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            double inspectionTimeoutMillis,
+            Runnable scopeIdentityValidator,
+            String capturedIdentity) {
         if (Double.isNaN(inspectionTimeoutMillis) || inspectionTimeoutMillis < 0.0) {
             throw new IllegalArgumentException("inspectionTimeoutMillis must not be negative");
         }
@@ -87,6 +116,7 @@ final class PlaywrightElement implements IElement {
         this.originatingScope = originatingScope;
         this.locatorConfig = locatorConfig;
         this.scopeIdentityValidator = scopeIdentityValidator;
+        this.capturedIdentity = capturedIdentity;
     }
 
     @Override
@@ -231,6 +261,29 @@ final class PlaywrightElement implements IElement {
     public void click() {
         validateScopeIdentity();
         locator.click();
+    }
+
+    /**
+     * Re-inspects the live DOM through this handle's own locator and compares the result against
+     * {@link #capturedIdentity}. Never throws: any inability to prove identity - the node is gone,
+     * the locator has become ambiguous, the identity bridge is unavailable, a document boundary was
+     * crossed, or the fresh identity simply differs - is uniformly "not proven," so the caller's
+     * fail-closed contract needs only this one boolean.
+     */
+    @Override
+    public boolean isStillTheOriginallyResolvedTarget() {
+        if (capturedIdentity == null) {
+            return true;
+        }
+        try {
+            Map<String, Object> freshIdentity = PlaywrightLocatorBackend.identifyOrNull(locator);
+            if (freshIdentity == null) {
+                return false;
+            }
+            return capturedIdentity.equals(freshIdentity.get("identity"));
+        } catch (RuntimeException inconclusive) {
+            return false;
+        }
     }
 
     @Override

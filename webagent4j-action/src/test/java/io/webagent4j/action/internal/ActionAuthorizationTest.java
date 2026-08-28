@@ -183,7 +183,10 @@ class ActionAuthorizationTest {
         IActionPlan<Void> plan =
                 new DefaultActionBuilder(context(backend)).click(target).policy(denyAll).plan();
 
-        assertThat(plan.status()).isEqualTo(ActionPlanStatus.READY);
+        // The plan-time snapshot already saw the denial, so the plan itself is BLOCKED - but
+        // execute() still re-evaluates fresh rather than trusting that snapshot, independently
+        // reaching (and reporting) the same denial.
+        assertThat(plan.status()).isEqualTo(ActionPlanStatus.BLOCKED);
         verifyNoInteractions(backend);
 
         ActionResult<Void> result = plan.execute();
@@ -329,6 +332,10 @@ class ActionAuthorizationTest {
                         new ElementState(
                                 true, true, enabled, false, false, false, false, false, true,
                                 enabled, false, true));
+        // A mock never inherits IElement's real default implementation, so it must be told
+        // explicitly that it is still the same target - matching what a backend without physical
+        // -node identity tracking would report through that default method.
+        when(element.isStillTheOriginallyResolvedTarget()).thenReturn(true);
         return element;
     }
 
