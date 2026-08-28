@@ -338,8 +338,8 @@ class ActionModelTest {
                                         || failureType == ActionFailureType.TARGET_AMBIGUOUS
                                         || failureType == ActionFailureType.BACKEND_FAILURE
                                         || failureType == ActionFailureType.POLICY_DENIED
-                                        || failureType
-                                                == ActionFailureType.POLICY_EVALUATION_FAILED;
+                                        || failureType == ActionFailureType.POLICY_EVALUATION_FAILED
+                                        || failureType == ActionFailureType.TARGET_CHANGED;
                         case REAL ->
                                 failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
                                         || failureType

@@ -31,5 +31,16 @@ public enum ActionFailureType {
      * ActionExecutionMode#NOT_EXECUTED}: once a side effect may have happened, it is never reported
      * as not executed.
      */
-    POLICY_VIOLATION
+    POLICY_VIOLATION,
+
+    /**
+     * An action policy authorized a specific, already-resolved target, but immediately before the
+     * backend side effect this framework could not prove the target was still that exact same
+     * concrete element - it was detached, replaced by another element satisfying the same semantic
+     * locator, or its identity could not otherwise be confirmed. Fails closed exactly like {@link
+     * #POLICY_DENIED}: the backend is never invoked, and {@link ActionExecutionMode#NOT_EXECUTED}
+     * is reported. Distinct from {@link #POLICY_DENIED} because the policy itself may have allowed
+     * the original target; the authorization was never transferable to a different one.
+     */
+    TARGET_CHANGED
 }

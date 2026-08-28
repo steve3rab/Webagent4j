@@ -384,6 +384,49 @@ final class ActionExecutor {
                     null);
         }
 
+        // Closes the window between "the policy authorized this concrete target" and "the backend
+        // side effect runs against it": an action policy's ALLOW describes a specific,
+        // already-resolved target, and that authorization must never silently transfer to a
+        // different element that happens to satisfy the same semantic locator by the time the
+        // backend is actually invoked. Only runs when an action policy is configured (and there is
+        // a concrete target to revalidate) so an ungoverned action's behavior is completely
+        // unchanged - no new backend cost, no new failure mode. Shares this same action's deadline;
+        // it is not given a fresh timeout of its own.
+        if (config.actionPolicy().isPresent()
+                && target != null
+                && !target.isStillTheOriginallyResolvedTarget()) {
+            events.add(
+                    event(
+                            actionId,
+                            command,
+                            ActionStage.ACTION_FAILED,
+                            "target-changed-before-backend-action",
+                            targetDescription,
+                            startedNanos));
+            return failed(
+                    context,
+                    command,
+                    config,
+                    actionId,
+                    startedNanos,
+                    events,
+                    resolutionDuration,
+                    preconditionDuration,
+                    Duration.ZERO,
+                    Duration.ZERO,
+                    preconditions,
+                    List.of(),
+                    before,
+                    target,
+                    "",
+                    ActionFailureType.TARGET_CHANGED,
+                    ActionExecutionMode.NOT_EXECUTED,
+                    ActionStatus.EXECUTION_FAILED,
+                    "The action target could not be proven unchanged immediately before backend"
+                            + " execution",
+                    null);
+        }
+
         R value;
         long executionStartedNanos = clock.nanoTime();
         events.add(

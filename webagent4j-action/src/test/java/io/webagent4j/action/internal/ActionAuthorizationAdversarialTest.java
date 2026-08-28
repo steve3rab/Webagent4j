@@ -166,6 +166,10 @@ class ActionAuthorizationAdversarialTest {
                         new ElementState(
                                 true, true, true, false, false, false, false, false, true, true,
                                 false, true));
+        // A mock never inherits IElement's real default implementation, so it must be told
+        // explicitly that it is still the same target - matching what a backend without physical
+        // -node identity tracking would report through that default method.
+        org.mockito.Mockito.when(element.isStillTheOriginallyResolvedTarget()).thenReturn(true);
         return element;
     }
 

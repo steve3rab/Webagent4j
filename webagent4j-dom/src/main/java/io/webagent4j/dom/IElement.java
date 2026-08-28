@@ -107,6 +107,31 @@ public interface IElement {
     /** Performs the backend's normal click operation, including its native actionability checks. */
     void click();
 
+    /**
+     * Returns whether this handle still refers to the exact same concrete, currently-attached
+     * physical node it referred to when it was originally resolved - never merely to a different
+     * node that happens to satisfy the same semantic query now.
+     *
+     * <p>This exists to close the window between a governed-execution policy authorizing a
+     * specific, already-resolved target and that target's backend side effect: a caller that
+     * authorized target T1 must never have its authorization silently transferred to a replacement
+     * T2 that appeared after T1 was removed but before the side effect ran, even though both
+     * equally match the same locator. Callers that need this guarantee call it immediately before
+     * the side effect, after every other precondition and authorization has already passed, and
+     * treat {@code false} as fail-closed: the side effect must not proceed.
+     *
+     * <p>The default implementation conservatively returns {@code true}: a backend that cannot
+     * distinguish "the same physical node" from "an equally-matching replacement" makes no claim
+     * either way, preserving this interface's existing best-effort re-resolution behavior. A
+     * backend capable of tracking physical node identity must return {@code false} whenever that
+     * identity cannot be proven to still hold - detachment, replacement, an inspection failure, or
+     * malformed identity data are all treated as "not proven," never silently treated as "still the
+     * same."
+     */
+    default boolean isStillTheOriginallyResolvedTarget() {
+        return true;
+    }
+
     /** Starts a semantic query scoped to this element's descendants. */
     default IFind<IElement> find() {
         throw new UnsupportedOperationException(

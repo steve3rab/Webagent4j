@@ -74,7 +74,8 @@ public record ActionResult<T>(
                                                 || failureType == ActionFailureType.POLICY_DENIED
                                                 || failureType
                                                         == ActionFailureType
-                                                                .POLICY_EVALUATION_FAILED;
+                                                                .POLICY_EVALUATION_FAILED
+                                                || failureType == ActionFailureType.TARGET_CHANGED;
                                 case REAL ->
                                         failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
                                                 || failureType
