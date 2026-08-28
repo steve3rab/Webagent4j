@@ -22,8 +22,20 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
-/** Playwright implementation of backend-neutral Phase 4 action primitives. */
+/**
+ * Playwright implementation of backend-neutral Phase 4 action primitives.
+ *
+ * <p>Every side-effecting method binds to the exact physical target governed execution just
+ * verified, when one was verified: {@link PlaywrightElement#verifiedHandle()} exposes the same
+ * {@link ElementHandle} identity verification captured and checked, so the native operation acts on
+ * precisely that node - never on a second, independently re-resolved {@link Locator} lookup that
+ * could silently observe a different physical node satisfying the same locator between the check
+ * and the use. An element with no verified handle (an ungoverned resolution, or a governed one for
+ * which identity was never captured) falls back to the ordinary, re-resolving {@link Locator} path
+ * unchanged - see {@link #bindToVerifiedTarget}.
+ */
 final class PlaywrightActionBackend implements IActionBackend {
 
     private final Page page;
@@ -36,40 +48,38 @@ final class PlaywrightActionBackend implements IActionBackend {
 
     @Override
     public void click(IElement element) {
-        PlaywrightElement target = asPlaywrightElement(element);
-        Optional<ElementHandle> verifiedHandle = target.verifiedHandle();
-        if (verifiedHandle.isPresent()) {
-            // The exact handle policy-driven identity verification just reproved - never a
-            // second, independently re-resolved Locator lookup that could silently land on a
-            // different physical node satisfying the same locator.
-            verifiedHandle.get().click();
-            return;
-        }
-        target.locator().click();
+        bindToVerifiedTarget(element, ElementHandle::click, Locator::click);
     }
 
     @Override
     public void doubleClick(IElement element) {
-        locator(element).dblclick();
+        bindToVerifiedTarget(element, ElementHandle::dblclick, Locator::dblclick);
     }
 
     @Override
     public void fill(IElement element, String value) {
-        locator(element).fill(value);
+        bindToVerifiedTarget(element, handle -> handle.fill(value), locator -> locator.fill(value));
     }
 
     @Override
     public void fillSecret(IElement element, Secret value) {
         value.use(
                 secret -> {
-                    locator(element).fill(secret);
+                    bindToVerifiedTarget(
+                            element,
+                            handle -> handle.fill(secret),
+                            locator -> locator.fill(secret));
                     return null;
                 });
     }
 
     @Override
     public void clear(IElement element) {
-        locator(element).clear();
+        // ElementHandle has no dedicated clear() operation, only Locator does - but Locator#clear
+        // is itself implemented as a fill with an empty string at the protocol level, exactly what
+        // ElementHandle#fill("") performs directly, so this is the same physical operation on the
+        // exact verified node rather than a weaker substitute.
+        bindToVerifiedTarget(element, handle -> handle.fill(""), Locator::clear);
     }
 
     @Override
@@ -80,37 +90,44 @@ final class PlaywrightActionBackend implements IActionBackend {
                     case LABEL -> new SelectOption().setLabel(selection.value());
                     case INDEX -> new SelectOption().setIndex(selection.index());
                 };
-        locator(element).selectOption(option);
+        bindToVerifiedTarget(
+                element,
+                handle -> handle.selectOption(option),
+                locator -> locator.selectOption(option));
     }
 
     @Override
     public void check(IElement element) {
-        locator(element).check();
+        bindToVerifiedTarget(element, ElementHandle::check, Locator::check);
     }
 
     @Override
     public void uncheck(IElement element) {
-        locator(element).uncheck();
+        bindToVerifiedTarget(element, ElementHandle::uncheck, Locator::uncheck);
     }
 
     @Override
     public void focus(IElement element) {
-        locator(element).focus();
+        bindToVerifiedTarget(element, ElementHandle::focus, Locator::focus);
     }
 
     @Override
     public void blur(IElement element) {
-        locator(element).blur();
+        // ElementHandle has no dedicated blur() operation either; invoking the same native DOM
+        // blur() directly on the exact verified node is the equivalent atomic operation.
+        bindToVerifiedTarget(
+                element, handle -> handle.evaluate("element => element.blur()"), Locator::blur);
     }
 
     @Override
     public void hover(IElement element) {
-        locator(element).hover();
+        bindToVerifiedTarget(element, ElementHandle::hover, Locator::hover);
     }
 
     @Override
     public void scrollTo(IElement element) {
-        locator(element).scrollIntoViewIfNeeded();
+        bindToVerifiedTarget(
+                element, ElementHandle::scrollIntoViewIfNeeded, Locator::scrollIntoViewIfNeeded);
     }
 
     @Override
@@ -130,10 +147,10 @@ final class PlaywrightActionBackend implements IActionBackend {
 
     @Override
     public void submit(IElement form) {
-        locator(form)
-                .evaluate(
-                        "element => element.requestSubmit"
-                                + " ? element.requestSubmit() : element.submit()");
+        String script =
+                "element => element.requestSubmit ? element.requestSubmit() : element.submit()";
+        bindToVerifiedTarget(
+                form, handle -> handle.evaluate(script), locator -> locator.evaluate(script));
     }
 
     @Override
@@ -142,7 +159,8 @@ final class PlaywrightActionBackend implements IActionBackend {
         if (element == null) {
             page.keyboard().press(key);
         } else {
-            locator(element).press(key);
+            bindToVerifiedTarget(
+                    element, handle -> handle.press(key), locator -> locator.press(key));
         }
     }
 
@@ -171,13 +189,19 @@ final class PlaywrightActionBackend implements IActionBackend {
 
     @Override
     public void upload(IElement element, List<Path> files) {
-        locator(element).setInputFiles(files.toArray(Path[]::new));
+        Path[] filesArray = files.toArray(Path[]::new);
+        bindToVerifiedTarget(
+                element,
+                handle -> handle.setInputFiles(filesArray),
+                locator -> locator.setInputFiles(filesArray));
     }
 
     @Override
     public DownloadedFile download(
             IElement element, Path destination, DownloadCollisionPolicy collisionPolicy) {
-        Download download = page.waitForDownload(() -> locator(element).click());
+        Download download =
+                page.waitForDownload(
+                        () -> bindToVerifiedTarget(element, ElementHandle::click, Locator::click));
         String suggested = download.suggestedFilename();
         Path requested =
                 Files.isDirectory(destination) ? destination.resolve(suggested) : destination;
@@ -206,8 +230,31 @@ final class PlaywrightActionBackend implements IActionBackend {
         page.waitForTimeout(duration.toMillis());
     }
 
-    private static Locator locator(IElement element) {
-        return asPlaywrightElement(element).locator();
+    /**
+     * Performs one native operation against {@code element}, binding to its exact identity-verified
+     * physical handle when {@link PlaywrightElement#verifiedHandle()} has one, and to the ordinary
+     * re-resolving {@link Locator} otherwise.
+     *
+     * <p>This is the single mechanism every side-effecting method in this class routes through, so
+     * a target policy-driven identity verification just reproved is never handed off to a second,
+     * independent {@link Locator} resolution for the actual native call - the residual
+     * time-of-check-to-time-of-use window a caller combining a boolean identity check with a
+     * separate native call would otherwise reopen. An element that never captured a verified handle
+     * - every ungoverned resolution, and any governed one for which the backend could not
+     * atomically bind identity - takes the exact same {@link Locator} path this class always took,
+     * so an ungoverned action's behavior and cost are completely unchanged.
+     */
+    private static void bindToVerifiedTarget(
+            IElement element,
+            Consumer<ElementHandle> viaVerifiedHandle,
+            Consumer<Locator> viaLocator) {
+        PlaywrightElement target = asPlaywrightElement(element);
+        Optional<ElementHandle> verifiedHandle = target.verifiedHandle();
+        if (verifiedHandle.isPresent()) {
+            viaVerifiedHandle.accept(verifiedHandle.get());
+        } else {
+            viaLocator.accept(target.locator());
+        }
     }
 
     private static PlaywrightElement asPlaywrightElement(IElement element) {
