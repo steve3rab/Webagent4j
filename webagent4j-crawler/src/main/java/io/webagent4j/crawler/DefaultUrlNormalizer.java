@@ -39,7 +39,8 @@ public final class DefaultUrlNormalizer implements IUrlNormalizer {
     public URI normalize(URI uri) {
         Objects.requireNonNull(uri, "uri");
         if (!uri.isAbsolute() || uri.getHost() == null) {
-            throw new IllegalArgumentException("uri must be absolute with a host: " + uri);
+            throw new IllegalArgumentException(
+                    "uri must be absolute with a host: " + safeDescription(uri));
         }
         URI resolved = uri.normalize();
         String scheme = resolved.getScheme().toLowerCase(Locale.ROOT);
@@ -63,8 +64,21 @@ public final class DefaultUrlNormalizer implements IUrlNormalizer {
             return new URI(normalized.toString());
         } catch (URISyntaxException malformed) {
             throw new IllegalArgumentException(
-                    "normalization produced an invalid URI for " + uri, malformed);
+                    "normalization produced an invalid URI for " + safeDescription(uri), malformed);
         }
+    }
+
+    /**
+     * Renders {@code scheme://host} only - never userinfo, path, query, or fragment, any of which
+     * could carry credentials or another sensitive token embedded in the URL a caller is trying to
+     * normalize. Used only for exception messages; {@link IUrlNormalizer} callers that need the
+     * full URI already have it as a structured value (the input to this method) rather than needing
+     * to parse it back out of free text.
+     */
+    private static String safeDescription(URI uri) {
+        String scheme = uri.getScheme() == null ? "(no scheme)" : uri.getScheme();
+        String host = uri.getHost() == null ? "(no host)" : uri.getHost();
+        return scheme + "://" + host;
     }
 
     private static String portSuffix(String scheme, int port) {

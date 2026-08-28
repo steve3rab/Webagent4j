@@ -58,4 +58,22 @@ class BrowserUrlNormalizerTest {
         URI twice = normalizer.normalize(once);
         assertThat(twice).isEqualTo(once);
     }
+
+    @Test
+    void aRejectedUriNeverLeaksUserinfoOrQueryIntoTheExceptionMessage() {
+        // DG-001: mailto: URIs are absolute but not hierarchical (no host), so this always
+        // rejects - the failure message must describe the rejection without repeating the raw
+        // URI text, which here carries what would be a credential-shaped userinfo and a
+        // sensitive-looking query parameter.
+        URI sensitive = URI.create("mailto:someone@example.com?subject=SECRET_TOKEN_VALUE");
+
+        org.assertj.core.api.Assertions.assertThatIllegalArgumentException()
+                .isThrownBy(() -> normalizer.normalize(sensitive))
+                .satisfies(
+                        exception -> {
+                            assertThat(exception.getMessage())
+                                    .doesNotContain("someone@example.com");
+                            assertThat(exception.getMessage()).doesNotContain("SECRET_TOKEN_VALUE");
+                        });
+    }
 }
