@@ -107,6 +107,11 @@ class PlaywrightLocatorBackendTest {
         Locator documentRoot = rootLocatingAll(matches);
         when(matches.count()).thenReturn(1);
         when(matches.nth(0)).thenReturn(item);
+        // A fresh recheck confirms the candidate is still present, so a missing bridge on it is a
+        // genuine, persistent condition - not the transient candidate-just-disappeared race the
+        // recheck also has to rule out - and must still fail closed rather than being fabricated
+        // into absence.
+        when(item.count()).thenReturn(1);
         when(item.elementHandles()).thenReturn(List.of(identityHandle));
         when(identityHandle.evaluate(anyString(), any())).thenReturn(Map.of("bridgeMissing", true));
 
@@ -389,6 +394,167 @@ class PlaywrightLocatorBackendTest {
                                                 Duration.ofSeconds(1),
                                                 20))
                 .isSameAs(contextLoss);
+    }
+
+    @Test
+    void
+            aFirefoxExecutionContextDestroyedRaceDuringIdentityIsExcludedOnlyWhenARecheckProvesAbsence() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        PlaywrightException contextDestroyed = executionContextDestroyedFailure();
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenThrow(contextDestroyed);
+        when(item.count()).thenReturn(0);
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aFirefoxExecutionContextDestroyedRaceDuringIdentityForAStillPresentCandidatePropagates() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        PlaywrightException contextDestroyed = executionContextDestroyedFailure();
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenThrow(contextDestroyed);
+        when(item.count()).thenReturn(1);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isSameAs(contextDestroyed);
+    }
+
+    @Test
+    void aProtocolEnvelopeFormOfExecutionContextDestroyedAlsoQualifies() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        PlaywrightException contextDestroyed =
+                new PlaywrightException(
+                        "Error {\n"
+                                + "  message='Execution context was destroyed, most likely because"
+                                + " of a navigation\n"
+                                + "  name='Error\n"
+                                + "}");
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenThrow(contextDestroyed);
+        when(item.count()).thenReturn(0);
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+    }
+
+    @Test
+    void aJsDetectedDocumentMismatchIsExcludedOnlyWhenARecheckProvesAbsence() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        ElementHandle identityHandle = mock(ElementHandle.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenReturn(List.of(identityHandle));
+        when(identityHandle.evaluate(anyString(), any()))
+                .thenReturn(Map.of("documentMismatch", true));
+        // A fresh recheck proves the candidate is genuinely gone - the mismatch the browser-side
+        // bridge observed a moment earlier reflected a transient document transition, not a real,
+        // standing wrong-document condition, so this candidate is safely excluded rather than
+        // fatally failing the whole search.
+        when(item.count()).thenReturn(0);
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aJsDetectedDocumentMismatchForAStillPresentCandidateFailsClosed() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        ElementHandle identityHandle = mock(ElementHandle.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenReturn(List.of(identityHandle));
+        when(identityHandle.evaluate(anyString(), any()))
+                .thenReturn(Map.of("documentMismatch", true));
+        // A fresh recheck proves the candidate is still there: this is a real, persistent document
+        // mismatch, not a transient race, and must still fail closed rather than being silently
+        // excluded.
+        when(item.count()).thenReturn(1);
+
+        assertThatThrownBy(
+                        () ->
+                                backend(documentRoot)
+                                        .find(
+                                                roleQuery(),
+                                                LocatorScope.page(),
+                                                LocatorConfig.defaults(),
+                                                Duration.ofSeconds(1),
+                                                20))
+                .isInstanceOf(LocatorException.class)
+                .hasMessageContaining("different document");
+    }
+
+    @Test
+    void aMissingCandidateIdentityBridgeIsExcludedOnlyWhenARecheckProvesAbsence() {
+        Locator matches = mock(Locator.class);
+        Locator item = mock(Locator.class);
+        ElementHandle identityHandle = mock(ElementHandle.class);
+        Locator documentRoot = rootLocatingAll(matches);
+        when(matches.count()).thenReturn(1);
+        when(matches.nth(0)).thenReturn(item);
+        when(item.elementHandles()).thenReturn(List.of(identityHandle));
+        when(identityHandle.evaluate(anyString(), any())).thenReturn(Map.of("bridgeMissing", true));
+        when(item.count()).thenReturn(0);
+
+        LocatorBackendSearchResult result =
+                backend(documentRoot)
+                        .find(
+                                roleQuery(),
+                                LocatorScope.page(),
+                                LocatorConfig.defaults(),
+                                Duration.ofSeconds(1),
+                                20);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.discoveredCount()).isEqualTo(1);
     }
 
     @Test
@@ -756,6 +922,16 @@ class PlaywrightLocatorBackendTest {
                         + "Cannot find context with specified id\n"
                         + "  name='Error\n"
                         + "}");
+    }
+
+    /**
+     * The operation-prefixed bare form Firefox's own driver surfaces this message in (no protocol
+     * envelope), e.g. from {@code ElementHandle#evaluate}.
+     */
+    private static PlaywrightException executionContextDestroyedFailure() {
+        return new PlaywrightException(
+                "elementHandle.evaluate: Execution context was destroyed, most likely because of a"
+                        + " navigation");
     }
 
     private static PlaywrightException frameDetachedFailure() {
