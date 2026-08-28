@@ -22,11 +22,13 @@ import io.webagent4j.crawler.internal.HttpResponseClassifier;
 import io.webagent4j.crawler.internal.ICrawlFrontier;
 import io.webagent4j.crawler.internal.InMemoryCrawlDeduplicator;
 import io.webagent4j.policy.PolicyDecision;
+import io.webagent4j.policy.network.INetworkAddressAuthority;
 import io.webagent4j.policy.network.INetworkPolicy;
 import io.webagent4j.policy.network.NetworkCheckPhase;
 import io.webagent4j.policy.network.NetworkDestination;
 import io.webagent4j.policy.network.NetworkPolicyContext;
 import io.webagent4j.policy.network.NetworkRequestKind;
+import io.webagent4j.policy.network.VerifiedNetworkAddresses;
 import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.IWaitSleeper;
 import java.io.IOException;
@@ -491,11 +493,11 @@ public final class HttpCrawler implements ICrawler {
             Set<URI> visited = new LinkedHashSet<>();
             long bytesRead = 0;
 
-            Optional<PolicyDenial> initialDenial = checkNetworkPolicy(current);
-            if (initialDenial.isPresent()) {
+            NetworkAuthorization initialAuthorization = authorizeNetworkRequest(current);
+            if (initialAuthorization.denial().isPresent()) {
                 return FetchOutcome.failure(
-                        initialDenial.get().type(),
-                        initialDenial.get().message(),
+                        initialAuthorization.denial().get().type(),
+                        initialAuthorization.denial().get().message(),
                         current,
                         Optional.empty(),
                         Optional.empty(),
@@ -503,6 +505,8 @@ public final class HttpCrawler implements ICrawler {
                         bytesRead,
                         chain);
             }
+            Optional<VerifiedNetworkAddresses> pinnedForCurrent =
+                    initialAuthorization.pinnedAddresses();
 
             FetchClaimOutcome initialClaim = claimFetchIdentity(current);
             if (initialClaim == FetchClaimOutcome.LIMIT_REACHED) {
@@ -535,7 +539,7 @@ public final class HttpCrawler implements ICrawler {
             maxDepthReached = Math.max(maxDepthReached, task.depth());
 
             while (true) {
-                RetryOutcome retryOutcome = fetchWithRetries(current);
+                RetryOutcome retryOutcome = fetchWithRetries(current, pinnedForCurrent);
                 bytesRead += retryOutcome.bytesRead();
                 if (retryOutcome.result().isEmpty()) {
                     return FetchOutcome.failure(
@@ -614,16 +618,16 @@ public final class HttpCrawler implements ICrawler {
                                 bytesRead,
                                 chain);
                     }
-                    Optional<PolicyDenial> hopDenial = checkNetworkPolicy(target);
-                    if (hopDenial.isPresent()) {
+                    NetworkAuthorization hopAuthorization = authorizeNetworkRequest(target);
+                    if (hopAuthorization.denial().isPresent()) {
                         // Zero, not attemptsMade: attemptsMade counts requests already sent for
                         // the referring URL that produced this redirect, but no real HTTP request
                         // was ever sent for "target" itself - exactly like CRAWL_LIMIT_REACHED and
                         // ALREADY_FETCHED just below, both handled the same way for the same
                         // reason.
                         return FetchOutcome.failure(
-                                hopDenial.get().type(),
-                                hopDenial.get().message(),
+                                hopAuthorization.denial().get().type(),
+                                hopAuthorization.denial().get().message(),
                                 target,
                                 Optional.of(status),
                                 Optional.empty(),
@@ -631,6 +635,7 @@ public final class HttpCrawler implements ICrawler {
                                 bytesRead,
                                 chain);
                     }
+                    pinnedForCurrent = hopAuthorization.pinnedAddresses();
                     FetchClaimOutcome hopClaim = claimFetchIdentity(target);
                     if (hopClaim == FetchClaimOutcome.LIMIT_REACHED) {
                         return FetchOutcome.failure(
@@ -695,34 +700,46 @@ public final class HttpCrawler implements ICrawler {
          * whether it ultimately succeeded or exhausted its retry budget.
          *
          * <p>The caller has already authorized {@code url} once, for the first attempt, before ever
-         * calling this method - so attempt 1 below fetches immediately. Every subsequent retry
+         * calling this method - so attempt 1 below fetches immediately, pinned to {@code
+         * initialPinnedAddresses} exactly as that authorization determined. Every subsequent retry
          * attempt is a genuinely new real HTTP request, so each one gets its own fresh network
-         * -policy evaluation immediately before it is sent, never reusing the first attempt's
-         * decision: a policy that resolves hostnames may legitimately see a different answer by the
-         * time a retry fires after backoff. A denial on a retry stops retrying immediately - no
-         * further HTTP request and no further retry sleep - and the returned {@code attempts}
-         * honestly reflects only the real requests already sent before the denial, never the
-         * request that was prevented.
+         * -policy evaluation (and, when offered, its own fresh pinned address set) immediately
+         * before it is sent, never reusing the first attempt's decision: a policy that resolves
+         * hostnames may legitimately see a different answer by the time a retry fires after
+         * backoff. A denial on a retry stops retrying immediately - no further HTTP request and no
+         * further retry sleep - and the returned {@code attempts} honestly reflects only the real
+         * requests already sent before the denial, never the request that was prevented.
          */
-        private RetryOutcome fetchWithRetries(URI url) {
+        private RetryOutcome fetchWithRetries(
+                URI url, Optional<VerifiedNetworkAddresses> initialPinnedAddresses) {
             RetryPolicy policy = request.retryPolicy();
             int attempt = 1;
             long bytesRead = 0;
+            Optional<VerifiedNetworkAddresses> pinnedAddresses = initialPinnedAddresses;
             while (true) {
                 if (attempt > 1) {
-                    Optional<PolicyDenial> retryDenial = checkNetworkPolicy(url);
-                    if (retryDenial.isPresent()) {
+                    NetworkAuthorization retryAuthorization = authorizeNetworkRequest(url);
+                    if (retryAuthorization.denial().isPresent()) {
                         return new RetryOutcome(
                                 Optional.empty(),
                                 bytesRead,
-                                retryDenial.get().type(),
-                                retryDenial.get().message(),
+                                retryAuthorization.denial().get().type(),
+                                retryAuthorization.denial().get().message(),
                                 Optional.empty(),
                                 attempt - 1);
                     }
+                    pinnedAddresses = retryAuthorization.pinnedAddresses();
                 }
                 try {
-                    HttpFetchResult result = fetcher.fetch(buildFetchRequest(url));
+                    // Calls the exact same one-argument fetch() overload as before whenever there
+                    // is nothing to pin - an ungoverned crawl, or a policy that never offers a
+                    // verified address set - so such a fetcher's behavior is completely unchanged,
+                    // never even routed through the pinning-aware overload's default no-op
+                    // delegation.
+                    HttpFetchResult result =
+                            pinnedAddresses.isPresent()
+                                    ? fetcher.fetch(buildFetchRequest(url), pinnedAddresses)
+                                    : fetcher.fetch(buildFetchRequest(url));
                     bytesRead += result.responseBytes();
                     if (HttpResponseClassifier.isRetryable(
                                     result.statusCode(), request.retryableStatusCodes())
@@ -776,52 +793,100 @@ public final class HttpCrawler implements ICrawler {
 
         /**
          * Evaluates this crawler's configured network policy, if any, against {@code uri} - always
-         * called strictly before that URI's real HTTP request is ever sent, never after. Returns
-         * {@link Optional#empty()} when there is no configured policy or it allows the request; a
-         * present {@link PolicyDenial} carries the exact {@link CrawlFailureType} and message the
-         * caller should record instead of ever sending the request.
+         * called strictly before that URI's real HTTP request is ever sent, never after. An ALLOW
+         * additionally offers a {@link VerifiedNetworkAddresses} for the transport to pin its
+         * connection to, when {@link #networkPolicy} implements {@link INetworkAddressAuthority}
+         * and can re-confirm a specific address set for this exact connection attempt - closing the
+         * gap between "the address this check verified" and "the address the transport actually
+         * used" (DNS rebinding). A policy that cannot offer this falls back to an ordinary,
+         * unpinned authorization - never a new failure mode for a policy that never implemented the
+         * capability. A policy that <em>does</em> implement it but cannot re-confirm a destination
+         * it just allowed is instead reported as denied: silently falling back to unpinned there
+         * would defeat the guarantee the policy itself claims to offer.
          */
-        private Optional<PolicyDenial> checkNetworkPolicy(URI uri) {
+        private NetworkAuthorization authorizeNetworkRequest(URI uri) {
             if (networkPolicy.isEmpty()) {
-                return Optional.empty();
+                return NetworkAuthorization.allowed(Optional.empty());
             }
-            NetworkPolicyContext policyContext;
+            NetworkDestination destination;
             try {
-                NetworkDestination destination = NetworkDestination.of(uri);
-                policyContext =
-                        new NetworkPolicyContext(
-                                NetworkRequestKind.HTTP_FETCH,
-                                destination,
-                                NetworkCheckPhase.PRE_REQUEST);
+                destination = NetworkDestination.of(uri);
             } catch (RuntimeException malformed) {
-                return Optional.of(
+                return NetworkAuthorization.denied(
                         new PolicyDenial(
                                 CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
                                 "network destination could not be evaluated"));
             }
+            NetworkPolicyContext policyContext =
+                    new NetworkPolicyContext(
+                            NetworkRequestKind.HTTP_FETCH,
+                            destination,
+                            NetworkCheckPhase.PRE_REQUEST);
             PolicyDecision decision;
             try {
                 decision = networkPolicy.get().evaluate(policyContext);
             } catch (RuntimeException evaluationFailure) {
-                return Optional.of(
+                return NetworkAuthorization.denied(
                         new PolicyDenial(
                                 CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
                                 "network policy evaluation failed"));
             }
             if (decision == null) {
-                return Optional.of(
+                return NetworkAuthorization.denied(
                         new PolicyDenial(
                                 CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
                                 "network policy returned no decision"));
             }
             if (decision.isDeny()) {
-                return Optional.of(
+                return NetworkAuthorization.denied(
                         new PolicyDenial(
                                 CrawlFailureType.NETWORK_POLICY_DENIED,
                                 "network destination denied by policy: "
                                         + decision.reason().code()));
             }
-            return Optional.empty();
+            if (networkPolicy.get() instanceof INetworkAddressAuthority authority) {
+                Optional<VerifiedNetworkAddresses> pinned;
+                try {
+                    pinned = authority.authorizeConnection(destination);
+                } catch (RuntimeException authorizationFailure) {
+                    return NetworkAuthorization.denied(
+                            new PolicyDenial(
+                                    CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                    "network address authorization failed"));
+                }
+                if (pinned.isEmpty()) {
+                    return NetworkAuthorization.denied(
+                            new PolicyDenial(
+                                    CrawlFailureType.NETWORK_POLICY_DENIED,
+                                    "network destination could not be re-confirmed for a pinned"
+                                            + " connection"));
+                }
+                return NetworkAuthorization.allowed(pinned);
+            }
+            return NetworkAuthorization.allowed(Optional.empty());
+        }
+
+        /**
+         * Outcome of one {@link #authorizeNetworkRequest(URI)} call: either a denial carrying the
+         * diagnostic to record, or an allow optionally carrying the address set a transport should
+         * pin its connection to.
+         */
+        private record NetworkAuthorization(
+                Optional<PolicyDenial> denial, Optional<VerifiedNetworkAddresses> pinnedAddresses) {
+
+            private static final NetworkAuthorization ALLOWED_WITHOUT_PINNING =
+                    new NetworkAuthorization(Optional.empty(), Optional.empty());
+
+            static NetworkAuthorization allowed(
+                    Optional<VerifiedNetworkAddresses> pinnedAddresses) {
+                return pinnedAddresses.isEmpty()
+                        ? ALLOWED_WITHOUT_PINNING
+                        : new NetworkAuthorization(Optional.empty(), pinnedAddresses);
+            }
+
+            static NetworkAuthorization denied(PolicyDenial denial) {
+                return new NetworkAuthorization(Optional.of(denial), Optional.empty());
+            }
         }
 
         private HttpFetchRequest buildFetchRequest(URI url) {
