@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.net.Socket;
-import java.net.URI;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -26,8 +25,6 @@ import org.junit.jupiter.api.Test;
  */
 class PinnedSocketHttpTransportDeadlineCoreTest {
 
-    private static final URI URI_UNDER_TEST = URI.create("http://pinned.example.test/");
-
     @Test
     void hdCore001NoNewBlockingWriteOperationStartsOnceTheSharedDeadlineHasExpired()
             throws Exception {
@@ -43,7 +40,6 @@ class PinnedSocketHttpTransportDeadlineCoreTest {
                                     PinnedSocketHttpTransport.runBoundedOnDeadline(
                                             dummy,
                                             deadline,
-                                            URI_UNDER_TEST,
                                             () -> {
                                                 invocations.incrementAndGet();
                                                 return null;
@@ -66,9 +62,7 @@ class PinnedSocketHttpTransportDeadlineCoreTest {
 
         int remainingForWrite =
                 assertDoesNotThrowTimeBudget(
-                        () ->
-                                PinnedSocketHttpTransport.requireTimeBudget(
-                                        deadline, URI_UNDER_TEST));
+                        () -> PinnedSocketHttpTransport.requireTimeBudget(deadline));
         assertThat(remainingForWrite).isLessThanOrEqualTo(100).isPositive();
     }
 
@@ -84,9 +78,7 @@ class PinnedSocketHttpTransportDeadlineCoreTest {
 
         int remainingForBody =
                 assertDoesNotThrowTimeBudget(
-                        () ->
-                                PinnedSocketHttpTransport.requireTimeBudget(
-                                        deadline, URI_UNDER_TEST));
+                        () -> PinnedSocketHttpTransport.requireTimeBudget(deadline));
         assertThat(remainingForBody).isLessThanOrEqualTo(50).isPositive();
     }
 
@@ -107,7 +99,6 @@ class PinnedSocketHttpTransportDeadlineCoreTest {
                                     PinnedSocketHttpTransport.runBoundedOnDeadline(
                                             dummy,
                                             deadline,
-                                            URI_UNDER_TEST,
                                             () -> {
                                                 invocations.incrementAndGet();
                                                 return null;
@@ -127,7 +118,7 @@ class PinnedSocketHttpTransportDeadlineCoreTest {
         FailingSetSoTimeoutSocket socket = new FailingSetSoTimeoutSocket();
         CountingInputStream in = new CountingInputStream(readInvocations);
         PinnedSocketHttpTransport.ReadState state =
-                new PinnedSocketHttpTransport.ReadState(in, socket, deadline, URI_UNDER_TEST);
+                new PinnedSocketHttpTransport.ReadState(in, socket, deadline);
 
         // The deadline is already expired, so refreshTimeout() must fail on requireTimeBudget()
         // itself, before ever reaching socket.setSoTimeout() - proving the ordering guarantee

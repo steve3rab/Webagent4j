@@ -61,6 +61,7 @@ final class PinnedSocketHttpTransport {
 
     private final IMonotonicClock clock;
     private final SSLSocketFactory sslSocketFactory;
+    private final ISocketConnector socketConnector;
 
     /**
      * Creates a transport that validates TLS certificates against the JVM's default trust store.
@@ -75,8 +76,34 @@ final class PinnedSocketHttpTransport {
      * specific test certificate, without touching any JVM-global trust configuration.
      */
     PinnedSocketHttpTransport(IMonotonicClock clock, SSLSocketFactory sslSocketFactory) {
+        this(clock, sslSocketFactory, Socket::connect);
+    }
+
+    /**
+     * Creates a transport connecting through {@code socketConnector} instead of a plain socket's
+     * own {@code connect} - the seam a test uses to make the connect phase itself block on a
+     * deterministic, test-controlled signal, since (unlike the TLS handshake, request write, or
+     * response read) a real, silently-dropped connect attempt gives no peer-observable event a test
+     * could otherwise synchronize on.
+     */
+    PinnedSocketHttpTransport(
+            IMonotonicClock clock,
+            SSLSocketFactory sslSocketFactory,
+            ISocketConnector socketConnector) {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.sslSocketFactory = Objects.requireNonNull(sslSocketFactory, "sslSocketFactory");
+        this.socketConnector = Objects.requireNonNull(socketConnector, "socketConnector");
+    }
+
+    /**
+     * The exact shape of {@link Socket#connect(java.net.SocketAddress, int)} - production code
+     * always uses that method itself ({@code Socket::connect}); a test substitutes a deterministic,
+     * controllable implementation instead.
+     */
+    @FunctionalInterface
+    interface ISocketConnector {
+        void connect(Socket socket, InetSocketAddress address, int timeoutMillis)
+                throws IOException;
     }
 
     HttpFetchResult fetch(HttpFetchRequest request, VerifiedNetworkAddresses pinnedAddresses)
@@ -120,8 +147,7 @@ final class PinnedSocketHttpTransport {
                 // pre-check timeout, matching java.net.http.HttpClient's own HttpTimeoutException
                 // contract HttpCrawler's retry logic already relies on; never tried against another
                 // pinned address once the deadline itself is genuinely exhausted.
-                HttpTimeoutException timeout =
-                        new HttpTimeoutException("Request to " + uri + " timed out");
+                HttpTimeoutException timeout = newTimeoutException();
                 timeout.initCause(socketTimeout);
                 throw timeout;
             } catch (TransportInterruptedException interrupted) {
@@ -162,13 +188,27 @@ final class PinnedSocketHttpTransport {
         Socket socket = new Socket();
         boolean transmissionMayHaveStarted = false;
         try {
-            socket.connect(
-                    new InetSocketAddress(address, port),
-                    requireTimeBudget(deadline, request.uri()));
+            // Bounded the same way TLS/write/read already are, so an interruption while a
+            // connection attempt is still outstanding is observed and made terminal exactly like
+            // an interruption in any later phase, rather than sitting unnoticed until connect()
+            // itself eventually returns or times out on its own. connect()'s own int-timeout
+            // parameter still bounds the call as a second, harmless line of defense; both are
+            // derived from the same shared deadline, so neither ever grants a longer budget than
+            // the other.
+            Socket connectingSocket = socket;
+            InetSocketAddress socketAddress = new InetSocketAddress(address, port);
+            runBoundedOnDeadline(
+                    connectingSocket,
+                    deadline,
+                    () -> {
+                        socketConnector.connect(
+                                connectingSocket, socketAddress, requireTimeBudget(deadline));
+                        return null;
+                    });
             if (tls) {
-                socket = wrapTls(sslSocketFactory, socket, host, port, deadline, request.uri());
+                socket = wrapTls(sslSocketFactory, socket, host, port, deadline);
             }
-            socket.setSoTimeout(requireTimeBudget(deadline, request.uri()));
+            socket.setSoTimeout(requireTimeBudget(deadline));
             // Once the write below is attempted, a failure can never again prove the peer saw
             // nothing: a partial write is indistinguishable from a complete one at this API
             // level, and even a fully successful write only proves bytes reached the local
@@ -184,14 +224,13 @@ final class PinnedSocketHttpTransport {
             runBoundedOnDeadline(
                     writingSocket,
                     deadline,
-                    request.uri(),
                     () -> {
                         writingSocket.getOutputStream().write(requestBytes);
                         writingSocket.getOutputStream().flush();
                         return null;
                     });
             InputStream in = new BufferedInputStream(socket.getInputStream());
-            ReadState readState = new ReadState(in, socket, deadline, request.uri());
+            ReadState readState = new ReadState(in, socket, deadline);
             // The whole response read is bounded by the same shared deadline and owned socket
             // this call already uses for the write/handshake phases above: a caller thread
             // interrupted while a response is still being read must stop this attempt exactly as
@@ -199,7 +238,7 @@ final class PinnedSocketHttpTransport {
             // whatever per-read SO_TIMEOUT happens to be active at that moment.
             Socket readingSocket = socket;
             return runBoundedOnDeadline(
-                    readingSocket, deadline, request.uri(), () -> readResponse(readState, request));
+                    readingSocket, deadline, () -> readResponse(readState, request));
         } catch (HttpTimeoutException | java.net.SocketTimeoutException timeoutLike) {
             // Handled one level up, identically regardless of phase - never wrapped as a
             // PinnedAttemptFailure, since a deadline/socket timeout is already never retried
@@ -293,12 +332,7 @@ final class PinnedSocketHttpTransport {
     }
 
     private static SSLSocket wrapTls(
-            SSLSocketFactory factory,
-            Socket plainSocket,
-            String host,
-            int port,
-            Deadline deadline,
-            URI uri)
+            SSLSocketFactory factory, Socket plainSocket, String host, int port, Deadline deadline)
             throws IOException {
         SSLSocket tlsSocket = (SSLSocket) factory.createSocket(plainSocket, host, port, true);
         SSLParameters parameters = tlsSocket.getSSLParameters();
@@ -313,13 +347,12 @@ final class PinnedSocketHttpTransport {
             // still verifies the certificate against `host`.
         }
         tlsSocket.setSSLParameters(parameters);
-        tlsSocket.setSoTimeout(requireTimeBudget(deadline, uri));
+        tlsSocket.setSoTimeout(requireTimeBudget(deadline));
         // The handshake itself writes (ClientHello and later flights) as well as reads; SO_TIMEOUT
         // bounds only the read side, so this is bounded the same way the request write is.
         runBoundedOnDeadline(
                 tlsSocket,
                 deadline,
-                uri,
                 () -> {
                     tlsSocket.startHandshake();
                     return null;
@@ -328,11 +361,14 @@ final class PinnedSocketHttpTransport {
     }
 
     /**
-     * Runs one blocking socket operation - anything that may write, such as a request body or a TLS
-     * handshake - under the same shared monotonic deadline every other phase of this fetch already
-     * uses, closing the gap {@code Socket#setSoTimeout} leaves open: that option bounds only
-     * blocking reads, never writes, so a peer applying TCP receive-window backpressure could
-     * otherwise stall a write call arbitrarily far past this request's real deadline.
+     * Runs one blocking socket operation - connecting, a TLS handshake, a request write, or a
+     * response read - under the same shared monotonic deadline every other phase of this fetch
+     * already uses, closing two gaps a plain blocking call otherwise leaves open: {@code
+     * Socket#setSoTimeout} bounds only blocking reads, never writes, so a peer applying TCP
+     * receive-window backpressure could otherwise stall a write call arbitrarily far past this
+     * request's real deadline; and neither a plain {@code Socket#connect} nor a blocking read is
+     * interruptible on its own, so without this wrapper an interrupted caller thread would not
+     * observe that interruption until the underlying call happened to return on its own.
      *
      * <p>{@code task} runs on a dedicated virtual thread owned entirely by this call: if it does
      * not complete within the deadline's remaining budget, {@code socket} is closed to force it to
@@ -353,9 +389,9 @@ final class PinnedSocketHttpTransport {
      * cannot), and the caller must treat it as terminal - never retried against another pinned
      * address, never reinterpreted as a transient network failure.
      */
-    static <T> T runBoundedOnDeadline(Socket socket, Deadline deadline, URI uri, IOSupplier<T> task)
+    static <T> T runBoundedOnDeadline(Socket socket, Deadline deadline, IOSupplier<T> task)
             throws IOException {
-        int remainingMillis = requireTimeBudget(deadline, uri);
+        int remainingMillis = requireTimeBudget(deadline);
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             Future<T> future = executor.submit(task::get);
             try {
@@ -363,8 +399,7 @@ final class PinnedSocketHttpTransport {
             } catch (TimeoutException expired) {
                 future.cancel(true);
                 closeQuietly(socket);
-                HttpTimeoutException timeout =
-                        new HttpTimeoutException("Request to " + uri + " timed out");
+                HttpTimeoutException timeout = newTimeoutException();
                 timeout.initCause(expired);
                 throw timeout;
             } catch (ExecutionException wrapped) {
@@ -616,7 +651,7 @@ final class PinnedSocketHttpTransport {
      * left to apply, unchanged, to however many further blocking reads the response happens to
      * require.
      */
-    record ReadState(InputStream in, Socket socket, Deadline deadline, URI uri) {
+    record ReadState(InputStream in, Socket socket, Deadline deadline) {
         /**
          * Re-derives the remaining deadline budget and applies it as this socket's blocking-read
          * timeout - a deadline-sensitive blocking read may only begin once that has actually been
@@ -627,7 +662,7 @@ final class PinnedSocketHttpTransport {
          */
         void refreshTimeout() throws IOException {
             try {
-                socket.setSoTimeout(requireTimeBudget(deadline, uri));
+                socket.setSoTimeout(requireTimeBudget(deadline));
             } catch (java.net.SocketException failure) {
                 throw new IOException("failed to apply the remaining request deadline", failure);
             }
@@ -752,12 +787,24 @@ final class PinnedSocketHttpTransport {
         return query == null ? path : path + "?" + query;
     }
 
-    static int requireTimeBudget(Deadline deadline, URI uri) throws HttpTimeoutException {
+    static int requireTimeBudget(Deadline deadline) throws HttpTimeoutException {
         int remaining = deadline.remainingMillis();
         if (remaining <= 0) {
-            throw new HttpTimeoutException("Request to " + uri + " timed out");
+            throw newTimeoutException();
         }
         return remaining;
+    }
+
+    /**
+     * A fixed, safe {@link HttpTimeoutException} carrying no request-specific text at all - in
+     * particular, never the request URI, which may carry userinfo (a password), query parameters,
+     * or a fragment that must never appear in a caller-visible diagnostic message. This transport
+     * can be called directly by code outside {@link HttpCrawler}, which already renders its own
+     * fixed "request timed out" text rather than this exception's message; a caller reading {@link
+     * Throwable#getMessage()} straight off this exception must see the same safe text.
+     */
+    private static HttpTimeoutException newTimeoutException() {
+        return new HttpTimeoutException("request timed out");
     }
 
     record RawResponse(

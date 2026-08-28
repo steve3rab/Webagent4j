@@ -32,8 +32,7 @@ class PinnedSocketHttpTransportReadTimeoutInstallationTest {
         FailingSetSoTimeoutSocket socket = new FailingSetSoTimeoutSocket();
         CountingInputStream in = new CountingInputStream(readInvocations);
         PinnedSocketHttpTransport.ReadState state =
-                new PinnedSocketHttpTransport.ReadState(
-                        in, socket, deadline, URI.create("http://pinned.example.test/"));
+                new PinnedSocketHttpTransport.ReadState(in, socket, deadline);
 
         assertThatThrownBy(state::refreshTimeout).isInstanceOf(IOException.class);
         assertThat(readInvocations.get()).isZero();
@@ -49,7 +48,7 @@ class PinnedSocketHttpTransportReadTimeoutInstallationTest {
         CountingInputStream in = new CountingInputStream(readInvocations);
         URI uri = URI.create("http://pinned.example.test/");
         PinnedSocketHttpTransport.ReadState state =
-                new PinnedSocketHttpTransport.ReadState(in, socket, deadline, uri);
+                new PinnedSocketHttpTransport.ReadState(in, socket, deadline);
         HttpFetchRequest request =
                 new HttpFetchRequest(uri, Duration.ofSeconds(30), java.util.Map.of(), 10_000);
 
