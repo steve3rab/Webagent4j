@@ -89,15 +89,41 @@ judgment must derive it from these structured fields - WebAgent4J does not infer
 - `EXECUTE` - about to gate a real backend call.
 - `DRY_RUN` - gates `dryRun()`'s validation; the backend is never called regardless, but a `DENY`
   still makes the dry run itself report failure.
-- `PLAN` - a non-authoritative snapshot captured by `plan()`, exposed via
-  `IActionPlan#policyDecisions()`. It never gates anything; `IActionPlan#execute()` always
-  re-evaluates every configured policy fresh, in `EXECUTE` mode, before any backend call.
+- `PLAN` - a snapshot captured by `plan()`, exposed via `IActionPlan#policyDecisions()`. A `DENY` or
+  evaluation failure seen here makes the plan itself `ActionPlanStatus.BLOCKED` rather than `READY`,
+  since reporting `READY` over an action a configured policy has already refused would itself be a
+  false authorization signal. It is still never a capability a caller can bank for later, though:
+  `IActionPlan#execute()` always re-evaluates every configured policy completely fresh, in `EXECUTE`
+  mode, before any backend call - a `READY` plan can still be denied at `execute()` if state changed,
+  and a `BLOCKED` plan can still succeed if the blocking condition cleared.
 
 Evaluation happens as late as this pipeline allows: after target resolution and preconditions, but
 strictly before the dry-run short circuit and the real backend call. A `DENY`, a thrown exception,
 and a malformed `null` decision are all treated identically - fail closed,
 `ActionExecutionMode.NOT_EXECUTED`, zero backend invocations - classified as
 `ActionFailureType.POLICY_DENIED` or `POLICY_EVALUATION_FAILED` respectively.
+
+### Target identity binding
+
+An `ALLOW` describes a specific, already-resolved target - never a standing authorization that
+transfers to a different element merely because it satisfies the same semantic locator later. This
+closes the window between "the policy authorized this concrete target" and "the backend side effect
+runs against it": if the originally-resolved target is removed and a different one - matching the
+exact same locator - takes its place before the backend call, that replacement is never acted on.
+
+Immediately before the backend call, and only when an action policy is configured, WebAgent4J
+revalidates that the target is still the exact same concrete, currently-attached element it was
+when originally resolved (`IElement#isStillTheOriginallyResolvedTarget()`). A backend capable of
+tracking physical element identity (the Playwright adapter) returns `false` whenever that identity
+cannot be proven - detachment, replacement, or an inspection failure are all treated as "not
+proven," never as "still the same." Failure to prove identity fails closed exactly like a policy
+`DENY`: zero backend invocations, `ActionExecutionMode.NOT_EXECUTED`, classified as the additive
+`ActionFailureType.TARGET_CHANGED` - distinct from `POLICY_DENIED` because the policy itself may
+have allowed the original target, and distinct from `BACKEND_FAILURE` because the backend was never
+invoked. This revalidation shares the action's own deadline; it is never given a fresh timeout of
+its own, and there is no fallback re-resolution or retry against a different candidate. An
+ungoverned action (no policy configured) never consults target identity at all, so its behavior and
+cost are completely unchanged.
 
 `ActionPolicies` provides standard declarative policies: `allowAll()`, `denyAll()`,
 `allowOnlyTypes(...)`, `denyTypes(...)`, `allowOnlySideEffects(...)`, `denySideEffects(...)`,
@@ -124,7 +150,13 @@ NetworkPolicyContext(
 `NetworkDestination` is safe by construction, not just by a `toString()` convention: `of(URI)` never
 even retains a request's userinfo, query, or fragment. It exposes only a lowercased/canonicalized
 scheme, host (punycode-converted, trailing dot stripped), the resolved port, and a `hasUserInfo`
-boolean flag - never the userinfo's actual content.
+boolean flag - never the userinfo's actual content. Canonicalization lives in the record's own
+canonical constructor, so it applies identically no matter which public entry point is used to
+build one - `of(URI)` and calling the constructor directly always agree on the same scheme/host form
+for the same logical destination; there is no separate, potentially-drifting canonicalization path
+for direct construction. No canonicalization step ever performs DNS resolution, and subdomain
+matching is exact label-boundary matching, never a naive string suffix check - `evil-example.com`
+never matches an allow-listed `example.com`, with or without subdomains enabled.
 
 `NetworkPolicies.builder()` builds a declarative policy from allow-lists (`allowScheme`, `allowHost`
 + `includeSubdomains`, `allowPort`) and deny-by-category rules (`denyLoopback`,
@@ -135,12 +167,20 @@ of nine categories using only `java.net` - no third-party CIDR library - coverin
 special-use range this project documents, including IPv4-mapped IPv6.
 
 DNS resolution, via the injectable `INetworkAddressResolver`, happens **at most once per
-evaluation**, only when at least one deny-category rule or `requireResolutionForHostnames()` is
-configured, and never at all for a destination whose host is already an IP literal. A resolved
-address that falls into any denied category denies the whole decision - a mixed
-public-and-private resolution result denies, matching the "fail closed on any bad address" rule
-rather than the "allow if at least one address is fine" rule. An empty resolution result under
-`requireResolutionForHostnames()` also denies.
+evaluation**, only when resolution is actually required for that evaluation, and never at all for a
+destination whose host is already an IP literal. Resolution is required whenever
+`requireResolutionForHostnames()` was configured explicitly **or** at least one address-category
+deny rule (`denyLoopback`, `denyPrivateAddresses`, `denyLinkLocal`, `denyMulticast`,
+`denyUnspecified`, `denySharedAddresses`, `denyDocumentationAddresses`, `denyBenchmarkAddresses`,
+`denyReservedAddresses`) is configured - a category rule with no way to classify the address it is
+supposed to gate is exactly the uncertainty the core invariant says must never be treated as
+permission. A resolved address that falls into any denied category denies the whole decision - a
+mixed public-and-private resolution result denies, matching the "fail closed on any bad address"
+rule rather than the "allow if at least one address is fine" rule, regardless of which order the
+addresses were returned in. Whenever resolution was required, an empty, `null`, or otherwise
+unusable resolution result also denies - a resolver returning nothing is never treated as "nothing
+to deny," since the framework cannot then prove the destination is safe. There are no automatic
+resolver retries.
 
 ### Pre-request and post-request checks
 
@@ -181,12 +221,33 @@ compatibility constructor - which never emits a policy event - naturally produce
 Each `ActionDecisionEntry` carries only `kind` (`ACTION`/`NETWORK`), `phase`
 (`PRE_EXECUTION`/`POST_EXECUTION`), `outcome` (`ALLOW`/`DENY`/`EVALUATION_FAILED`), and a
 `PolicyReason` - the denying policy's own reason code on `DENY`, a stable built-in code on
-`EVALUATION_FAILED`, never a raw exception message or any other caller-supplied text.
+`EVALUATION_FAILED`, never a raw exception message or any other caller-supplied text. No trace entry
+ever contains a raw URI, userinfo, query, fragment, a `Secret`, or a native backend object -
+`PolicyReason`'s grammar (`[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`, no whitespace or control characters)
+is enforced on every reason a policy returns, whether built in or caller-supplied.
 
 `IActionPlan#policyDecisions()` returns the equivalent snapshot captured at `plan()` time, evaluated
-in `ActionPolicyMode.PLAN`. It is purely informational: a `DENY` here does not block a plan from
-being `READY`, and it can legitimately disagree with what `decisionTrace()` reports after
-`execute()`, since page state - and a policy's own view of it - can change between the two.
+in `ActionPolicyMode.PLAN`. A `DENY` or evaluation failure recorded here is exactly what makes the
+plan `BLOCKED` (see [Action authorization](#action-authorization)); it is still only a snapshot,
+though, never a capability - `execute()` always re-evaluates fresh, so this snapshot can legitimately
+disagree with what `decisionTrace()` reports after `execute()`, since page state - and a policy's
+own view of it - can change between the two.
+
+### Safe diagnostics never copy arbitrary exception text
+
+Every diagnostic this feature produces - `ActionDecisionEntry`, `ActionEvent`, `ActionFailure`,
+`ActionResult`'s safe renderers, the crawler's own failure diagnostics - carries only a fixed
+structural message and a `PolicyReason` code, never `exception.getMessage()` from a policy or
+resolver `RuntimeException` appended into a rendered string. This is deliberate: this framework has
+no way to know whether a given exception message contains a secret a caller's policy or resolver
+happened to see - the raw cause remains available in-process (for example via
+`ActionFailure#cause()`) for a caller who explicitly wants it, but it is never propagated into any
+of this feature's own safe-by-default surfaces. Only genuine `RuntimeException`s are caught this
+way; an `Error` (for example `OutOfMemoryError`) is never masked as a policy decision. The same
+applies to a caller-supplied `PolicyReason` value: this feature cannot detect whether a
+custom reason code contains a secret, so a policy that builds one from caller data is responsible
+for keeping it safe to render - see [`PolicyReason`](#the-policy-contract)'s grammar restriction,
+which limits length and character set but cannot verify semantic safety.
 
 ## Compatibility
 
@@ -197,9 +258,12 @@ being `READY`, and it can legitimately disagree with what `decisionTrace()` repo
   type) gained a field; `ActionResult`, `CrawlRequest`, `BrowserCrawlRequest`, and every other
   existing public record are unchanged in shape.
 - Every new interface method (`IPreparedAction#policy`/`#networkPolicy`,
-  `IActionPlan#policyDecisions`) is an additive default method.
-- Every new enum constant (`ActionFailureType`, `ActionStage`, `CrawlFailureType`,
-  `BrowserCrawlFailureType`) is additive; no existing constant was renamed or removed.
+  `IActionPlan#policyDecisions`, `IElement#isStillTheOriginallyResolvedTarget`) is an additive
+  default method; a backend that does not track physical element identity needs no changes at all.
+- Every new enum constant (`ActionFailureType` - including `TARGET_CHANGED` - `ActionStage`,
+  `CrawlFailureType`, `BrowserCrawlFailureType`) is additive, appended after every existing 1.0
+  constant so ordinal-sensitive code is unaffected; no existing constant was renamed, removed, or
+  reordered.
 
 ## What this is not
 
@@ -225,6 +289,7 @@ Three outcome shapes cover every governed-execution failure:
 | Shape | `executionMode` | `executed()` | Meaning |
 | --- | --- | --- | --- |
 | Denied before execution | `NOT_EXECUTED` | `false` | The policy said no (or failed to evaluate) before any backend call. Nothing happened. |
+| Target changed before execution | `NOT_EXECUTED` | `false` | The policy allowed the originally-resolved target, but its identity could not be reproven immediately before the backend call - `ActionFailureType.TARGET_CHANGED`. Nothing happened. |
 | Backend failure after allow | `REAL` | `true` | The policy allowed it; the backend itself then failed. Not the policy's fault - see `ActionFailureType.BACKEND_FAILURE`/`UPLOAD_FAILURE`/`DOWNLOAD_FAILURE`. |
 | Post-navigation violation | `REAL` | `true` | Navigation already happened; only the *final* URL was denied (or failed to evaluate), which could only be detected afterward - `ActionFailureType.POLICY_VIOLATION`. |
 
