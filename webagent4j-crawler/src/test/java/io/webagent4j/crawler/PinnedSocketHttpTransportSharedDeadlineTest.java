@@ -19,15 +19,20 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * HD-001 through HD-004: proves one response's socket reads share a single overall deadline rather
- * than each blocking read individually receiving a full, fresh {@code SO_TIMEOUT}.
- *
- * <p>{@code Socket#setSoTimeout} bounds one blocking call, not the cumulative time a logical
- * response takes to read - a peer that trickles a response one byte (or one chunk) at a time, each
+ * HD-001: one real, end-to-end proof that a slowly-trickled response body is bounded by the shared
+ * request deadline rather than each blocking read individually receiving a full, fresh {@code
+ * SO_TIMEOUT}. {@code Socket#setSoTimeout} bounds one blocking call, not the cumulative time a
+ * logical response takes to read - a peer that trickles a response one byte at a time, each
  * comfortably inside the per-call timeout, could otherwise stall a single response arbitrarily far
- * past the request's real overall budget. Every test here proves the opposite: the fetch fails with
- * {@link HttpTimeoutException} close to the requested timeout, never anywhere near how long an
- * unbounded per-call timeout would have permitted the drip to continue.
+ * past the request's real overall budget.
+ *
+ * <p>The deterministic core of this contract - that a phase which already consumed part of the
+ * shared budget leaves only the remainder for the next blocking operation, and that a new blocking
+ * operation never starts once the budget is exhausted - is proven without any real socket or
+ * wall-clock wait in {@code PinnedSocketHttpTransportDeadlineCoreTest} (HD-CORE-002 through
+ * HD-CORE-004). This file's single remaining test is the real end-to-end socket confirmation
+ * Blocker C still calls for, bounded only by a generous watchdog to catch a broken implementation
+ * hanging forever - never a tight elapsed-time threshold used as the semantic proof itself.
  */
 class PinnedSocketHttpTransportSharedDeadlineTest {
 
@@ -36,7 +41,10 @@ class PinnedSocketHttpTransportSharedDeadlineTest {
     // 20 drips at 40ms apart total 800ms - well past TIMEOUT if the deadline were not shared
     // across reads, comfortably bounded by TIMEOUT (plus generous scheduling slack) once it is.
     private static final int DRIP_COUNT = 20;
-    private static final Duration MAX_ACCEPTABLE_ELAPSED = Duration.ofMillis(1_200);
+    // A generous safety-net bound only, to keep a genuinely broken implementation from hanging
+    // the test suite forever - not the proof of correctness, which is the specific exception type
+    // asserted below.
+    private static final Duration WATCHDOG_BOUND = Duration.ofSeconds(10);
 
     @Test
     void hd001ASlowlyDrippedContentLengthBodyIsBoundedByTheSharedDeadline() throws Exception {
@@ -49,60 +57,11 @@ class PinnedSocketHttpTransportSharedDeadlineTest {
                         DRIP_INTERVAL)) {
             long startNanos = System.nanoTime();
 
-            assertThatThrownBy(() -> fetch(server.port(), TIMEOUT)).isInstanceOf(IOException.class);
+            assertThatThrownBy(() -> fetch(server.port(), TIMEOUT))
+                    .isInstanceOf(HttpTimeoutException.class);
 
             Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-            assertThat(elapsed).isLessThan(MAX_ACCEPTABLE_ELAPSED);
-        }
-    }
-
-    @Test
-    void hd002ASlowlyDrippedChunkedBodyIsBoundedByTheSharedDeadline() throws Exception {
-        try (DrippingChunkedServer server =
-                DrippingChunkedServer.bindingTo(loopback(), 0, DRIP_COUNT, DRIP_INTERVAL)) {
-            long startNanos = System.nanoTime();
-
-            assertThatThrownBy(() -> fetch(server.port(), TIMEOUT)).isInstanceOf(IOException.class);
-
-            Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-            assertThat(elapsed).isLessThan(MAX_ACCEPTABLE_ELAPSED);
-        }
-    }
-
-    @Test
-    void hd003ASlowlyDrippedStatusLineIsBoundedByTheSharedDeadline() throws Exception {
-        // A drip during the status line itself, before any headers or body - proving the shared
-        // deadline applies from the very first byte of the response, not only once body-reading
-        // begins.
-        try (DrippingStatusLineServer server =
-                DrippingStatusLineServer.bindingTo(loopback(), 0, DRIP_INTERVAL)) {
-            long startNanos = System.nanoTime();
-
-            assertThatThrownBy(() -> fetch(server.port(), TIMEOUT)).isInstanceOf(IOException.class);
-
-            Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-            assertThat(elapsed).isLessThan(MAX_ACCEPTABLE_ELAPSED);
-        }
-    }
-
-    @Test
-    void hd004TheDeadlineIsNeverResetBetweenHeaderReadingAndBodyReading() throws Exception {
-        // Consumes almost the whole budget slowly draining the status line and headers, then
-        // immediately begins a body that would itself easily fit in a *fresh* timeout - proving
-        // the body-reading phase does not silently receive a brand new full-length allowance
-        // once header-reading finishes.
-        Duration headerDripInterval = Duration.ofMillis(120);
-        try (DrippingStatusLineServer server =
-                DrippingStatusLineServer.bindingTo(loopback(), 0, headerDripInterval)) {
-            long startNanos = System.nanoTime();
-
-            // TIMEOUT (300ms) is consumed almost entirely by three status-line drips at 120ms
-            // (360ms total) before any header or body byte is even reachable - so the fetch must
-            // fail on budget exhaustion, never proceed into a body phase with a reset clock.
-            assertThatThrownBy(() -> fetch(server.port(), TIMEOUT)).isInstanceOf(IOException.class);
-
-            Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-            assertThat(elapsed).isLessThan(MAX_ACCEPTABLE_ELAPSED);
+            assertThat(elapsed).isLessThan(WATCHDOG_BOUND);
         }
     }
 
@@ -156,96 +115,6 @@ class PinnedSocketHttpTransportSharedDeadlineTest {
             } catch (IOException | InterruptedException ignored) {
                 // Best-effort test server: the client is expected to abandon the connection once
                 // its own deadline expires, before this loop finishes.
-            }
-        }
-
-        @Override
-        public void close() throws IOException {
-            serverSocket.close();
-        }
-    }
-
-    /** Sends chunked-encoding headers, then one single-byte chunk at a time with a fixed delay. */
-    private static final class DrippingChunkedServer implements AutoCloseable {
-        private final ServerSocket serverSocket;
-        private final Thread thread;
-
-        private DrippingChunkedServer(
-                ServerSocket serverSocket, int chunkCount, Duration interval) {
-            this.serverSocket = serverSocket;
-            this.thread = new Thread(() -> serve(chunkCount, interval));
-            this.thread.setDaemon(true);
-            this.thread.start();
-        }
-
-        static DrippingChunkedServer bindingTo(
-                InetAddress address, int port, int chunkCount, Duration interval)
-                throws IOException {
-            return new DrippingChunkedServer(
-                    new ServerSocket(port, 1, address), chunkCount, interval);
-        }
-
-        int port() {
-            return serverSocket.getLocalPort();
-        }
-
-        private void serve(int chunkCount, Duration interval) {
-            try (Socket client = serverSocket.accept()) {
-                readRequestHeadersRaw(client.getInputStream());
-                OutputStream out = client.getOutputStream();
-                out.write(
-                        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-                                .getBytes(StandardCharsets.ISO_8859_1));
-                out.flush();
-                for (int index = 0; index < chunkCount; index++) {
-                    Thread.sleep(interval.toMillis());
-                    out.write("1\r\nx\r\n".getBytes(StandardCharsets.ISO_8859_1));
-                    out.flush();
-                }
-            } catch (IOException | InterruptedException ignored) {
-                // Best-effort test server.
-            }
-        }
-
-        @Override
-        public void close() throws IOException {
-            serverSocket.close();
-        }
-    }
-
-    /** Sends the HTTP status line one byte at a time with a fixed delay, then never completes. */
-    private static final class DrippingStatusLineServer implements AutoCloseable {
-        private static final String STATUS_LINE = "HTTP/1.1 200 OK\r\n";
-        private final ServerSocket serverSocket;
-        private final Thread thread;
-
-        private DrippingStatusLineServer(ServerSocket serverSocket, Duration interval) {
-            this.serverSocket = serverSocket;
-            this.thread = new Thread(() -> serve(interval));
-            this.thread.setDaemon(true);
-            this.thread.start();
-        }
-
-        static DrippingStatusLineServer bindingTo(InetAddress address, int port, Duration interval)
-                throws IOException {
-            return new DrippingStatusLineServer(new ServerSocket(port, 1, address), interval);
-        }
-
-        int port() {
-            return serverSocket.getLocalPort();
-        }
-
-        private void serve(Duration interval) {
-            try (Socket client = serverSocket.accept()) {
-                readRequestHeadersRaw(client.getInputStream());
-                OutputStream out = client.getOutputStream();
-                for (byte b : STATUS_LINE.getBytes(StandardCharsets.ISO_8859_1)) {
-                    Thread.sleep(interval.toMillis());
-                    out.write(b);
-                    out.flush();
-                }
-            } catch (IOException | InterruptedException ignored) {
-                // Best-effort test server.
             }
         }
 
