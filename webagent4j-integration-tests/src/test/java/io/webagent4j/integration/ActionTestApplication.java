@@ -222,14 +222,24 @@ final class ActionTestApplication implements AutoCloseable {
                     document(
                             "Policy TOCTOU",
                             """
-                            <button id="first" onclick="fetch('/count-click/first')">Confirm</button>
+                            <button id="first" onclick="window.firstClickEvents++; fetch('/count-click/first')">Confirm</button>
                             <script>
+                              // Synchronous, in-page oracles: a click handler running is observable
+                              // the instant it happens through page.evaluate(), unlike the fetch()
+                              // calls above, which are asynchronous and can still be in flight (or
+                              // not yet delivered to the server) at the moment a Java-side assertion
+                              // runs - a false "zero clicks" read is possible with fetch() alone.
+                              window.firstClickEvents = 0;
+                              window.replacementClickEvents = 0;
                               function replaceFirstWithReplacementSameLocator() {
                                 const old = document.getElementById('first');
                                 const replacement = document.createElement('button');
                                 replacement.id = 'replacement';
                                 replacement.textContent = 'Confirm';
-                                replacement.onclick = () => fetch('/count-click/replacement');
+                                replacement.onclick = () => {
+                                  window.replacementClickEvents++;
+                                  fetch('/count-click/replacement');
+                                };
                                 old.replaceWith(replacement);
                               }
                             </script>
@@ -239,15 +249,55 @@ final class ActionTestApplication implements AutoCloseable {
                             "Policy TOCTOU fill",
                             """
                             <input id="first" type="text" aria-label="Confirm"
-                              oninput="fetch('/count-click/first')">
+                              oninput="window.firstInputEvents++; fetch('/count-click/first')">
                             <script>
+                              // Same synchronous-oracle rationale as the click fixture above: an
+                              // input event handler running is observable immediately, never racing
+                              // an in-flight fetch() the browser has not yet delivered.
+                              window.firstInputEvents = 0;
+                              window.replacementInputEvents = 0;
                               function replaceFirstInputWithReplacementSameLocator() {
                                 const old = document.getElementById('first');
                                 const replacement = document.createElement('input');
                                 replacement.id = 'replacement';
                                 replacement.type = 'text';
                                 replacement.setAttribute('aria-label', 'Confirm');
-                                replacement.oninput = () => fetch('/count-click/replacement');
+                                replacement.oninput = () => {
+                                  window.replacementInputEvents++;
+                                  fetch('/count-click/replacement');
+                                };
+                                old.replaceWith(replacement);
+                              }
+                            </script>
+                            """);
+            case "/actions/policy-toctou-submit" ->
+                    document(
+                            "Policy TOCTOU submit",
+                            """
+                            <form id="first-form" onsubmit="event.preventDefault(); window.firstSubmitEvents++; fetch('/count-click/first'); return false;">
+                              <button type="submit" aria-label="Confirm">Confirm</button>
+                            </form>
+                            <script>
+                              // Same synchronous-oracle rationale as the other TOCTOU fixtures - a
+                              // submit handler running (with the real navigation suppressed via
+                              // preventDefault()) is observable immediately via page.evaluate().
+                              window.firstSubmitEvents = 0;
+                              window.replacementSubmitEvents = 0;
+                              function replaceFirstFormWithReplacementSameLocator() {
+                                const old = document.getElementById('first-form');
+                                const replacement = document.createElement('form');
+                                replacement.id = 'replacement-form';
+                                const button = document.createElement('button');
+                                button.type = 'submit';
+                                button.setAttribute('aria-label', 'Confirm');
+                                button.textContent = 'Confirm';
+                                replacement.appendChild(button);
+                                replacement.onsubmit = (event) => {
+                                  event.preventDefault();
+                                  window.replacementSubmitEvents++;
+                                  fetch('/count-click/replacement');
+                                  return false;
+                                };
                                 old.replaceWith(replacement);
                               }
                             </script>
