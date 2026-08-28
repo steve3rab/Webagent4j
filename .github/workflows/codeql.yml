@@ -30,5 +30,3 @@ jobs:
       - name: Build
         run: ./mvnw --batch-mode --no-transfer-progress -DskipTests package
       - uses: github/codeql-action/analyze@fddeee1a7ece751b577e409a89057319e3172939 # v4
-        with:
-          upload: false
