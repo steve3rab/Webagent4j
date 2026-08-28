@@ -222,7 +222,7 @@ final class ActionTestApplication implements AutoCloseable {
                     document(
                             "Policy TOCTOU",
                             """
-                            <button id="first" onclick="window.firstClickEvents++; fetch('/count-click/first')">Confirm</button>
+                            <button id="first" onclick="firstClicked()">Confirm</button>
                             <script>
                               // Synchronous, in-page oracles: a click handler running is observable
                               // the instant it happens through page.evaluate(), unlike the fetch()
@@ -231,6 +231,10 @@ final class ActionTestApplication implements AutoCloseable {
                               // runs - a false "zero clicks" read is possible with fetch() alone.
                               window.firstClickEvents = 0;
                               window.replacementClickEvents = 0;
+                              function firstClicked() {
+                                window.firstClickEvents++;
+                                fetch('/count-click/first');
+                              }
                               function replaceFirstWithReplacementSameLocator() {
                                 const old = document.getElementById('first');
                                 const replacement = document.createElement('button');
@@ -274,7 +278,7 @@ final class ActionTestApplication implements AutoCloseable {
                     document(
                             "Policy TOCTOU submit",
                             """
-                            <form id="first-form" onsubmit="event.preventDefault(); window.firstSubmitEvents++; fetch('/count-click/first'); return false;">
+                            <form id="first-form" onsubmit="return firstSubmitted(event)">
                               <button type="submit" aria-label="Confirm">Confirm</button>
                             </form>
                             <script>
@@ -283,6 +287,12 @@ final class ActionTestApplication implements AutoCloseable {
                               // preventDefault()) is observable immediately via page.evaluate().
                               window.firstSubmitEvents = 0;
                               window.replacementSubmitEvents = 0;
+                              function firstSubmitted(event) {
+                                event.preventDefault();
+                                window.firstSubmitEvents++;
+                                fetch('/count-click/first');
+                                return false;
+                              }
                               function replaceFirstFormWithReplacementSameLocator() {
                                 const old = document.getElementById('first-form');
                                 const replacement = document.createElement('form');
