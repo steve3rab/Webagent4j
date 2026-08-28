@@ -165,7 +165,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             .evaluate(
                                     IDENTITY_SCRIPT,
                                     PlaywrightCandidateIdentityBridge.bridgeName());
-            return validatedIdentityOrNull(inspected);
+            return validatedIdentityOrNull(item, inspected);
         } catch (PlaywrightException failure) {
             if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return null;
@@ -183,8 +183,21 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     /**
      * Validates the complete browser-side identity envelope before it can influence deduplication,
      * ambiguity, or stability.
+     *
+     * <p>{@code bridgeMissing} and {@code documentMismatch} are both browser-reported conditions
+     * about {@code item}'s owning document at the exact instant the probe ran - and both engines
+     * that are not Chromium are documented to have execution-context lifecycles for frame/iframe
+     * documents that can briefly diverge from Chromium's around a document transition (a
+     * context-registered init script re-running for the same document, or a nested frame's
+     * execution context being torn down and recreated). Chromium's own analogous race already gets
+     * a fresh-count recheck below via {@link
+     * PlaywrightFailureClassifier#isDifferentDocumentAdoptionRace}; these two JS-detected signals
+     * get exactly the same treatment for consistency: a candidate that a fresh, synchronous recheck
+     * proves is no longer even present is reported as absent (safe - the caller never selects it),
+     * but a candidate a fresh recheck still finds present keeps failing closed exactly as before. A
+     * real, persistent document mismatch is therefore still never silently accepted.
      */
-    private static Map<String, Object> validatedIdentityOrNull(Object inspected) {
+    private static Map<String, Object> validatedIdentityOrNull(Locator item, Object inspected) {
         if (inspected == null) {
             throw new LocatorException("Candidate identity inspection returned null");
         }
@@ -192,11 +205,21 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             throw new LocatorException("Candidate identity inspection returned an invalid result");
         }
         if (Boolean.TRUE.equals(raw.get("bridgeMissing"))) {
-            throw new LocatorException("Playwright candidate identity bridge is unavailable");
+            LocatorException failure =
+                    new LocatorException("Playwright candidate identity bridge is unavailable");
+            if (confirmedAbsent(item, failure)) {
+                return null;
+            }
+            throw failure;
         }
         if (Boolean.TRUE.equals(raw.get("documentMismatch"))) {
-            throw new LocatorException(
-                    "Candidate identity inspection observed a different document");
+            LocatorException failure =
+                    new LocatorException(
+                            "Candidate identity inspection observed a different document");
+            if (confirmedAbsent(item, failure)) {
+                return null;
+            }
+            throw failure;
         }
         if (Boolean.TRUE.equals(raw.get("absent"))) {
             return null;
@@ -265,9 +288,12 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
 
     /**
      * Returns true only when a fresh synchronous count proves that a failed current-DOM locator is
-     * gone. This is shared by timeout and cross-document handle-adoption races.
+     * gone. This is shared by timeout, cross-document handle-adoption races, and JS-detected
+     * document-mismatch/bridge-missing signals ({@link #validatedIdentityOrNull}) - every condition
+     * where the underlying browser engine reported something about {@code locator}'s document
+     * identity that a synchronous re-check can independently confirm or refute.
      */
-    private static boolean confirmedAbsent(Locator locator, PlaywrightException original) {
+    private static boolean confirmedAbsent(Locator locator, RuntimeException original) {
         try {
             return locator.count() == 0;
         } catch (PlaywrightException recheckFailure) {
