@@ -55,9 +55,33 @@ Redirect handling is bounded per attempt. Each redirect target is normalized, sc
 
 A redirect does not silently escape scope or page budget.
 
+## Network-destination policy
+
+`HttpCrawler#withNetworkPolicy(policy)` returns a crawler that checks a configured `INetworkPolicy`
+against every real HTTP request attempt - the crawl's own seed, every discovered URL, every redirect
+hop, and every retry of any of those - strictly before that specific attempt is sent. There is no
+hidden retry of the policy decision itself and no reuse of a stale decision across attempts: each
+real network attempt gets its own fresh evaluation, since a policy that resolves hostnames may
+legitimately see a different answer after retry backoff.
+
+A URL denied on its very first attempt is never fetched at all and never counts against
+`maxPages()`'s fetch-identity budget (`attempts == 0` in the resulting failure). A URL denied on a
+*retry* is different: one or more real requests for it were already sent and already counted against
+the fetch-identity budget before the policy denied a later retry - that budget consumption is not
+undone, and the resulting failure's attempt count honestly reflects the real requests already made
+(`attempts >= 1`), not zero. Either way, once a retry is denied no further retry of that URL is ever
+attempted. Not configuring a policy leaves this crawler's behavior unchanged. See [Governed
+execution](governed-execution.md).
+
+This mechanism authorizes *destinations*, not DNS resolution paths: it does not by itself provide
+complete protection against DNS-rebinding attacks, where a hostname resolves to one address at
+policy-evaluation time and a different address by the time the underlying HTTP client actually
+connects. A policy that also enables address-category checks (see
+[Governed execution](governed-execution.md)) narrows, but does not eliminate, that window.
+
 ## Retry
 
-Retries are explicit HTTP fetch policy, not a general framework side-effect retry. Retryable transport failures/statuses follow `RetryPolicy` and configured status codes. Backoff arithmetic is finite/saturating; interruption is not swallowed.
+Retries are explicit HTTP fetch policy, not a general framework side-effect retry. Retryable transport failures/statuses follow `RetryPolicy` and configured status codes. Backoff arithmetic is finite/saturating; interruption is not swallowed. When a network policy is configured, every retry attempt is freshly re-authorized immediately before it is sent (see above) - a retry never reuses the authorization decision made for an earlier attempt of the same URL.
 
 ## Response size/content
 

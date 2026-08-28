@@ -8,6 +8,30 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+### Added
+
+- Governed execution: `IActionPolicy` authorizes an action before its backend side effect runs, and
+  `INetworkPolicy` authorizes a `NAVIGATE` action's or crawler's network destination before a
+  request is sent - both opt-in, built on a shared synchronous `IExecutionPolicy` contract with
+  composition (`ExecutionPolicies.allOf`, `ActionPolicies`) and decision provenance
+  (`ActionResult#decisionTrace()`, `IActionPlan#policyDecisions()`). Default behavior is unchanged
+  unless a caller configures a policy. See [docs/governed-execution.md](docs/governed-execution.md).
+- `NetworkPolicies`, a declarative network-destination policy builder covering scheme/host/port
+  allow-lists and IPv4/IPv6 special-use address category denial (loopback, private, link-local,
+  multicast, shared, documentation, benchmark, reserved), with an injectable
+  `INetworkAddressResolver` seam for deterministic testing.
+- `HttpCrawler#withNetworkPolicy(...)` and `BrowserCrawler#withNetworkPolicy(...)`, checking every
+  real request/navigation against the configured policy before it is sent.
+
+### Security
+
+- Documented that governed execution's network policy is not a general SSRF firewall or a defense
+  against DNS rebinding between the policy check and the actual connection, and that a configured
+  policy is untrusted, unsandboxed Java code with the same trust posture as a plugin.
+- Documented that a governed `NAVIGATE` action or `BrowserCrawler` visit can only detect, never
+  prevent, a browser-internal redirect landing somewhere a network policy would have denied, unlike
+  `HttpCrawler`, which controls its own redirect loop.
+
 ## [1.0.0] - 2026-08-27
 
 ### Changed

@@ -31,6 +31,22 @@ HTTP(S) scheme validation and crawler host/domain scoping are not a general SSRF
 
 Do not expose a generic “crawl any URL” endpoint to untrusted users without a separate network policy.
 
+### Optional governed execution
+
+An `IActionPolicy` (action authorization) and an `INetworkPolicy` (network-destination
+authorization) can be attached to a prepared action, `HttpCrawler`, or `BrowserCrawler` - neither is
+configured by default, and omitting both leaves 1.0 behavior unchanged. `HttpCrawler` genuinely
+prevents a denied request from ever being sent, for every hop it controls. A governed `NAVIGATE`
+action or `BrowserCrawler` visit can only detect - never prevent - a browser-internal redirect that
+lands somewhere denied, since browser redirect handling cannot be intercepted mid-flight; that case
+is reported honestly as a post-execution violation on an action that already ran, never as a
+prevented request. Neither this nor `NetworkPolicies`'s DNS pre-resolution checks constitute a
+general SSRF firewall or defense against DNS rebinding between check and connect. A configured
+policy is untrusted, unsandboxed Java code with the same trust posture as a plugin (see
+[Plugins and custom SPIs](#plugins-and-custom-spis) below) - WebAgent4J guarantees it will not
+invoke a governed backend before a policy allows it, and nothing more. See
+[Governed execution](governed-execution.md) for the full contract.
+
 ## Semantic target safety
 
 A wrong target is treated as more severe than a safe failure.

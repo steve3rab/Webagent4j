@@ -57,7 +57,8 @@ class ActionExecutorMonotonicTimingTest {
                             actionBackend.click(resolvedTarget);
                             return null;
                         },
-                        null);
+                        null,
+                        java.util.Optional.empty());
 
         ActionResult<Void> result =
                 new ActionExecutor(clock)

@@ -1,5 +1,6 @@
 package io.webagent4j.action.internal;
 
+import io.webagent4j.action.ActionDecisionEntry;
 import io.webagent4j.action.ActionDiagnostics;
 import io.webagent4j.action.ActionFailure;
 import io.webagent4j.action.ActionId;
@@ -34,6 +35,7 @@ final class DefaultActionPlan<R> implements IActionPlan<R> {
     private final List<VerificationType> expectedPostconditions;
     private final Optional<ActionFailure> failure;
     private final ActionDiagnostics diagnostics;
+    private final List<ActionDecisionEntry> policyDecisions;
     private final Supplier<ActionResult<R>> executor;
     private final AtomicBoolean executionStarted = new AtomicBoolean();
 
@@ -49,6 +51,7 @@ final class DefaultActionPlan<R> implements IActionPlan<R> {
             List<VerificationType> expectedPostconditions,
             Optional<ActionFailure> failure,
             ActionDiagnostics diagnostics,
+            List<ActionDecisionEntry> policyDecisions,
             Supplier<ActionResult<R>> executor) {
         this.actionId = Objects.requireNonNull(actionId, "actionId");
         this.actionType = Objects.requireNonNull(actionType, "actionType");
@@ -62,6 +65,8 @@ final class DefaultActionPlan<R> implements IActionPlan<R> {
                         Objects.requireNonNull(expectedPostconditions, "expectedPostconditions"));
         this.failure = Objects.requireNonNull(failure, "failure");
         this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+        this.policyDecisions =
+                List.copyOf(Objects.requireNonNull(policyDecisions, "policyDecisions"));
         this.executor = Objects.requireNonNull(executor, "executor");
         if (status == ActionPlanStatus.READY && failure.isPresent()) {
             throw new IllegalArgumentException("a ready plan cannot carry a failure");
@@ -124,6 +129,11 @@ final class DefaultActionPlan<R> implements IActionPlan<R> {
     @Override
     public boolean ready() {
         return status == ActionPlanStatus.READY;
+    }
+
+    @Override
+    public List<ActionDecisionEntry> policyDecisions() {
+        return policyDecisions;
     }
 
     @Override

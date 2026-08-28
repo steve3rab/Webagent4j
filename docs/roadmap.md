@@ -35,8 +35,23 @@ Maven/publication metadata/signing/repository configuration for public Maven dis
 
 See [release.md](release.md) for the runbook used for this and future releases.
 
+## 1.1: Governed execution
+
+`1.1.0-SNAPSHOT` (`develop`) adds opt-in governed execution: `IActionPolicy` authorizes an action
+before its backend side effect runs, and `INetworkPolicy` authorizes a `NAVIGATE` action's or a
+crawler's network destination before a request is sent, both built on a shared synchronous
+`IExecutionPolicy` contract with composition (`ExecutionPolicies.allOf`) and decision provenance
+(`ActionResult#decisionTrace()`). Default behavior is unchanged; nothing is governed unless a caller
+configures a policy. See [Governed execution](governed-execution.md).
+
+This is not a general SSRF firewall, DNS-rebinding defense, policy sandbox, or remote/LLM-assisted
+authorization layer - see that document's "What this is not" section.
+
 ## Post-1.0 candidates
 
-Potential later work includes stronger network policy/SSRF tooling, `robots.txt` support, broader browser robustness tiers, distributed crawling, additional observation/extraction capabilities, explicit persistence, and optional external decision-system/MCP adapters.
+Governed execution above addresses the "stronger network policy" item below for the destinations
+this framework itself requests; full SSRF isolation, `robots.txt` support, broader browser
+robustness tiers, distributed crawling, additional observation/extraction capabilities, explicit
+persistence, and optional external decision-system/MCP adapters remain candidates.
 
 These are candidates only. None is implied by the 1.0 API contract, and any optional decision/AI layer must consume the same fail-closed public contracts rather than bypassing them.

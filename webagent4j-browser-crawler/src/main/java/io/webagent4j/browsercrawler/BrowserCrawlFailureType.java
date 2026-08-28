@@ -52,5 +52,27 @@ public enum BrowserCrawlFailureType {
     BROWSER_BACKEND_FAILURE,
 
     /** The crawl was cancelled before this already-claimed task's navigation began. */
-    CANCELLED
+    CANCELLED,
+
+    /**
+     * A configured network policy denied this URL before navigation - {@code IPage#navigate} was
+     * never called for it.
+     */
+    NETWORK_POLICY_DENIED,
+
+    /**
+     * A configured network policy failed to evaluate for this URL - threw, or returned a malformed
+     * {@code null} decision - before navigation. Treated identically to {@link
+     * #NETWORK_POLICY_DENIED}: {@code IPage#navigate} was never called for it.
+     */
+    NETWORK_POLICY_EVALUATION_FAILED,
+
+    /**
+     * Navigation genuinely completed, but the final URL the browser landed on - only checkable
+     * after the fact, since a browser's own internal redirects cannot be intercepted mid-flight -
+     * was denied (or failed to evaluate) by a configured network policy. Unlike {@link
+     * #NETWORK_POLICY_DENIED}, {@code IPage#navigate} was called exactly once for this task; the
+     * page is still recorded as a failure, with no observation or link discovery performed on it.
+     */
+    NETWORK_POLICY_VIOLATION
 }

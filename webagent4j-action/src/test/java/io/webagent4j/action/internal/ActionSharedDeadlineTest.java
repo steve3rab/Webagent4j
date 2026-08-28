@@ -86,7 +86,8 @@ class ActionSharedDeadlineTest {
                             actionBackend.click(resolvedTarget);
                             return null;
                         },
-                        null);
+                        null,
+                        java.util.Optional.empty());
         ActionExecutionConfig config =
                 new ActionExecutionConfig(
                         new ActionOptions(
@@ -98,7 +99,9 @@ class ActionSharedDeadlineTest {
                         List.of(neverSucceeds, countingNeverSucceeds),
                         (context, remaining) -> StabilizationResult.none(),
                         false,
-                        false);
+                        false,
+                        java.util.Optional.empty(),
+                        java.util.Optional.empty());
 
         ActionResult<Void> result =
                 new ActionExecutor(clock, verificationEngine)

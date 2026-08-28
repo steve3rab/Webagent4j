@@ -100,4 +100,19 @@ public interface IActionPlan<R> {
      * @throws IllegalStateException if this plan has already been executed
      */
     ActionResult<R> execute();
+
+    /**
+     * Returns a non-authoritative snapshot of the governed-execution decisions evaluated while
+     * building this plan, if any policy was configured on the prepared action - empty by default.
+     *
+     * <p>This snapshot never gates anything: {@link #execute()} always re-evaluates every
+     * configured policy fresh against current state before any backend call, exactly as if this
+     * snapshot did not exist. A {@code DENY} recorded here does not prevent {@link #execute()} from
+     * running, and a value recorded here can disagree with what {@link
+     * ActionResult#decisionTrace()} reports after {@link #execute()} - both are honest, since page
+     * state (and therefore a policy's own view of it) can change between the two.
+     */
+    default List<ActionDecisionEntry> policyDecisions() {
+        return List.of();
+    }
 }

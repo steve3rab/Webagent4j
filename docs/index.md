@@ -18,6 +18,7 @@ Generated method-level Javadoc is published separately at `https://steve3rab.git
 - [Semantic locators and scopes](locators.md)
 - [Semantic observation](observation.md)
 - [Actions](actions.md)
+- [Governed execution](governed-execution.md)
 - [Verification](verification.md)
 - [Wait and stability](wait-and-stability.md)
 - [Extraction](extraction.md)
