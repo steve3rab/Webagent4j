@@ -22,6 +22,21 @@ final class PlaywrightCandidateIdentityBridge {
               const bridgeName = "%s";
 
               /*
+               * At least one browser engine's init-script delivery is not exactly-once per
+               * document: a context-registered init script can run more than once for the same
+               * document (observed for iframe documents). The bridge below is installed as a
+               * non-configurable property, so re-running this script unguarded on a document that
+               * already has a bridge would throw from Object.defineProperty and could leave this
+               * script's own re-entrant state half-built. Detect that re-entry first, before any
+               * other setup, and no-op: the first installation - already bound to this exact
+               * document - remains the sole authority, so a duplicate run can never install a
+               * second, competing bridge or observe a torn one.
+               */
+              if (typeof globalThis[bridgeName] === "function") {
+                return;
+              }
+
+              /*
                * Capture all primitives before application JavaScript can monkey-patch them.
                * The identity store itself never becomes a property of globalThis.
                */
@@ -174,6 +189,16 @@ final class PlaywrightCandidateIdentityBridge {
      */
     static void install(BrowserContext context) {
         Objects.requireNonNull(context, "context").addInitScript(INIT_SCRIPT);
+    }
+
+    /**
+     * Returns the raw install script text, for tests that need to prove it is safe to evaluate more
+     * than once against the same document (a condition at least one non-Chromium engine is known to
+     * produce for a context-registered init script on an iframe document) without using {@link
+     * #install(BrowserContext)}'s real {@code addInitScript} registration.
+     */
+    static String installScript() {
+        return INIT_SCRIPT;
     }
 
     /** Returns the browser-side probe used on an already-resolved physical element handle. */

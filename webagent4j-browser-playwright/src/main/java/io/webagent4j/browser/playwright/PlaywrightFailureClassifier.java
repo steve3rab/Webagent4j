@@ -19,6 +19,10 @@ final class PlaywrightFailureClassifier {
             "Protocol error (DOM.describeNode): Cannot find context with specified id";
     private static final String PROTOCOL_DESCRIBE_NODE_CONTEXT_MISSING =
             "Error {\n  message='" + DESCRIBE_NODE_CONTEXT_MISSING + "\n";
+    private static final String EXECUTION_CONTEXT_DESTROYED =
+            "Execution context was destroyed, most likely because of a navigation";
+    private static final String PROTOCOL_EXECUTION_CONTEXT_DESTROYED =
+            "Error {\n  message='" + EXECUTION_CONTEXT_DESTROYED + "\n";
 
     private PlaywrightFailureClassifier() {}
 
@@ -68,13 +72,19 @@ final class PlaywrightFailureClassifier {
      *
      * <p>Chromium can surface this race either as Playwright's explicit "different document"
      * message or as a CDP {@code DOM.describeNode} failure because the execution context vanished
-     * while the element handle was being adopted. Neither signal is absence by itself. Callers must
+     * while the element handle was being adopted. Firefox surfaces the same underlying condition -
+     * an execution context torn down and recreated around a frame/document transition - as its own
+     * "Execution context was destroyed" message, prefixed with whichever page-method operation
+     * observed it (for example {@code elementHandle.evaluate:} or {@code locator.count:}); the
+     * operation prefix is therefore matched with a suffix check rather than the exact-equals check
+     * used for the other, unprefixed messages. Neither signal is absence by itself. Callers must
      * perform a fresh synchronous recheck and may convert it to absence only when that recheck
      * proves zero matches or reports a canonical unavailable-frame condition.
      *
-     * <p>Matching remains deliberately narrow: only the bare canonical message or the canonical
-     * first field of Playwright's protocol error envelope qualifies. An opaque backend failure that
-     * merely mentions either phrase elsewhere does not qualify.
+     * <p>Matching remains deliberately narrow: only the bare canonical message (or its trailing
+     * operation-prefixed form for the Firefox message), or the canonical first field of
+     * Playwright's protocol error envelope, qualifies. An opaque backend failure that merely
+     * mentions one of these phrases elsewhere does not qualify.
      */
     static boolean isDifferentDocumentAdoptionRace(PlaywrightException failure) {
         String message = failure.getMessage();
@@ -85,6 +95,9 @@ final class PlaywrightFailureClassifier {
         return normalized.equals(DIFFERENT_DOCUMENT_ADOPTION)
                 || normalized.startsWith(PROTOCOL_DIFFERENT_DOCUMENT_ADOPTION)
                 || normalized.equals(DESCRIBE_NODE_CONTEXT_MISSING)
-                || normalized.startsWith(PROTOCOL_DESCRIBE_NODE_CONTEXT_MISSING);
+                || normalized.startsWith(PROTOCOL_DESCRIBE_NODE_CONTEXT_MISSING)
+                || normalized.equals(EXECUTION_CONTEXT_DESTROYED)
+                || normalized.endsWith(": " + EXECUTION_CONTEXT_DESTROYED)
+                || normalized.startsWith(PROTOCOL_EXECUTION_CONTEXT_DESTROYED);
     }
 }
