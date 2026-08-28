@@ -112,13 +112,21 @@ public interface IElement {
      * physical node it referred to when it was originally resolved - never merely to a different
      * node that happens to satisfy the same semantic query now.
      *
-     * <p>This exists to close the window between a governed-execution policy authorizing a
+     * <p>This exists to help close the window between a governed-execution policy authorizing a
      * specific, already-resolved target and that target's backend side effect: a caller that
      * authorized target T1 must never have its authorization silently transferred to a replacement
      * T2 that appeared after T1 was removed but before the side effect ran, even though both
-     * equally match the same locator. Callers that need this guarantee call it immediately before
-     * the side effect, after every other precondition and authorization has already passed, and
-     * treat {@code false} as fail-closed: the side effect must not proceed.
+     * equally match the same locator. Callers that need this guarantee treat {@code false} as
+     * fail-closed: the side effect must not proceed.
+     *
+     * <p><b>This method alone is not the authorization boundary governed execution relies on.</b>
+     * It is a lightweight, best-effort hint with no security consequence of its own - answering it
+     * and then separately performing the side effect are still two distinct resolutions, so a
+     * caller combining them that way can still observe a different physical node for the second one
+     * than this one just checked. {@link #verifiedForExecution()} exists specifically to close that
+     * residual gap and is the method governed execution actually authorizes a side effect through;
+     * this method's default is deliberately permissive (see below) precisely because nothing
+     * security-relevant depends on it by itself.
      *
      * <p>The default implementation conservatively returns {@code true}: a backend that cannot
      * distinguish "the same physical node" from "an equally-matching replacement" makes no claim
@@ -152,13 +160,22 @@ public interface IElement {
      * operation; callers that also implement {@link AutoCloseable} handling should close it once
      * done, though every backend remains safe to simply discard it after use.
      *
-     * <p>The default implementation has no atomic-handle concept to offer and falls back to {@link
-     * #isStillTheOriginallyResolvedTarget()}, which still leaves the residual gap above open for
-     * any backend that does not override this method - exactly this interface's pre-existing
-     * best-effort behavior, unchanged for such backends.
+     * <p><b>This is the method governed execution actually authorizes a side effect through</b> -
+     * unlike {@link #isStillTheOriginallyResolvedTarget()}, which is a lightweight, best-effort
+     * hint with no security consequence of its own, a caller that gates an irreversible side effect
+     * on this method's result is treating that result as an authorization decision. Absence of an
+     * exact-identity capability is therefore never treated as proof of identity: <b>the default
+     * implementation fails closed</b>, returning {@link Optional#empty()} unconditionally, rather
+     * than falling back to {@link #isStillTheOriginallyResolvedTarget()}'s permissive default. A
+     * backend that wants to participate in governed execution's exact-target guarantee must
+     * override this method with a real verification; a backend that never overrides it can still be
+     * used for every ungoverned action (this method is only ever consulted when a caller has
+     * explicitly opted into exact-target verification), but any action that does require it will
+     * consistently fail closed against such a backend rather than silently proceeding on no
+     * evidence at all.
      */
     default Optional<IElement> verifiedForExecution() {
-        return isStillTheOriginallyResolvedTarget() ? Optional.of(this) : Optional.empty();
+        return Optional.empty();
     }
 
     /** Starts a semantic query scoped to this element's descendants. */

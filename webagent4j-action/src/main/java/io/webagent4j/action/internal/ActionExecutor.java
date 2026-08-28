@@ -402,8 +402,20 @@ final class ActionExecutor {
         IElement executionTarget = target;
         boolean disposeExecutionTarget = false;
         if (config.actionPolicy().isPresent() && target != null) {
-            Optional<IElement> verified = target.verifiedForExecution();
-            if (verified.isEmpty()) {
+            // verifiedForExecution() is a backend extension point, not framework-owned code: a
+            // RuntimeException it throws, or an outright null in place of Optional (a malformed
+            // implementation violating the interface contract), must fail exactly as closed as an
+            // explicit Optional.empty() - never escape this pipeline as a raw, unstructured
+            // exception, and never let inability to prove identity become permission by accident.
+            Optional<IElement> verified;
+            RuntimeException verificationFailure = null;
+            try {
+                verified = target.verifiedForExecution();
+            } catch (RuntimeException failure) {
+                verified = null;
+                verificationFailure = failure;
+            }
+            if (verified == null || verified.isEmpty()) {
                 events.add(
                         event(
                                 actionId,
@@ -433,7 +445,7 @@ final class ActionExecutor {
                         ActionStatus.EXECUTION_FAILED,
                         "The action target could not be proven unchanged immediately before"
                                 + " backend execution",
-                        null);
+                        verificationFailure);
             }
             executionTarget = verified.get();
             disposeExecutionTarget = true;
