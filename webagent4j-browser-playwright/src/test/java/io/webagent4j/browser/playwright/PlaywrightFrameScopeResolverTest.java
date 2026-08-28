@@ -545,6 +545,142 @@ class PlaywrightFrameScopeResolverTest {
     }
 
     @Test
+    void descendingIntoAFrameCapturesTheContentFrameFromTheSameHandleUsedToResolveTheIframe() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        Frame frame = mock(Frame.class);
+        Locator documentRoot = mock(Locator.class);
+        when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
+        when(handle.contentFrame()).thenReturn(frame);
+        when(frame.locator("html")).thenReturn(documentRoot);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        PlaywrightScopeResolver.resolveFrameScope(
+                engine, context, FrameDefinition.frame().named("checkout"));
+
+        verify(iframeLocator).elementHandles();
+        verify(handle).contentFrame();
+        verify(frame).locator("html");
+        // Never through a separately, independently re-resolving FrameLocator - the whole point is
+        // that the physical iframe node and its content frame are captured together, atomically.
+        verify(iframeLocator, never()).contentFrame();
+    }
+
+    @Test
+    void aDetachedContentFrameDuringDescentIsATypedRetryableNotFoundNotASilentSuccess() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        Frame frame = mock(Frame.class);
+        when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
+        when(handle.contentFrame()).thenReturn(frame);
+        when(frame.isDetached()).thenReturn(true);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameScope(
+                                        engine, context, FrameDefinition.frame().named("checkout")))
+                .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    @Test
+    void aMissingContentFrameDuringDescentIsATypedRetryableNotFound() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
+        when(handle.contentFrame()).thenReturn(null);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameScope(
+                                        engine, context, FrameDefinition.frame().named("checkout")))
+                .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    @Test
+    void anIframeElementThatVanishesJustBeforeContentFrameCaptureIsATypedRetryableNotFound() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        when(iframeLocator.elementHandles()).thenReturn(List.of());
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameScope(
+                                        engine, context, FrameDefinition.frame().named("checkout")))
+                .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    @Test
+    void aDocumentTransitionRaceWhileCapturingTheContentFrameIsRetryableNotFatal() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        PlaywrightException contextDestroyed =
+                new PlaywrightException(
+                        "elementHandle.contentFrame: Execution context was destroyed, most likely"
+                                + " because of a navigation");
+        when(iframeLocator.elementHandles()).thenThrow(contextDestroyed);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        // A genuine, engine-reported document/execution-context transition mid-capture is never a
+        // fatal failure: it is exactly the transient condition frame descent inherently races, and
+        // must be absorbed by the caller's own bounded wait loop instead of aborting resolution.
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameScope(
+                                        engine, context, FrameDefinition.frame().named("checkout")))
+                .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    @Test
     void resolveFrameScopeProbesExactlyOnceWhenNothingMatchesRatherThanRetrying() {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext context = pageContext();
@@ -924,17 +1060,25 @@ class PlaywrightFrameScopeResolverTest {
                 LocatorConfig.builder().build());
     }
 
-    /** An iframe element usable with {@link PlaywrightScopeResolver#descendIntoFrame}. */
+    /**
+     * An iframe element usable with {@link PlaywrightScopeResolver#descendIntoFrame}: its content
+     * frame is captured atomically from the same {@link ElementHandle} used to resolve it, never
+     * through a separately re-resolving {@link FrameLocator}.
+     */
     private static IElement descendableFrameElement() {
         Locator iframeLocator = mock(Locator.class);
 
-        FrameLocator frameLocator = mock(FrameLocator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+
+        Frame frame = mock(Frame.class);
 
         Locator documentRoot = mock(Locator.class);
 
-        when(iframeLocator.contentFrame()).thenReturn(frameLocator);
+        when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
 
-        when(frameLocator.locator("html")).thenReturn(documentRoot);
+        when(handle.contentFrame()).thenReturn(frame);
+
+        when(frame.locator("html")).thenReturn(documentRoot);
 
         return new PlaywrightElement(
                 iframeLocator,
@@ -956,8 +1100,6 @@ class PlaywrightFrameScopeResolverTest {
 
         Frame frame = mock(Frame.class);
 
-        FrameLocator frameLocator = mock(FrameLocator.class);
-
         Locator documentRoot = mock(Locator.class);
 
         when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
@@ -966,9 +1108,7 @@ class PlaywrightFrameScopeResolverTest {
 
         when(frame.url()).thenReturn(url);
 
-        when(iframeLocator.contentFrame()).thenReturn(frameLocator);
-
-        when(frameLocator.locator("html")).thenReturn(documentRoot);
+        when(frame.locator("html")).thenReturn(documentRoot);
 
         return new PlaywrightElement(
                 iframeLocator,

@@ -2,7 +2,6 @@ package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Frame;
-import com.microsoft.playwright.FrameLocator;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
@@ -348,8 +347,8 @@ final class PlaywrightScopeResolver {
             FrameDefinition definition,
             LocatorContext parent) {
         Locator iframeLocator = PlaywrightLocatorBackend.unwrap(iframe.element());
-        FrameLocator frameLocator = iframeLocator.contentFrame();
-        Locator documentRoot = frameLocator.locator("html");
+        Frame childFrame = resolveConcreteChildFrame(iframeLocator, definition);
+        Locator documentRoot = childFrame.locator("html");
         PlaywrightLocatorBackend backend =
                 new PlaywrightLocatorBackend(
                         documentRoot,
@@ -357,6 +356,72 @@ final class PlaywrightScopeResolver {
                         parent.config(),
                         LocatorScope.frame(describeFrame(definition)));
         return backend.context();
+    }
+
+    /**
+     * Captures the iframe element's content frame atomically, in a single round trip against one
+     * already-resolved physical node - never through a live, continuously re-resolving {@link
+     * com.microsoft.playwright.FrameLocator}, which re-walks the iframe's own selector on every
+     * downstream operation and can silently rebind to a *different*, merely selector-equivalent
+     * iframe element if one replaces the original between resolution and use. The physical iframe
+     * element and the child {@link Frame} returned here are bound together by construction: {@code
+     * elementHandle.contentFrame()} names the exact frame owned by this exact node, never whichever
+     * node the selector happens to match at some later moment.
+     *
+     * <p>A frame/document transition observed mid-capture (child frame not yet attached, an
+     * execution context racing a navigation) is reported as retryable rather than fatal: descending
+     * into a frame inherently races the browser's own frame/document lifecycle, and the caller's
+     * existing bounded poll loop - the same one already used for ordinary target resolution - is
+     * the correct place to absorb that, on the same shared deadline, replaying no side effect.
+     */
+    private static Frame resolveConcreteChildFrame(
+            Locator iframeLocator, FrameDefinition definition) {
+        List<ElementHandle> handles = List.of();
+        try {
+            handles = iframeLocator.elementHandles();
+            if (handles.isEmpty()) {
+                throw new LocatorNotFoundException(
+                        "Iframe element for "
+                                + describeFrame(definition)
+                                + " disappeared before its content frame could be captured");
+            }
+            if (handles.size() > 1) {
+                throw new AmbiguousLocatorException(
+                        "Iframe element for "
+                                + describeFrame(definition)
+                                + " became ambiguous while capturing its content frame");
+            }
+            Frame childFrame = handles.getFirst().contentFrame();
+            if (childFrame == null || childFrame.isDetached()) {
+                throw new LocatorNotFoundException(
+                        "Iframe element for "
+                                + describeFrame(definition)
+                                + " has no attached content frame");
+            }
+            return childFrame;
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)
+                    || PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)) {
+                throw new LocatorNotFoundException(
+                        "Iframe element for "
+                                + describeFrame(definition)
+                                + " raced a frame/document transition while capturing its content"
+                                + " frame");
+            }
+            throw failure;
+        } finally {
+            disposeHandles(handles);
+        }
+    }
+
+    private static void disposeHandles(List<ElementHandle> handles) {
+        for (ElementHandle handle : handles) {
+            try {
+                handle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup only. Never replace the semantic result/failure of the probe.
+            }
+        }
     }
 
     private static boolean matchesUrl(
