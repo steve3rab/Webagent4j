@@ -327,7 +327,8 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
-    void aDifferentDocumentAdoptionRaceDuringIdentityForAStillPresentCandidatePropagates() {
+    void
+            aDifferentDocumentAdoptionRaceDuringIdentityForAStillPresentCandidateIsRetryableNotFatal() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
@@ -337,6 +338,11 @@ class PlaywrightLocatorBackendTest {
         when(item.elementHandles()).thenThrow(adoption);
         when(item.count()).thenReturn(1);
 
+        // A still-present candidate racing a document-adoption transition is never accepted as a
+        // match, but it is also never a fatal, non-retryable failure any more: resolving through a
+        // frame/document transition is exactly the transient condition the caller's own bounded
+        // wait loop exists to absorb. LocatorNotFoundException is what
+        // io.webagent4j.common.LocatorFailureClassifier#isNotFound recognizes as retryable.
         assertThatThrownBy(
                         () ->
                                 backend(documentRoot)
@@ -346,7 +352,7 @@ class PlaywrightLocatorBackendTest {
                                                 LocatorConfig.defaults(),
                                                 Duration.ofSeconds(1),
                                                 20))
-                .isSameAs(adoption);
+                .isInstanceOf(LocatorNotFoundException.class);
     }
 
     @Test
@@ -374,7 +380,7 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
-    void aMissingExecutionContextRaceDuringIdentityForAStillPresentCandidatePropagates() {
+    void aMissingExecutionContextRaceDuringIdentityForAStillPresentCandidateIsRetryableNotFatal() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
@@ -393,7 +399,7 @@ class PlaywrightLocatorBackendTest {
                                                 LocatorConfig.defaults(),
                                                 Duration.ofSeconds(1),
                                                 20))
-                .isSameAs(contextLoss);
+                .isInstanceOf(LocatorNotFoundException.class);
     }
 
     @Test
@@ -422,7 +428,8 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
-    void aFirefoxExecutionContextDestroyedRaceDuringIdentityForAStillPresentCandidatePropagates() {
+    void
+            aFirefoxExecutionContextDestroyedRaceDuringIdentityForAStillPresentCandidateIsRetryableNotFatal() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
         Locator documentRoot = rootLocatingAll(matches);
@@ -441,7 +448,7 @@ class PlaywrightLocatorBackendTest {
                                                 LocatorConfig.defaults(),
                                                 Duration.ofSeconds(1),
                                                 20))
-                .isSameAs(contextDestroyed);
+                .isInstanceOf(LocatorNotFoundException.class);
     }
 
     @Test
@@ -504,7 +511,7 @@ class PlaywrightLocatorBackendTest {
     }
 
     @Test
-    void aJsDetectedDocumentMismatchForAStillPresentCandidateFailsClosed() {
+    void aJsDetectedDocumentMismatchForAStillPresentCandidateFailsClosedButIsRetryable() {
         Locator matches = mock(Locator.class);
         Locator item = mock(Locator.class);
         ElementHandle identityHandle = mock(ElementHandle.class);
@@ -514,9 +521,12 @@ class PlaywrightLocatorBackendTest {
         when(item.elementHandles()).thenReturn(List.of(identityHandle));
         when(identityHandle.evaluate(anyString(), any()))
                 .thenReturn(Map.of("documentMismatch", true));
-        // A fresh recheck proves the candidate is still there: this is a real, persistent document
-        // mismatch, not a transient race, and must still fail closed rather than being silently
-        // excluded.
+        // A fresh recheck proves the candidate is still there: this candidate is never accepted as
+        // a match (it is still failing closed, never silently treated as the same element), but a
+        // persistent-this-poll document mismatch during frame/document descent is also never a
+        // fatal, non-retryable error - it is reported as a typed, retryable "not found this poll"
+        // so the caller's own bounded wait loop can absorb the settling window on the same shared
+        // deadline, exactly like an ordinary not-yet-resolved candidate.
         when(item.count()).thenReturn(1);
 
         assertThatThrownBy(
@@ -528,8 +538,7 @@ class PlaywrightLocatorBackendTest {
                                                 LocatorConfig.defaults(),
                                                 Duration.ofSeconds(1),
                                                 20))
-                .isInstanceOf(LocatorException.class)
-                .hasMessageContaining("different document");
+                .isInstanceOf(LocatorNotFoundException.class);
     }
 
     @Test

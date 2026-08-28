@@ -176,9 +176,18 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return null;
             }
-            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)
-                    && confirmedAbsent(item, failure)) {
-                return null;
+            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)) {
+                if (confirmedAbsent(item, failure)) {
+                    return null;
+                }
+                // The candidate still selector-matches something, but the browser just reported
+                // its own execution-context/document lifecycle racing a frame or document
+                // transition - genuinely transient, not a proven identity mismatch. Reporting it
+                // as a retryable "not found this poll" (never as a match) lets the caller's
+                // existing bounded wait loop absorb the settling window on the same shared
+                // deadline, replaying no side effect, rather than aborting resolution outright.
+                throw new LocatorNotFoundException(
+                        "Candidate identity inspection raced a document transition");
             }
             throw failure;
         } finally {
@@ -195,13 +204,16 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * that are not Chromium are documented to have execution-context lifecycles for frame/iframe
      * documents that can briefly diverge from Chromium's around a document transition (a
      * context-registered init script re-running for the same document, or a nested frame's
-     * execution context being torn down and recreated). Chromium's own analogous race already gets
-     * a fresh-count recheck below via {@link
-     * PlaywrightFailureClassifier#isDifferentDocumentAdoptionRace}; these two JS-detected signals
-     * get exactly the same treatment for consistency: a candidate that a fresh, synchronous recheck
-     * proves is no longer even present is reported as absent (safe - the caller never selects it),
-     * but a candidate a fresh recheck still finds present keeps failing closed exactly as before. A
-     * real, persistent document mismatch is therefore still never silently accepted.
+     * execution context being torn down and recreated). A candidate that a fresh, synchronous
+     * recheck proves is no longer even present is reported as absent (safe - the caller never
+     * selects it). A candidate a fresh recheck still finds present is never silently accepted as a
+     * match, but it is also never treated as a fatal, non-retryable failure: descending into frames
+     * and re-resolving candidates across a document transition is exactly the kind of transient
+     * condition the caller's existing bounded wait loop already exists to absorb, so this is
+     * reported as a retryable "not found this poll" instead, on the same shared deadline, replaying
+     * no side effect. Only once that deadline is exhausted without ever observing a proven,
+     * non-racing identity does resolution fail - deterministically, and still never having accepted
+     * an unproven candidate as a match.
      */
     private static Map<String, Object> validatedIdentityOrNull(Locator item, Object inspected) {
         if (inspected == null) {
@@ -211,21 +223,23 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             throw new LocatorException("Candidate identity inspection returned an invalid result");
         }
         if (Boolean.TRUE.equals(raw.get("bridgeMissing"))) {
-            LocatorException failure =
-                    new LocatorException("Playwright candidate identity bridge is unavailable");
-            if (confirmedAbsent(item, failure)) {
+            if (confirmedAbsent(
+                    item,
+                    new LocatorException("Playwright candidate identity bridge is unavailable"))) {
                 return null;
             }
-            throw failure;
+            throw new LocatorNotFoundException(
+                    "Candidate identity bridge was unavailable during a document transition");
         }
         if (Boolean.TRUE.equals(raw.get("documentMismatch"))) {
-            LocatorException failure =
+            if (confirmedAbsent(
+                    item,
                     new LocatorException(
-                            "Candidate identity inspection observed a different document");
-            if (confirmedAbsent(item, failure)) {
+                            "Candidate identity inspection observed a different document"))) {
                 return null;
             }
-            throw failure;
+            throw new LocatorNotFoundException(
+                    "Candidate identity inspection raced a document transition");
         }
         if (Boolean.TRUE.equals(raw.get("absent"))) {
             return null;
