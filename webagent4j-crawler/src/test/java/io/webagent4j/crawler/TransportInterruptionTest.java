@@ -40,6 +40,21 @@ import org.junit.jupiter.api.Test;
  * that signals a latch the instant it is invoked and then blocks until interrupted, exactly as a
  * real connect attempt that never receives a response would.
  *
+ * <p>INT-PRE-001 and INT-FALLBACK-001 cover a boundary distinct from all of the above: a caller
+ * whose interruption is already known - either before {@code fetch()} is ever called, or observed
+ * only after one pinned address's ordinary connectivity failure - must never let a new physical
+ * network operation start at all, rather than starting one and then merely stopping it once already
+ * in flight. {@link
+ * #intPre001ACallerAlreadyInterruptedBeforeFetchNeverStartsAnyPhysicalNetworkOperation} proves the
+ * first case using the same {@link PinnedSocketHttpTransport.ISocketConnector} seam, asserting the
+ * connector is invoked zero times. {@link
+ * #intFallback001InterruptObservedAfterAnOrdinaryFailureBlocksTheNextPinnedAddress} proves the
+ * second case using {@link InterruptOnNextClockReadAfterArmed}, a deterministic {@link
+ * IMonotonicClock} test double that interrupts the fetching thread on its own very next clock read
+ * once armed - armed only from inside the first address's connector invocation, so the {@code
+ * Future} the transport itself already waits on is what guarantees the interrupt is visible no
+ * earlier than that address's failure has been fully processed, without any real timing race.
+ *
  * <p>INT-004 (a configured crawler retry policy must not retry after interruption) lives in {@link
  * HttpCrawlerTest} instead, next to the rest of that class's retry-classification coverage; since
  * HttpCrawler dispatches on the interruption exception's type alone, that one test already covers
@@ -190,6 +205,168 @@ class TransportInterruptionTest {
                     .isTrue();
             assertThat(outcome.interruptFlagPreserved()).isTrue();
             assertThat(second.acceptedConnectionCount()).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void intPre001ACallerAlreadyInterruptedBeforeFetchNeverStartsAnyPhysicalNetworkOperation()
+            throws Exception {
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.12");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.13");
+        AtomicInteger connectInvocations = new AtomicInteger();
+        PinnedSocketHttpTransport.ISocketConnector neverInvokedConnector =
+                (socket, address, timeoutMillis) -> {
+                    connectInvocations.incrementAndGet();
+                    throw new IOException(
+                            "must never be invoked: the caller was already interrupted");
+                };
+        URI uri = URI.create("http://pinned.example.test:1/");
+        VerifiedNetworkAddresses pinned =
+                new VerifiedNetworkAddresses(
+                        "pinned.example.test", 1, List.of(firstAddress, secondAddress));
+        HttpFetchRequest request =
+                new HttpFetchRequest(uri, Duration.ofSeconds(30), Map.of(), 10_000);
+        PinnedSocketHttpTransport transport =
+                new PinnedSocketHttpTransport(
+                        IMonotonicClock.systemClock(),
+                        (javax.net.ssl.SSLSocketFactory)
+                                javax.net.ssl.SSLSocketFactory.getDefault(),
+                        neverInvokedConnector);
+
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        AtomicBoolean interruptedBeforeFetch = new AtomicBoolean();
+        AtomicBoolean interruptFlagPreserved = new AtomicBoolean();
+        CountDownLatch finished = new CountDownLatch(1);
+        Thread fetchThread =
+                new Thread(
+                        () -> {
+                            // Interrupted before fetch() is even called - never via a race against
+                            // a concurrently running second thread.
+                            Thread.currentThread().interrupt();
+                            interruptedBeforeFetch.set(Thread.currentThread().isInterrupted());
+                            try {
+                                transport.fetch(request, pinned);
+                            } catch (Throwable failure) {
+                                thrown.set(failure);
+                            } finally {
+                                interruptFlagPreserved.set(Thread.currentThread().isInterrupted());
+                                finished.countDown();
+                            }
+                        });
+        fetchThread.start();
+        boolean completed = finished.await(10, TimeUnit.SECONDS);
+        assertThat(completed).as("fetch thread terminated").isTrue();
+
+        assertThat(interruptedBeforeFetch.get())
+                .as("the thread was already interrupted before fetch() was ever called")
+                .isTrue();
+        assertThat(thrown.get())
+                .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
+        PinnedSocketHttpTransport.TransportInterruptedException interrupted =
+                (PinnedSocketHttpTransport.TransportInterruptedException) thrown.get();
+        assertThat(interrupted.transmissionMayHaveStarted())
+                .as("no phase of any attempt ever ran, let alone the request write")
+                .isFalse();
+        assertThat(interruptFlagPreserved.get()).isTrue();
+        assertThat(connectInvocations.get())
+                .as(
+                        "an already-interrupted caller must never cause a single physical connect"
+                                + " attempt - not even one that is immediately cancelled")
+                .isEqualTo(0);
+    }
+
+    @Test
+    void intFallback001InterruptObservedAfterAnOrdinaryFailureBlocksTheNextPinnedAddress()
+            throws Exception {
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.14");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.15");
+        AtomicInteger firstAddressAttempts = new AtomicInteger();
+        AtomicInteger secondAddressAttempts = new AtomicInteger();
+        InterruptOnNextClockReadAfterArmed clock = new InterruptOnNextClockReadAfterArmed();
+        PinnedSocketHttpTransport.ISocketConnector connector =
+                (socket, address, timeoutMillis) -> {
+                    if (address.getAddress().equals(firstAddress)) {
+                        firstAddressAttempts.incrementAndGet();
+                        // Simulates the caller becoming interrupted in the narrow window between
+                        // this address's ordinary, pre-send connect failure and the transport's
+                        // decision to fall back to the next pinned address - armed here, but only
+                        // actually applied on the fetching thread's own next clock read, so there
+                        // is no real timing race with that thread's own progress.
+                        clock.arm();
+                        throw new IOException("simulated ordinary pre-send failure");
+                    }
+                    secondAddressAttempts.incrementAndGet();
+                    throw new IOException(
+                            "must never be reached: interruption must block the fallback");
+                };
+        URI uri = URI.create("http://pinned.example.test:1/");
+        VerifiedNetworkAddresses pinned =
+                new VerifiedNetworkAddresses(
+                        "pinned.example.test", 1, List.of(firstAddress, secondAddress));
+        HttpFetchRequest request =
+                new HttpFetchRequest(uri, Duration.ofSeconds(30), Map.of(), 10_000);
+        PinnedSocketHttpTransport transport =
+                new PinnedSocketHttpTransport(
+                        clock,
+                        (javax.net.ssl.SSLSocketFactory)
+                                javax.net.ssl.SSLSocketFactory.getDefault(),
+                        connector);
+
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        AtomicBoolean interruptFlagPreserved = new AtomicBoolean();
+        CountDownLatch finished = new CountDownLatch(1);
+        Thread fetchThread =
+                new Thread(
+                        () -> {
+                            try {
+                                transport.fetch(request, pinned);
+                            } catch (Throwable failure) {
+                                thrown.set(failure);
+                            } finally {
+                                interruptFlagPreserved.set(Thread.currentThread().isInterrupted());
+                                finished.countDown();
+                            }
+                        });
+        fetchThread.start();
+        boolean completed = finished.await(10, TimeUnit.SECONDS);
+        assertThat(completed).as("fetch thread terminated").isTrue();
+
+        assertThat(thrown.get())
+                .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
+        assertThat(interruptFlagPreserved.get()).isTrue();
+        assertThat(firstAddressAttempts.get())
+                .as("the first pinned address was attempted exactly once")
+                .isEqualTo(1);
+        assertThat(secondAddressAttempts.get())
+                .as(
+                        "interruption observed after the first address's ordinary failure blocks the"
+                                + " second address entirely - it must never be tried")
+                .isEqualTo(0);
+    }
+
+    /**
+     * A clock whose {@link #nanoTime()} interrupts whichever thread next calls it, exactly once,
+     * after {@link #arm()} has been called - never before, and never a second time. {@link #arm()}
+     * is only ever called from inside a connector invocation that the transport's own {@code
+     * Future#get} has not yet returned from; the happens-before edge that delivers that connector's
+     * outcome to the fetching thread also makes {@link #arm()}'s effect visible before that same
+     * thread's own next clock read, so the interrupt is guaranteed to land no earlier than that
+     * connector's failure has been fully processed - without any real timing race.
+     */
+    private static final class InterruptOnNextClockReadAfterArmed implements IMonotonicClock {
+        private final AtomicBoolean armed = new AtomicBoolean();
+        private final AtomicBoolean fired = new AtomicBoolean();
+
+        void arm() {
+            armed.set(true);
+        }
+
+        @Override
+        public long nanoTime() {
+            if (armed.get() && fired.compareAndSet(false, true)) {
+                Thread.currentThread().interrupt();
+            }
+            return 0L;
         }
     }
 
