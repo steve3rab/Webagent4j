@@ -1,0 +1,355 @@
+name: Release recovery
+
+# RECOVERY IS EXPLICIT, NEVER AUTOMATIC, AND NEVER TRIGGERED BY A PUSH.
+#
+# release.yml's normal publish path (guard job, check-release-not-published.sh)
+# must always refuse to run if any release -- draft or public -- already
+# exists for the candidate tag. That refusal is correct and stays
+# unweakened: it is the only thing preventing an unverified, out-of-band, or
+# concurrently created release from ever being silently accepted, merged
+# into, or overwritten.
+#
+# But that same fail-closed guard also means a *partially completed* normal
+# publish (for example: the draft release was created successfully, but the
+# workflow failed before finalizing it, due to a transient GitHub API
+# condition such as the releases-list endpoint not yet being consistent with
+# a just-completed create) can never be resumed by re-running release.yml --
+# its guard will always find the leftover release and refuse, by design.
+#
+# This workflow is the deliberate, human-triggered escape hatch for exactly
+# that situation. It is workflow_dispatch-only (never `push`) and requires
+# the operator to supply the *exact* identity of everything it will touch:
+# the tag, the exact commit the tag/main must agree on, the exact GitHub
+# Actions run whose "Verify release candidate" job already produced and
+# qualified the release bundle, and the exact existing release id to resume.
+# Every one of those is independently verified before any write happens.
+#
+# What this workflow will NOT do, ever:
+#   - it never modifies, deletes, moves, or recreates the git tag;
+#   - it never rebuilds anything -- it republishes exactly the already
+#     verified artifact from the named source run, never a fresh build;
+#   - it never silently overwrites an existing release asset (upload is
+#     idempotent: an asset already present is verified byte-identical or
+#     the run refuses -- see release-draft.sh's cmd_upload);
+#   - it never auto-adopts a public release just because a tag matches --
+#     the exact release id must be supplied and is cross-checked against
+#     the by-tag lookup for contradictions (check-release-recovery.sh);
+#   - it never retries the release-creation POST -- recovery only ever
+#     resumes an *existing* release by its exact id, it never creates one;
+#   - it can run concurrently with a normal release.yml publish for a
+#     *different* tag, but never for the *same* tag: both declare a
+#     concurrency group derived from the tag, so at most one publish
+#     mutation for a given tag is ever in flight.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Exact existing tag to recover (e.g. v1.1.0)"
+        required: true
+        type: string
+      release_id:
+        description: "Exact numeric id of the existing GitHub Release to resume"
+        required: true
+        type: string
+      source_run_id:
+        description: "Run id of the Release workflow run whose 'Verify release candidate' job already produced and qualified the release bundle for this exact commit"
+        required: true
+        type: string
+      expected_commit_sha:
+        description: "Exact commit SHA the tag, origin/main, and the source run's head_sha must all agree on"
+        required: true
+        type: string
+      expected_artifact_digest:
+        description: "Optional expected sha256 digest of the release-bundle-<version> artifact (recommended when known)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate recovery preconditions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Read-only: this job never writes anything. Only the recover job
+    # below, which performs the actual resumed publication, is granted
+    # contents/pages write access.
+    permissions:
+      contents: read
+      actions: read
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout the exact expected commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.expected_commit_sha }}
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Resolve Maven project version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(
+            ./mvnw \
+              --batch-mode \
+              --no-transfer-progress \
+              -q \
+              -Dstyle.color=never \
+              -DforceStdout \
+              help:evaluate \
+              -Dexpression=project.version
+          )"
+          version="$(printf '%s' "$version" | tr -d '\r\n')"
+
+          if [[ -z "$version" ]]; then
+            echo "Unable to resolve Maven project version." >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Part 5.A: the tag must resolve to exactly the operator-supplied
+      # commit. Peeling with ^{commit} handles both annotated and
+      # lightweight tags identically. This never modifies the tag.
+      - name: Validate the tag resolves to the exact expected commit
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          EXPECTED_COMMIT_SHA: ${{ inputs.expected_commit_sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$TAG" != v* ]]; then
+            echo "Recovery tag is not a v* tag: $TAG" >&2
+            exit 1
+          fi
+
+          tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+
+          if [[ "$tag_commit" != "$EXPECTED_COMMIT_SHA" ]]; then
+            echo "Tag '$TAG' resolves to commit $tag_commit, expected $EXPECTED_COMMIT_SHA." >&2
+            exit 1
+          fi
+
+      # Part 5.B: preserves the exact same main-HEAD-exactness policy the
+      # normal release.yml metadata job enforces -- recovery must never be
+      # a way to publish a commit that would not have been eligible for a
+      # normal release.
+      - name: Validate the expected commit is the exact current origin/main HEAD
+        shell: bash
+        env:
+          EXPECTED_COMMIT_SHA: ${{ inputs.expected_commit_sha }}
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin main
+          main_sha="$(git rev-parse origin/main)"
+
+          if [[ "$EXPECTED_COMMIT_SHA" != "$main_sha" ]]; then
+            echo "Expected commit must be the exact current origin/main HEAD." >&2
+            echo "expected SHA: $EXPECTED_COMMIT_SHA" >&2
+            echo "main SHA:     $main_sha" >&2
+            exit 1
+          fi
+
+      - name: Validate the tag version matches the Maven project version
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          tag_version="${TAG#v}"
+
+          if [[ "$tag_version" != "$VERSION" ]]; then
+            echo "Tag version '$tag_version' does not match Maven version '$VERSION'." >&2
+            exit 1
+          fi
+
+          if [[ "$VERSION" == *SNAPSHOT* ]]; then
+            echo "Snapshot versions cannot be released: $VERSION" >&2
+            exit 1
+          fi
+
+      # Part 5.C + 5.D: the source run must be the expected Release
+      # workflow run for this exact commit, must contain a "Verify
+      # release candidate" job that concluded success (never a failed,
+      # cancelled, or skipped one -- and never inferred from the run's
+      # own overall conclusion, which can be failure for an unrelated,
+      # later reason), and must have an unexpired release-bundle
+      # artifact for this version (digest-checked when supplied).
+      - name: Validate the source workflow run's provenance
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          EXPECTED_COMMIT_SHA: ${{ inputs.expected_commit_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ inputs.expected_artifact_digest }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/check-release-recovery.sh source-run \
+            "$SOURCE_RUN_ID" \
+            "$TAG" \
+            "$EXPECTED_COMMIT_SHA" \
+            "release-bundle-${VERSION}" \
+            "$EXPECTED_ARTIFACT_DIGEST"
+
+      # Part 5.E: the existing release must be proven, by exact id, to be
+      # the one recovery was told to resume -- never adopted merely
+      # because its tag matches.
+      - name: Validate the existing release identity
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_COMMIT_SHA: ${{ inputs.expected_commit_sha }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/check-release-recovery.sh \
+            "$RELEASE_ID" \
+            "$TAG" \
+            "$EXPECTED_COMMIT_SHA"
+
+  recover:
+    name: Resume release publication
+    needs: [validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Least privilege: only this job, which actually performs the
+    # resumed publication, is granted write access. validate above stays
+    # read-only.
+    permissions:
+      actions: read
+      contents: write
+      pages: write
+      id-token: write
+
+    # A per-tag group, not a global one: release.yml's publish job uses
+    # the same "release-<tag>" group formula (derived from github.ref_name
+    # there, from inputs.tag here), so a normal publish and a recovery run
+    # for the *same* tag can never mutate that tag's release concurrently,
+    # while recovery for one tag never blocks a normal publish for a
+    # different one. A concurrent publish already in flight is never
+    # cancelled to make room for recovery.
+    concurrency:
+      group: release-${{ inputs.tag }}
+      cancel-in-progress: false
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout the exact expected commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.expected_commit_sha }}
+
+      # Never rebuilt: recovery republishes exactly the artifact the
+      # source run already produced and that validate above proved was
+      # qualified by a successful "Verify release candidate" job.
+      - name: Download the already-verified release bundle from the source run
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-bundle-${{ needs.validate.outputs.version }}
+          path: target/release-bundle
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Re-validated immediately before the first write in this job, not
+      # only in the separate validate job above: recovery can sit queued
+      # behind the per-tag concurrency group for a while, and the release
+      # must still be exactly what was proven before any mutation begins.
+      - name: Re-validate the existing release identity immediately before writing
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_COMMIT_SHA: ${{ inputs.expected_commit_sha }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/check-release-recovery.sh \
+            "$RELEASE_ID" \
+            "$TAG" \
+            "$EXPECTED_COMMIT_SHA"
+
+      # Part 7: idempotent. An asset already present under the exact
+      # expected name is verified byte-identical (downloaded and hashed)
+      # rather than re-uploaded or silently overwritten; a name collision
+      # that cannot be proven identical fails closed instead.
+      - name: Resume asset upload (idempotent, never overwrites)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/release-draft.sh upload \
+            "$RELEASE_ID" \
+            "target/release-bundle/webagent4j-cli-${VERSION}.jar" \
+            "target/release-bundle/webagent4j-cli-${VERSION}.jar.sha256"
+
+      # Part 8: resumes Pages publication from the verified bundle only.
+      # publish-pages-state.sh already refuses to replace a differing
+      # immutable versioned-docs tree and is a no-op when the exact same
+      # docs are already present -- this call is itself idempotent.
+      - name: Resume immutable versioned Javadoc publication
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/publish-pages-state.sh \
+            release \
+            target/release-bundle/apidocs \
+            "$VERSION"
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: target/pages-deploy
+          include-hidden-files: true
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+
+      # Part 9: finalizes only if still a draft; if the release is
+      # already public (e.g. a human already published it out-of-band
+      # after a failed automatic run), this verifies that final state
+      # instead of re-PATCHing it -- recovery is successful once every
+      # other publication element above has been verified or completed.
+      - name: Finalize the release, or verify it is already published
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/release-draft.sh recovery-finalize \
+            "$RELEASE_ID" \
+            "$TAG"
