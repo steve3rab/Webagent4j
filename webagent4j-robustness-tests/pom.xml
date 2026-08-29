@@ -4,10 +4,18 @@
   <parent>
     <groupId>io.webagent4j</groupId>
     <artifactId>webagent4j-parent</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
   </parent>
   <artifactId>webagent4j-robustness-tests</artifactId>
   <name>WebAgent4J Robustness Tests</name>
+  <properties>
+    <!-- Selects which Playwright-backed engine the robustness suites qualify. Must stay in
+         sync with RobustnessBrowserEngine's accepted values (chromium, firefox, webkit); this
+         property only controls which Playwright browser binary is installed before the test
+         phase, not which engine the tests select at runtime, which is read from the same
+         robustness.browser system property directly by the test JVM. -->
+    <robustness.browser>chromium</robustness.browser>
+  </properties>
   <dependencies>
     <dependency>
       <groupId>io.webagent4j</groupId>
@@ -42,7 +50,7 @@
         <artifactId>exec-maven-plugin</artifactId>
         <executions>
           <execution>
-            <id>install-playwright-chromium</id>
+            <id>install-playwright-browser</id>
             <goals>
               <goal>exec</goal>
             </goals>
@@ -54,7 +62,7 @@
                 <classpath/>
                 <argument>com.microsoft.playwright.CLI</argument>
                 <argument>install</argument>
-                <argument>chromium</argument>
+                <argument>${robustness.browser}</argument>
               </arguments>
               <classpathScope>test</classpathScope>
             </configuration>
@@ -87,7 +95,7 @@
                     <classpath/>
                     <argument>com.microsoft.playwright.CLI</argument>
                     <argument>install-deps</argument>
-                    <argument>chromium</argument>
+                    <argument>${robustness.browser}</argument>
                   </arguments>
                   <classpathScope>test</classpathScope>
                 </configuration>

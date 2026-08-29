@@ -6,7 +6,65 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Sem
 compatibility commitments begin with `1.0.0`; pre-1.0 milestones describe development history and do
 not imply a published compatibility line.
 
-## [Unreleased]
+## [1.1.0] - 2026-08-29
+
+### Added
+
+- Governed execution: `IActionPolicy` authorizes an action before its backend side effect runs, and
+  `INetworkPolicy` authorizes a `NAVIGATE` action's or crawler's network destination before a
+  request is sent - both opt-in, built on a shared synchronous, fail-closed `IExecutionPolicy`
+  contract with composition (`ExecutionPolicies.allOf`, `ActionPolicies`) and decision provenance
+  (`ActionResult#decisionTrace()`, `IActionPlan#policyDecisions()`). Default behavior is unchanged
+  unless a caller configures a policy. See [docs/governed-execution.md](docs/governed-execution.md).
+- `NetworkPolicies`, a declarative network-destination policy builder covering scheme/host/port
+  allow-lists and IPv4/IPv6 special-use address category denial (loopback, private, link-local,
+  multicast, shared, documentation, benchmark, reserved), with an injectable
+  `INetworkAddressResolver` seam for deterministic testing.
+- `HttpCrawler#withNetworkPolicy(...)` and `BrowserCrawler#withNetworkPolicy(...)`, checking every
+  real request/navigation against the configured policy before it is sent, including every redirect
+  hop and retry attempt, with interruption preserved throughout.
+- Exact-target execution protection: `IElement#verifiedForExecution()` atomically reproves a governed
+  action's already-resolved target immediately before its backend call and hands back a view bound
+  to that exact physical handle, failing closed (`ActionFailureType.TARGET_CHANGED`, zero backend
+  invocations) rather than falling back to a re-resolved element when identity cannot be reproven.
+  Currently wired for the Playwright adapter's `click()`; see
+  [docs/governed-execution.md](docs/governed-execution.md#target-identity-binding) and
+  [Limitations](docs/limitations.md#governed-execution) for its current per-action-method scope.
+- Transport-bound address pinning: when a configured `INetworkPolicy` implements
+  `INetworkAddressAuthority` (the built-in `NetworkPolicies` policy does), `HttpCrawler` binds its
+  actual HTTP(S) connection to the exact, freshly re-verified address set the policy offers for that
+  specific attempt, closing the DNS-rebinding window between policy check and physical connect for
+  that controlled transport path - denying the request rather than silently falling back to an
+  unpinned connection once transmission may have started. See
+  [docs/governed-execution.md](docs/governed-execution.md#transport-bound-address-pinning-httpcrawler-only).
+
+### Changed
+
+- The complete deterministic adversarial robustness corpus now passes, with zero wrong targets, for
+  Chromium, Firefox, and WebKit together on the same code state, and the release workflow gates every
+  engine equally before publication. See
+  [docs/support-matrix.md](docs/support-matrix.md#browser-and-robustness-qualification-by-operating-system)
+  for the exact current scope of that evidence.
+
+### Fixed
+
+- Corrected candidate-identity tracking in the Playwright frame/document trust bridge: a browser
+  engine that can replace a document while keeping its owning execution realm alive no longer causes
+  a still-current, still-attached physical node to be rejected as a stale document mismatch.
+
+### Security
+
+- Documented that governed execution's network policy is not a general SSRF firewall, and that a
+  configured policy is untrusted, unsandboxed Java code with the same trust posture as a plugin.
+  Documented precisely, rather than as a blanket claim, where DNS-rebinding protection does and does
+  not apply: `HttpCrawler` closes the check-to-connect window only when the configured policy exposes
+  `INetworkAddressAuthority`; a fully custom policy that does not implement it gets no pinning, and
+  browser navigation has no equivalent transport-level seam at all.
+- Documented that a governed `NAVIGATE` action or `BrowserCrawler` visit can only detect, never
+  prevent, a browser-internal redirect landing somewhere a network policy would have denied, unlike
+  `HttpCrawler`, which controls its own redirect loop.
+
+## [1.0.0] - 2026-08-27
 
 ### Changed
 

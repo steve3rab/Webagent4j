@@ -43,6 +43,16 @@ Scheme/host/subdomain/allowed-host/pattern policy is evaluated before navigation
 
 This scope policy is not a general SSRF firewall; the caller must authorize the browser's reachable network destinations.
 
+## Network-destination policy
+
+`BrowserCrawler#withNetworkPolicy(policy)` returns an engine that checks a configured
+`INetworkPolicy` against each requested URL before `IPage#navigate` is called, and again against the
+final committed URL after navigation - since a browser's own internal redirects cannot be
+intercepted mid-flight. A denied final URL is reported as `NETWORK_POLICY_VIOLATION`: navigation
+already happened exactly once, and the page is recorded as a failure with no observation or link
+discovery performed on it. Not configuring a policy leaves this engine's behavior unchanged. See
+[Governed execution](governed-execution.md).
+
 ## Link discovery
 
 Links come from bounded semantic observation rather than regex over HTML. Resolved browser `href` values are used where available. Source provenance distinguishes anchor and image-map-area links when supported.

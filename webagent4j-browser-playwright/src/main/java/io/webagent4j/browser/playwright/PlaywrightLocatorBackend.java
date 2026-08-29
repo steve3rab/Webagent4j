@@ -108,6 +108,7 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 continue;
             }
             ElementRole knownRole = knownRole(query);
+            String identityToken = String.valueOf(identity.get("identity"));
             PlaywrightElement element =
                     new PlaywrightElement(
                             item,
@@ -116,10 +117,11 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             scope,
                             config,
                             candidateInspectionTimeout,
-                            scopeIdentityValidator);
+                            scopeIdentityValidator,
+                            identityToken);
             candidates.add(
                     new LocatorBackendCandidate(
-                            String.valueOf(identity.get("identity")),
+                            identityToken,
                             element,
                             ((Number) identity.get("domOrder")).intValue()));
         }
@@ -148,8 +150,12 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
      * <p>This avoids re-resolving a locator containing the isolated structured-scope selector in
      * Playwright's main world. The selector engine establishes the physical match first; identity
      * is then inspected on that exact node. No nested locator wait is introduced.
+     *
+     * <p>Package-visible so {@link PlaywrightElement#isStillTheOriginallyResolvedTarget()} can
+     * reuse the exact same inspection this class uses at discovery time, rather than a second,
+     * potentially inconsistent implementation.
      */
-    private static Map<String, Object> identifyOrNull(Locator item) {
+    static Map<String, Object> identifyOrNull(Locator item) {
         List<ElementHandle> handles = List.of();
         try {
             handles = item.elementHandles();
@@ -165,14 +171,23 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                             .evaluate(
                                     IDENTITY_SCRIPT,
                                     PlaywrightCandidateIdentityBridge.bridgeName());
-            return validatedIdentityOrNull(inspected);
+            return validatedIdentityOrNull(item, inspected);
         } catch (PlaywrightException failure) {
             if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
                 return null;
             }
-            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)
-                    && confirmedAbsent(item, failure)) {
-                return null;
+            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)) {
+                if (confirmedAbsent(item, failure)) {
+                    return null;
+                }
+                // The candidate still selector-matches something, but the browser just reported
+                // its own execution-context/document lifecycle racing a frame or document
+                // transition - genuinely transient, not a proven identity mismatch. Reporting it
+                // as a retryable "not found this poll" (never as a match) lets the caller's
+                // existing bounded wait loop absorb the settling window on the same shared
+                // deadline, replaying no side effect, rather than aborting resolution outright.
+                throw new LocatorNotFoundException(
+                        "Candidate identity inspection raced a document transition");
             }
             throw failure;
         } finally {
@@ -183,8 +198,24 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
     /**
      * Validates the complete browser-side identity envelope before it can influence deduplication,
      * ambiguity, or stability.
+     *
+     * <p>{@code bridgeMissing} and {@code documentMismatch} are both browser-reported conditions
+     * about {@code item}'s owning document at the exact instant the probe ran - and both engines
+     * that are not Chromium are documented to have execution-context lifecycles for frame/iframe
+     * documents that can briefly diverge from Chromium's around a document transition (a
+     * context-registered init script re-running for the same document, or a nested frame's
+     * execution context being torn down and recreated). A candidate that a fresh, synchronous
+     * recheck proves is no longer even present is reported as absent (safe - the caller never
+     * selects it). A candidate a fresh recheck still finds present is never silently accepted as a
+     * match, but it is also never treated as a fatal, non-retryable failure: descending into frames
+     * and re-resolving candidates across a document transition is exactly the kind of transient
+     * condition the caller's existing bounded wait loop already exists to absorb, so this is
+     * reported as a retryable "not found this poll" instead, on the same shared deadline, replaying
+     * no side effect. Only once that deadline is exhausted without ever observing a proven,
+     * non-racing identity does resolution fail - deterministically, and still never having accepted
+     * an unproven candidate as a match.
      */
-    private static Map<String, Object> validatedIdentityOrNull(Object inspected) {
+    private static Map<String, Object> validatedIdentityOrNull(Locator item, Object inspected) {
         if (inspected == null) {
             throw new LocatorException("Candidate identity inspection returned null");
         }
@@ -192,11 +223,23 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
             throw new LocatorException("Candidate identity inspection returned an invalid result");
         }
         if (Boolean.TRUE.equals(raw.get("bridgeMissing"))) {
-            throw new LocatorException("Playwright candidate identity bridge is unavailable");
+            if (confirmedAbsent(
+                    item,
+                    new LocatorException("Playwright candidate identity bridge is unavailable"))) {
+                return null;
+            }
+            throw new LocatorNotFoundException(
+                    "Candidate identity bridge was unavailable during a document transition");
         }
         if (Boolean.TRUE.equals(raw.get("documentMismatch"))) {
-            throw new LocatorException(
-                    "Candidate identity inspection observed a different document");
+            if (confirmedAbsent(
+                    item,
+                    new LocatorException(
+                            "Candidate identity inspection observed a different document"))) {
+                return null;
+            }
+            throw new LocatorNotFoundException(
+                    "Candidate identity inspection raced a document transition");
         }
         if (Boolean.TRUE.equals(raw.get("absent"))) {
             return null;
@@ -221,6 +264,80 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
         }
 
         return Map.of("identity", identity, "domOrder", (int) rawOrder);
+    }
+
+    /**
+     * The exact {@link ElementHandle} whose identity was just re-verified to still match {@code
+     * identity}. Ownership passes to whoever received this record: the whole reason to hand back
+     * the live handle instead of a boolean is so a caller performs its one subsequent native
+     * operation on precisely the physical node that was just checked, never on a second,
+     * independently re-resolved lookup that could silently land on a different one - so the
+     * recipient must dispose {@code handle} once done acting on it.
+     */
+    record VerifiedHandle(ElementHandle handle, String identity) {
+        VerifiedHandle {
+            Objects.requireNonNull(handle, "handle");
+            Objects.requireNonNull(identity, "identity");
+        }
+    }
+
+    /**
+     * Atomically re-verifies {@code expectedIdentity} against {@code item}'s current live-DOM
+     * resolution and, only when it is reproven, returns the exact, still-open {@link ElementHandle}
+     * that was just inspected - the same handle a caller must then use for its native operation,
+     * never a second, independent resolution presumed to find the same physical node. This is what
+     * makes the check-then-act sequence atomic: unlike {@link #identifyOrNull}, which always
+     * disposes its handle before returning only an identity token, this method keeps the handle
+     * open exactly when identity was reproven, so the caller can act on that precise node.
+     *
+     * <p>Returns {@code null} whenever identity cannot be reproven - the candidate is gone, became
+     * ambiguous then resolved to nothing, or its fresh identity does not equal {@code
+     * expectedIdentity} (including when it was replaced by a different node that happens to satisfy
+     * the same locator) - and every one of the same transient document-transition races {@link
+     * #identifyOrNull} already classifies as retryable is classified identically here. Whenever
+     * this method returns {@code null}, any handle it captured along the way has already been
+     * disposed; nothing is left for the caller to release.
+     */
+    static VerifiedHandle resolveVerifiedHandleOrNull(Locator item, String expectedIdentity) {
+        Objects.requireNonNull(expectedIdentity, "expectedIdentity");
+        List<ElementHandle> handles = List.of();
+        boolean releaseHandles = true;
+        try {
+            handles = item.elementHandles();
+            if (handles.isEmpty()) {
+                return null;
+            }
+            if (handles.size() > 1) {
+                throw new AmbiguousLocatorException(
+                        "Candidate locator became ambiguous during atomic identity verification");
+            }
+            ElementHandle handle = handles.getFirst();
+            Object inspected =
+                    handle.evaluate(
+                            IDENTITY_SCRIPT, PlaywrightCandidateIdentityBridge.bridgeName());
+            Map<String, Object> identity = validatedIdentityOrNull(item, inspected);
+            if (identity == null || !expectedIdentity.equals(identity.get("identity"))) {
+                return null;
+            }
+            releaseHandles = false;
+            return new VerifiedHandle(handle, expectedIdentity);
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)) {
+                return null;
+            }
+            if (PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)) {
+                if (confirmedAbsent(item, failure)) {
+                    return null;
+                }
+                throw new LocatorNotFoundException(
+                        "Candidate identity verification raced a document transition");
+            }
+            throw failure;
+        } finally {
+            if (releaseHandles) {
+                dispose(handles);
+            }
+        }
     }
 
     private static void dispose(List<ElementHandle> handles) {
@@ -265,9 +382,12 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
 
     /**
      * Returns true only when a fresh synchronous count proves that a failed current-DOM locator is
-     * gone. This is shared by timeout and cross-document handle-adoption races.
+     * gone. This is shared by timeout, cross-document handle-adoption races, and JS-detected
+     * document-mismatch/bridge-missing signals ({@link #validatedIdentityOrNull}) - every condition
+     * where the underlying browser engine reported something about {@code locator}'s document
+     * identity that a synchronous re-check can independently confirm or refute.
      */
-    private static boolean confirmedAbsent(Locator locator, PlaywrightException original) {
+    private static boolean confirmedAbsent(Locator locator, RuntimeException original) {
         try {
             return locator.count() == 0;
         } catch (PlaywrightException recheckFailure) {
@@ -403,7 +523,8 @@ final class PlaywrightLocatorBackend implements ILocatorBackend {
                 context.scope(),
                 context.config(),
                 operationTimeoutMillis(timeout, 1),
-                validator);
+                validator,
+                stableIdentity);
     }
 
     private static String nextStructuredScopeLease() {

@@ -1,0 +1,13 @@
+# Four findings from commit c43e5d67d17664aebcdd75d2486982543b95ef6c, already published and not
+# rewritten in a later corrective pass because history rewrites on this branch were not authorized.
+# Each one is a synthetic diagnostic-safety test constant (a fixed marker string injected into a
+# fake exception message to prove it never leaks into a caller-facing safe message), never a real
+# credential - the generic-api-key rule fired on the local variable name ("secretMarker") combined
+# with the marker's assigned string shape, not on any actual secret material. The live code at HEAD
+# no longer uses that variable name or string value (see PinnedSocketHttpTransportTest and
+# HttpCrawlerTest, which now use "diagnosticSentinel" / "DIAGNOSTIC_SENTINEL_582719"), so these four
+# exact, already-reviewed historical fingerprints are the only findings this file can ever match.
+c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/webagent4j/crawler/HttpCrawlerTest.java:generic-api-key:259
+c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/webagent4j/crawler/HttpCrawlerTest.java:generic-api-key:279
+c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/webagent4j/crawler/PinnedSocketHttpTransportTest.java:generic-api-key:115
+c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/webagent4j/crawler/PinnedSocketHttpTransportTest.java:generic-api-key:131

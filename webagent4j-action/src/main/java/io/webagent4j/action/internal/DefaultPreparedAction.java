@@ -7,8 +7,10 @@ import io.webagent4j.action.IActionContext;
 import io.webagent4j.action.IActionPlan;
 import io.webagent4j.action.IPreparedAction;
 import io.webagent4j.action.ObservationCapturePolicy;
+import io.webagent4j.action.policy.IActionPolicy;
 import io.webagent4j.common.RetryPolicy;
 import io.webagent4j.dom.IElement;
+import io.webagent4j.policy.network.INetworkPolicy;
 import io.webagent4j.verification.ITargetVerification;
 import io.webagent4j.verification.IVerification;
 import io.webagent4j.verification.VerificationResult;
@@ -30,6 +32,8 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
     private ActionOptions options = ActionOptions.defaults();
     private boolean sensitive;
     private boolean dryRun;
+    private IActionPolicy actionPolicy;
+    private INetworkPolicy networkPolicy;
 
     DefaultPreparedAction(IActionContext context, ActionCommand<R> command) {
         this.context = Objects.requireNonNull(context, "context");
@@ -134,6 +138,34 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
     }
 
     @Override
+    public IPreparedAction<R> policy(IActionPolicy policy) {
+        Objects.requireNonNull(policy, "policy");
+        if (this.actionPolicy != null) {
+            throw new IllegalStateException(
+                    "An action policy is already configured for this prepared action");
+        }
+        this.actionPolicy = policy;
+        return this;
+    }
+
+    @Override
+    public IPreparedAction<R> networkPolicy(INetworkPolicy networkPolicy) {
+        Objects.requireNonNull(networkPolicy, "networkPolicy");
+        if (this.networkPolicy != null) {
+            throw new IllegalStateException(
+                    "A network policy is already configured for this prepared action");
+        }
+        if (command.type() != io.webagent4j.action.ActionType.NAVIGATE) {
+            throw new UnsupportedOperationException(
+                    "networkPolicy(...) is only supported on a NAVIGATE action ("
+                            + command.type()
+                            + " has no network destination known before its backend call)");
+        }
+        this.networkPolicy = networkPolicy;
+        return this;
+    }
+
+    @Override
     public ActionResult<R> execute() {
         return new ActionExecutor().execute(context, command, buildConfig());
     }
@@ -166,7 +198,9 @@ final class DefaultPreparedAction<R> implements IPreparedAction<R> {
                 List.copyOf(postconditions),
                 (current, remaining) -> io.webagent4j.action.StabilizationResult.none(),
                 sensitive,
-                dryRun);
+                dryRun,
+                java.util.Optional.ofNullable(actionPolicy),
+                java.util.Optional.ofNullable(networkPolicy));
     }
 
     private IVerification bind(IVerification verification) {

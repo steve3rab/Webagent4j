@@ -19,13 +19,14 @@ final class RobustnessReportWriter {
 
     private RobustnessReportWriter() {}
 
-    static void write(List<ScenarioResult> results) throws IOException {
+    static void write(RobustnessBrowserEngine engine, List<ScenarioResult> results)
+            throws IOException {
         Path target = targetDirectory();
         Files.createDirectories(target);
         RobustnessMetrics metrics = RobustnessMetrics.from(results);
         Files.writeString(
                 target.resolve("robustness-report.md"),
-                markdown(results, metrics),
+                markdown(engine, results, metrics),
                 StandardCharsets.UTF_8);
         JSON.writerWithDefaultPrettyPrinter()
                 .writeValue(
@@ -33,6 +34,8 @@ final class RobustnessReportWriter {
                         Map.of(
                                 "schemaVersion",
                                 1,
+                                "browserEngine",
+                                engine.propertyValue(),
                                 "metrics",
                                 metrics,
                                 "results",
@@ -98,10 +101,15 @@ final class RobustnessReportWriter {
         return value;
     }
 
-    private static String markdown(List<ScenarioResult> results, RobustnessMetrics metrics) {
+    private static String markdown(
+            RobustnessBrowserEngine engine,
+            List<ScenarioResult> results,
+            RobustnessMetrics metrics) {
         String line = System.lineSeparator();
         StringBuilder report =
                 new StringBuilder("# WebAgent4J Robustness Report").append(line).append(line);
+        report.append("Browser engine: `").append(engine.propertyValue()).append("`").append(line);
+        report.append(line);
         report.append("| Metric | Value |").append(line);
         report.append("| --- | ---: |").append(line);
         metric(report, "Total scenarios", metrics.total());
@@ -156,7 +164,9 @@ final class RobustnessReportWriter {
                                     .append(" [")
                                     .append(result.failureClassification())
                                     .append("]")
-                                    .append(". Run: `./mvnw -Probustness -Dscenario=")
+                                    .append(". Run: `./mvnw -Probustness -Drobustness.browser=")
+                                    .append(engine.propertyValue())
+                                    .append(" -Dscenario=")
                                     .append(result.scenario().id())
                                     .append(" verify`")
                                     .append(line));

@@ -336,14 +336,19 @@ class ActionModelTest {
                         case NOT_EXECUTED ->
                                 failureType == ActionFailureType.TARGET_NOT_FOUND
                                         || failureType == ActionFailureType.TARGET_AMBIGUOUS
-                                        || failureType == ActionFailureType.BACKEND_FAILURE;
+                                        || failureType == ActionFailureType.BACKEND_FAILURE
+                                        || failureType == ActionFailureType.POLICY_DENIED
+                                        || failureType == ActionFailureType.POLICY_EVALUATION_FAILED
+                                        || failureType == ActionFailureType.TARGET_CHANGED;
                         case REAL ->
                                 failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
                                         || failureType
                                                 == ActionFailureType.ACTION_NOT_SUPPORTED_BY_TARGET
                                         || failureType == ActionFailureType.BACKEND_FAILURE
                                         || failureType == ActionFailureType.UPLOAD_FAILURE
-                                        || failureType == ActionFailureType.DOWNLOAD_FAILURE;
+                                        || failureType == ActionFailureType.DOWNLOAD_FAILURE
+                                        || failureType == ActionFailureType.POLICY_VIOLATION
+                                        || failureType == ActionFailureType.STABILIZATION_FAILED;
                         case DRY_RUN -> false;
                     };
             case VERIFICATION_FAILED ->

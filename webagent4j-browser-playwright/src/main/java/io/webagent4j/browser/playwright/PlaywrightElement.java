@@ -28,7 +28,7 @@ import java.util.Optional;
  * selector is resolved exactly once in its own world and is not re-resolved through {@link
  * Locator#evaluateAll(String)} in the main world.
  */
-final class PlaywrightElement implements IElement {
+final class PlaywrightElement implements IElement, AutoCloseable {
 
     private final Locator locator;
     private final ElementRole knownRole;
@@ -36,6 +36,8 @@ final class PlaywrightElement implements IElement {
     private final LocatorScope originatingScope;
     private final LocatorConfig locatorConfig;
     private final Runnable scopeIdentityValidator;
+    private final String capturedIdentity;
+    private final ElementHandle verifiedHandle;
 
     PlaywrightElement(
             Locator locator,
@@ -50,6 +52,7 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 PlaywrightLocatorBackend.inspectionTimeoutMillis(locatorConfig.defaultTimeout(), 1),
+                null,
                 null);
     }
 
@@ -67,6 +70,7 @@ final class PlaywrightElement implements IElement {
                 originatingScope,
                 locatorConfig,
                 inspectionTimeoutMillis,
+                null,
                 null);
     }
 
@@ -78,6 +82,32 @@ final class PlaywrightElement implements IElement {
             LocatorConfig locatorConfig,
             double inspectionTimeoutMillis,
             Runnable scopeIdentityValidator) {
+        this(
+                locator,
+                knownRole,
+                locatorBackend,
+                originatingScope,
+                locatorConfig,
+                inspectionTimeoutMillis,
+                scopeIdentityValidator,
+                null);
+    }
+
+    /**
+     * @param capturedIdentity the stable per-physical-node identity token captured at the moment
+     *     this handle was resolved, or {@code null} when no such token was captured (in which case
+     *     {@link #isStillTheOriginallyResolvedTarget()} conservatively returns {@code true}, since
+     *     there is nothing to disprove it against).
+     */
+    PlaywrightElement(
+            Locator locator,
+            ElementRole knownRole,
+            PlaywrightLocatorBackend locatorBackend,
+            LocatorScope originatingScope,
+            LocatorConfig locatorConfig,
+            double inspectionTimeoutMillis,
+            Runnable scopeIdentityValidator,
+            String capturedIdentity) {
         if (Double.isNaN(inspectionTimeoutMillis) || inspectionTimeoutMillis < 0.0) {
             throw new IllegalArgumentException("inspectionTimeoutMillis must not be negative");
         }
@@ -87,6 +117,25 @@ final class PlaywrightElement implements IElement {
         this.originatingScope = originatingScope;
         this.locatorConfig = locatorConfig;
         this.scopeIdentityValidator = scopeIdentityValidator;
+        this.capturedIdentity = capturedIdentity;
+        this.verifiedHandle = null;
+    }
+
+    /**
+     * Copy constructor used only by {@link #verifiedForExecution()} to attach an already-verified,
+     * still-open {@link ElementHandle} to an otherwise-identical view of {@code source}, so a
+     * caller's very next native operation can act on precisely the physical node identity was just
+     * reproven against - never on a second, independently re-resolved lookup.
+     */
+    private PlaywrightElement(PlaywrightElement source, ElementHandle verifiedHandle) {
+        this.locator = source.locator;
+        this.knownRole = source.knownRole;
+        this.locatorBackend = source.locatorBackend;
+        this.originatingScope = source.originatingScope;
+        this.locatorConfig = source.locatorConfig;
+        this.scopeIdentityValidator = source.scopeIdentityValidator;
+        this.capturedIdentity = source.capturedIdentity;
+        this.verifiedHandle = verifiedHandle;
     }
 
     @Override
@@ -231,6 +280,96 @@ final class PlaywrightElement implements IElement {
     public void click() {
         validateScopeIdentity();
         locator.click();
+    }
+
+    /**
+     * Re-inspects the live DOM through this handle's own locator and compares the result against
+     * {@link #capturedIdentity}. Never throws: any inability to prove identity - the node is gone,
+     * the locator has become ambiguous, the identity bridge is unavailable, a document boundary was
+     * crossed, or the fresh identity simply differs - is uniformly "not proven," so the caller's
+     * fail-closed contract needs only this one boolean.
+     */
+    @Override
+    public boolean isStillTheOriginallyResolvedTarget() {
+        if (capturedIdentity == null) {
+            return true;
+        }
+        try {
+            Map<String, Object> freshIdentity = PlaywrightLocatorBackend.identifyOrNull(locator);
+            if (freshIdentity == null) {
+                return false;
+            }
+            return capturedIdentity.equals(freshIdentity.get("identity"));
+        } catch (RuntimeException inconclusive) {
+            return false;
+        }
+    }
+
+    /**
+     * Atomically re-verifies {@link #capturedIdentity} and, only when it is reproven, returns a
+     * view of this exact same element carrying the already-verified, still-open {@link
+     * ElementHandle} that proved it - never a second, independent {@link Locator} resolution a
+     * caller might otherwise use for the actual native operation. This is the fix for the residual
+     * gap {@link #isStillTheOriginallyResolvedTarget()} cannot close on its own: that method's
+     * boolean answer and a subsequent, separately-resolved native call are still two distinct
+     * lookups, so between them the live DOM could still substitute a different node satisfying the
+     * same locator.
+     *
+     * <p>Returns {@link Optional#empty()} whenever identity cannot be reproven - detached,
+     * replaced, ambiguous, or any inspection failure - uniformly "not proven," exactly like {@link
+     * #isStillTheOriginallyResolvedTarget()}. An element that never captured an identity at all
+     * ({@link #capturedIdentity} is {@code null}) fails exactly the same way: absence of a
+     * capability to prove identity is never treated as proof that identity still holds, matching
+     * {@link IElement#verifiedForExecution()}'s own fail-closed default. This never costs an
+     * ungoverned action anything extra - {@code ActionExecutor} only ever calls this method when a
+     * caller has explicitly opted into governed, exact-target verification; every ordinary
+     * (ungoverned) action still reaches the backend through the unchanged, re-resolving {@link
+     * Locator} path this class always used, without this method ever being consulted.
+     */
+    @Override
+    public Optional<IElement> verifiedForExecution() {
+        validateScopeIdentity();
+        if (capturedIdentity == null) {
+            return Optional.empty();
+        }
+        PlaywrightLocatorBackend.VerifiedHandle verified;
+        try {
+            verified =
+                    PlaywrightLocatorBackend.resolveVerifiedHandleOrNull(locator, capturedIdentity);
+        } catch (RuntimeException inconclusive) {
+            return Optional.empty();
+        }
+        if (verified == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new PlaywrightElement(this, verified.handle()));
+    }
+
+    /**
+     * Returns the already-verified, still-open {@link ElementHandle} attached by {@link
+     * #verifiedForExecution()}, or {@link Optional#empty()} for every ordinary element - only a
+     * view returned by that method ever carries one. A backend consumes this instead of {@link
+     * #locator()} to perform its native operation on precisely the physical node whose identity was
+     * just proven, rather than triggering another, independently re-resolved lookup.
+     */
+    Optional<ElementHandle> verifiedHandle() {
+        return Optional.ofNullable(verifiedHandle);
+    }
+
+    /**
+     * Disposes this view's attached verified handle, if any. Safe to call on every {@link
+     * PlaywrightElement}: a no-op unless {@link #verifiedForExecution()} produced this instance.
+     */
+    @Override
+    public void close() {
+        if (verifiedHandle != null) {
+            try {
+                verifiedHandle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup only. Never replace the semantic result of the caller's
+                // action.
+            }
+        }
     }
 
     @Override

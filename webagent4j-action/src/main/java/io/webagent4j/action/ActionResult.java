@@ -2,9 +2,12 @@ package io.webagent4j.action;
 
 import io.webagent4j.observation.Observation;
 import io.webagent4j.observation.ObservationDiff;
+import io.webagent4j.policy.PolicyReason;
 import io.webagent4j.verification.VerificationResult;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -67,7 +70,12 @@ public record ActionResult<T>(
                                 case NOT_EXECUTED ->
                                         failureType == ActionFailureType.TARGET_NOT_FOUND
                                                 || failureType == ActionFailureType.TARGET_AMBIGUOUS
-                                                || failureType == ActionFailureType.BACKEND_FAILURE;
+                                                || failureType == ActionFailureType.BACKEND_FAILURE
+                                                || failureType == ActionFailureType.POLICY_DENIED
+                                                || failureType
+                                                        == ActionFailureType
+                                                                .POLICY_EVALUATION_FAILED
+                                                || failureType == ActionFailureType.TARGET_CHANGED;
                                 case REAL ->
                                         failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
                                                 || failureType
@@ -75,8 +83,10 @@ public record ActionResult<T>(
                                                                 .ACTION_NOT_SUPPORTED_BY_TARGET
                                                 || failureType == ActionFailureType.BACKEND_FAILURE
                                                 || failureType == ActionFailureType.UPLOAD_FAILURE
+                                                || failureType == ActionFailureType.DOWNLOAD_FAILURE
+                                                || failureType == ActionFailureType.POLICY_VIOLATION
                                                 || failureType
-                                                        == ActionFailureType.DOWNLOAD_FAILURE;
+                                                        == ActionFailureType.STABILIZATION_FAILED;
                                 case DRY_RUN -> false;
                             };
                     case VERIFICATION_FAILED ->
@@ -184,6 +194,39 @@ public record ActionResult<T>(
     /** Returns a compact summary suitable for logs, CLI output, and diagnostics. */
     public String toCompactText() {
         return new CompactTextActionResultRenderer().render(this);
+    }
+
+    /**
+     * Returns the ordered sequence of governed-execution decisions made while producing this
+     * result, derived lazily from {@link #events()} on every call rather than stored - an
+     * ungoverned action never pays any cost for a trace it will never contain.
+     *
+     * <p>Empty whenever no governed-execution policy was configured for this action, including for
+     * every value produced by one of this record's compatibility constructors: those never emit a
+     * {@link ActionStage#POLICY_EVALUATION_COMPLETED} event, so there is nothing to parse. A future
+     * event whose {@code policy.*} metadata this method cannot parse is skipped rather than thrown,
+     * so this method never crashes a caller that only wants the trace.
+     */
+    public ActionDecisionTrace decisionTrace() {
+        List<ActionDecisionEntry> entries = new ArrayList<>();
+        for (ActionEvent event : events) {
+            if (event.stage() != ActionStage.POLICY_EVALUATION_COMPLETED) {
+                continue;
+            }
+            Map<String, String> metadata = event.metadata();
+            try {
+                entries.add(
+                        new ActionDecisionEntry(
+                                ActionDecisionKind.valueOf(metadata.get("policy.kind")),
+                                ActionDecisionPhase.valueOf(metadata.get("policy.phase")),
+                                ActionDecisionOutcome.valueOf(metadata.get("policy.outcome")),
+                                PolicyReason.of(metadata.get("policy.reason"))));
+            } catch (RuntimeException malformed) {
+                // Defensive only: every event this class itself ever produces parses cleanly:
+                // skip rather than let one unparseable entry crash the whole trace.
+            }
+        }
+        return new ActionDecisionTrace(entries);
     }
 
     /** Throws a structured exception when this result is unsuccessful. */

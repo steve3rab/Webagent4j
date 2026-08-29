@@ -48,8 +48,8 @@ This is the core side-effect invariant: read-only observation may repeat; the si
 | --- | --- | --- |
 | `SUCCESS` | `REAL` or `DRY_RUN` | absent |
 | `PRECONDITION_FAILED` | `NOT_EXECUTED` | `PRECONDITION_FAILED` |
-| `EXECUTION_FAILED` | `NOT_EXECUTED` | `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, `BACKEND_FAILURE` |
-| `EXECUTION_FAILED` | `REAL` | `TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`, `UPLOAD_FAILURE`, `DOWNLOAD_FAILURE` |
+| `EXECUTION_FAILED` | `NOT_EXECUTED` | `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, `BACKEND_FAILURE`, `POLICY_DENIED`, `POLICY_EVALUATION_FAILED` |
+| `EXECUTION_FAILED` | `REAL` | `TARGET_NOT_INTERACTABLE`, `ACTION_NOT_SUPPORTED_BY_TARGET`, `BACKEND_FAILURE`, `UPLOAD_FAILURE`, `DOWNLOAD_FAILURE`, `POLICY_VIOLATION` |
 | `VERIFICATION_FAILED` | `REAL` | `POSTCONDITION_FAILED` |
 | `TIMEOUT` | `NOT_EXECUTED` or `REAL` | `TIMEOUT` |
 | `CANCELLED` | `NOT_EXECUTED` or `REAL` | `INTERRUPTED` |
@@ -93,6 +93,17 @@ A plan can therefore:
 `IActionPlan.execute()` is single-use and thread-safe for that guard: only the first call is allowed to attempt the pipeline. Every later/concurrent call fails without invoking the backend again.
 
 Interruption during `plan()` yields a BLOCKED plan with `INTERRUPTED`, no backend invocation, and preserved thread interrupt status.
+
+## Governance
+
+`.policy(IActionPolicy)` and, for `navigate(...)` only, `.networkPolicy(INetworkPolicy)` let a
+caller authorize an action - or its network destination - before the backend is invoked. Neither is
+configured by default; omitting both leaves this pipeline exactly as described above. A denial fails
+closed with `POLICY_DENIED`/`POLICY_EVALUATION_FAILED` before the backend runs; a network policy
+denying a `NAVIGATE` action's *final* URL after a browser-internal redirect is reported as
+`POLICY_VIOLATION` with execution mode `REAL`, since the navigation already happened.
+`ActionResult#decisionTrace()` reports every governed-execution decision made, in evaluation order.
+See [Governed execution](governed-execution.md) for the full contract.
 
 ## Observations and diff
 

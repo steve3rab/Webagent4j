@@ -263,14 +263,19 @@ public final class DefaultActionBuilder implements IActionBuilder {
     @Override
     public IPreparedAction<Void> navigate(String url) {
         Objects.requireNonNull(url, "url");
-        return page(
-                ActionType.NAVIGATE,
-                ActionIdempotency.CONDITIONALLY_IDEMPOTENT,
-                ActionSideEffect.NAVIGATION,
-                backend -> {
-                    backend.navigate(url);
-                    return null;
-                });
+        return new DefaultPreparedAction<>(
+                context,
+                new ActionCommand<>(
+                        ActionType.NAVIGATE,
+                        ActionIdempotency.CONDITIONALLY_IDEMPOTENT,
+                        ActionSideEffect.NAVIGATION,
+                        null,
+                        null,
+                        backend -> {
+                            backend.navigate(url);
+                            return null;
+                        },
+                        java.util.Optional.of(url)));
     }
 
     @Override
@@ -401,7 +406,8 @@ public final class DefaultActionBuilder implements IActionBuilder {
                         sideEffect,
                         Objects.requireNonNull(target, "target"),
                         operation,
-                        null));
+                        null,
+                        java.util.Optional.empty()));
     }
 
     private <R> DefaultPreparedAction<R> page(
@@ -410,7 +416,15 @@ public final class DefaultActionBuilder implements IActionBuilder {
             ActionSideEffect sideEffect,
             IPageOperation<R> operation) {
         return new DefaultPreparedAction<>(
-                context, new ActionCommand<>(type, idempotency, sideEffect, null, null, operation));
+                context,
+                new ActionCommand<>(
+                        type,
+                        idempotency,
+                        sideEffect,
+                        null,
+                        null,
+                        operation,
+                        java.util.Optional.empty()));
     }
 
     private static IElementReference<IElement> fixed(IElement element) {

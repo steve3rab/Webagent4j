@@ -251,6 +251,51 @@ class HttpCrawlerTest {
     }
 
     @Test
+    void anIoExceptionMessageContainingASecretNeverLeaksIntoTheFailureMessage() {
+        // DG: a transport-layer IOException's own message is never assumed safe - it could
+        // contain connection details, protocol text, or worse. This must never automatically
+        // become CrawlFailure.message() or toString(), even though the raw cause remains
+        // available in-process for a caller who explicitly wants it.
+        String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_582719";
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.throwIo(SEED, new IOException("connection reset: " + diagnosticSentinel));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(SEED).maxDepth(0));
+
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.NETWORK);
+        assertThat(failure.message()).doesNotContain(diagnosticSentinel);
+        assertThat(failure.toString()).doesNotContain(diagnosticSentinel);
+        assertThat(failure.cause().orElseThrow().getMessage()).contains(diagnosticSentinel);
+    }
+
+    @Test
+    void aRuntimeExceptionMessageContainingASecretNeverLeaksIntoTheFailureMessage() {
+        String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_582719";
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.throwRuntime(
+                SEED, new IllegalStateException("backend state: " + diagnosticSentinel));
+
+        CrawlResult result =
+                crawl(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        CrawlRequest.builder().seed(SEED).maxDepth(0));
+
+        assertThat(result.failures()).hasSize(1);
+        CrawlFailure failure = result.failures().get(0);
+        assertThat(failure.type()).isEqualTo(CrawlFailureType.BACKEND_FAILURE);
+        assertThat(failure.message()).doesNotContain(diagnosticSentinel);
+        assertThat(failure.toString()).doesNotContain(diagnosticSentinel);
+        assertThat(failure.cause().orElseThrow().getMessage()).contains(diagnosticSentinel);
+    }
+
+    @Test
     void aTimeoutIsAStructuredFailure() {
         FakeHttpFetcher fetcher = new FakeHttpFetcher();
         fetcher.throwIo(SEED, new HttpTimeoutException("timed out"));
@@ -509,6 +554,44 @@ class HttpCrawlerTest {
 
         assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.TIMEOUT);
         assertThat(result.failures().get(0).attempts()).isEqualTo(3);
+    }
+
+    /**
+     * INT-004: a configured retry policy must never turn an interruption into a second physical
+     * fetch attempt. Interruption means "stop this operation," never "try again" - unlike an
+     * ordinary {@link IOException}, which {@code retryOnIoException} (on by default) would make
+     * eligible for exactly this kind of retry.
+     */
+    @Test
+    void anInterruptedFetchIsNeverRetriedEvenWithARetryPolicyConfigured() {
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.throwIo(
+                SEED,
+                new PinnedSocketHttpTransport.TransportInterruptedException(
+                        new InterruptedException("simulated interruption")));
+
+        CrawlRequest request =
+                CrawlRequest.builder()
+                        .seed(SEED)
+                        .maxDepth(0)
+                        .retryPolicy(
+                                new io.webagent4j.common.RetryPolicy(
+                                        3, Duration.ZERO, 1.0, Duration.ZERO))
+                        .build();
+        HttpCrawler crawler =
+                new HttpCrawler(
+                        fetcher,
+                        new FakeHtmlLinkExtractor(),
+                        new HostScopePolicy(),
+                        duration -> {});
+        CrawlResult result = crawler.crawl(request);
+
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().get(0).type()).isEqualTo(CrawlFailureType.NETWORK);
+        assertThat(result.failures().get(0).attempts()).isEqualTo(1);
+        assertThat(fetcher.fetchCount(SEED))
+                .as("interruption must never be retried, regardless of the configured policy")
+                .isEqualTo(1);
     }
 
     @Test

@@ -19,6 +19,7 @@ Depend on the narrowest set that covers your use case.
 | Deterministic waits | `webagent4j-wait` | `WaitEngine`, `WaitBudget`, `WaitPolicy` |
 | Semantic observation | `webagent4j-observation-api`, `webagent4j-observation` | `Observation`, `ObservationOptions`, observation SPI/engine |
 | Verified browser actions | `webagent4j-action` | action builder/prepared action, `ActionResult`, `IActionPlan` |
+| Governed execution | `webagent4j-common`, `webagent4j-action` | `IExecutionPolicy`, `ExecutionPolicies`, `IActionPolicy`, `ActionPolicies`, `INetworkPolicy`, `NetworkPolicies` — see [Governed execution](governed-execution.md) |
 | Verification | `webagent4j-verification` | `IVerification`, `Verifications`, `VerificationResult` |
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | `ExtractionRequest`, `ExtractionResult`, `ExtractionEngine` |
 | HTTP crawling | `webagent4j-crawler-api`, `webagent4j-crawler` | `ICrawler`, `HttpCrawler`, `CrawlRequest`, `CrawlResult` |

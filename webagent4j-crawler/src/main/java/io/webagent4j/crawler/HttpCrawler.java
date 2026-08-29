@@ -21,6 +21,14 @@ import io.webagent4j.crawler.internal.CrawlTask;
 import io.webagent4j.crawler.internal.HttpResponseClassifier;
 import io.webagent4j.crawler.internal.ICrawlFrontier;
 import io.webagent4j.crawler.internal.InMemoryCrawlDeduplicator;
+import io.webagent4j.policy.PolicyDecision;
+import io.webagent4j.policy.network.INetworkAddressAuthority;
+import io.webagent4j.policy.network.INetworkPolicy;
+import io.webagent4j.policy.network.NetworkCheckPhase;
+import io.webagent4j.policy.network.NetworkDestination;
+import io.webagent4j.policy.network.NetworkPolicyContext;
+import io.webagent4j.policy.network.NetworkRequestKind;
+import io.webagent4j.policy.network.VerifiedNetworkAddresses;
 import io.webagent4j.wait.IMonotonicClock;
 import io.webagent4j.wait.IWaitSleeper;
 import java.io.IOException;
@@ -68,6 +76,7 @@ public final class HttpCrawler implements ICrawler {
     private final ICrawlScopePolicy scopePolicy;
     private final IWaitSleeper sleeper;
     private final IMonotonicClock clock;
+    private final Optional<INetworkPolicy> networkPolicy;
 
     /**
      * Creates a crawler using the real network, jsoup, the default host-scope policy, and a real
@@ -104,11 +113,41 @@ public final class HttpCrawler implements ICrawler {
             ICrawlScopePolicy scopePolicy,
             IWaitSleeper sleeper,
             IMonotonicClock clock) {
+        this(fetcher, linkExtractor, scopePolicy, sleeper, clock, Optional.empty());
+    }
+
+    private HttpCrawler(
+            IHttpFetcher fetcher,
+            IHtmlLinkExtractor linkExtractor,
+            ICrawlScopePolicy scopePolicy,
+            IWaitSleeper sleeper,
+            IMonotonicClock clock,
+            Optional<INetworkPolicy> networkPolicy) {
         this.fetcher = Objects.requireNonNull(fetcher, "fetcher");
         this.linkExtractor = Objects.requireNonNull(linkExtractor, "linkExtractor");
         this.scopePolicy = Objects.requireNonNull(scopePolicy, "scopePolicy");
         this.sleeper = Objects.requireNonNull(sleeper, "sleeper");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.networkPolicy = Objects.requireNonNull(networkPolicy, "networkPolicy");
+    }
+
+    /**
+     * Returns a new crawler, otherwise identical to this one, that evaluates {@code policy} against
+     * every real HTTP request this crawler is about to send - the task's own seed/discovered URL
+     * and every redirect hop alike - strictly before that request is sent. A denied URL is recorded
+     * as a {@link io.webagent4j.crawler.api.CrawlFailureType#NETWORK_POLICY_DENIED} failure, is
+     * never retried, and never counts against {@link CrawlRequest#maxPages()}'s fetch-identity
+     * budget. This crawler instance is unaffected; {@code HttpCrawler} is otherwise stateless and
+     * reusable, so the returned instance is independently reusable too.
+     */
+    public HttpCrawler withNetworkPolicy(INetworkPolicy policy) {
+        return new HttpCrawler(
+                fetcher,
+                linkExtractor,
+                scopePolicy,
+                sleeper,
+                clock,
+                Optional.of(Objects.requireNonNull(policy, "policy")));
     }
 
     @Override
@@ -237,10 +276,14 @@ public final class HttpCrawler implements ICrawler {
             try {
                 html = new String(response.body(), charset);
             } catch (RuntimeException malformed) {
+                // A fixed, safe classification - never the raw exception message, which could in
+                // principle echo attacker-controlled response bytes back into a caller-visible
+                // diagnostic. The real exception remains available in-process via the structured
+                // cause field below.
                 recordFailure(
                         task,
                         CrawlFailureType.INVALID_CONTENT,
-                        "could not decode response body: " + malformed.getMessage(),
+                        "response body could not be decoded as text",
                         finalUrl,
                         Optional.of(response.statusCode()),
                         Optional.of(malformed),
@@ -303,14 +346,16 @@ public final class HttpCrawler implements ICrawler {
             try {
                 normalizedCandidate = normalizer.normalize(link.resolvedUrl());
             } catch (IllegalArgumentException notNormalizable) {
+                // A fixed, safe classification - never the raw exception message. The link's own
+                // resolvedUrl() field already carries the structured URL a caller can inspect;
+                // this text is never the place a query string, userinfo, or fragment belongs.
                 DiscoveredLink rejected =
                         rejectedLink(
                                 link,
                                 Optional.empty(),
                                 CrawlDecision.reject(
                                         CrawlDecisionType.REJECT_URL_FILTER,
-                                        "could not be normalized: "
-                                                + notNormalizable.getMessage()));
+                                        "URL could not be normalized"));
                 rejectedUrls.add(rejected);
                 return rejected;
             }
@@ -454,6 +499,21 @@ public final class HttpCrawler implements ICrawler {
             Set<URI> visited = new LinkedHashSet<>();
             long bytesRead = 0;
 
+            NetworkAuthorization initialAuthorization = authorizeNetworkRequest(current);
+            if (initialAuthorization.denial().isPresent()) {
+                return FetchOutcome.failure(
+                        initialAuthorization.denial().get().type(),
+                        initialAuthorization.denial().get().message(),
+                        current,
+                        Optional.empty(),
+                        Optional.empty(),
+                        0,
+                        bytesRead,
+                        chain);
+            }
+            Optional<VerifiedNetworkAddresses> pinnedForCurrent =
+                    initialAuthorization.pinnedAddresses();
+
             FetchClaimOutcome initialClaim = claimFetchIdentity(current);
             if (initialClaim == FetchClaimOutcome.LIMIT_REACHED) {
                 return FetchOutcome.failure(
@@ -485,7 +545,7 @@ public final class HttpCrawler implements ICrawler {
             maxDepthReached = Math.max(maxDepthReached, task.depth());
 
             while (true) {
-                RetryOutcome retryOutcome = fetchWithRetries(current);
+                RetryOutcome retryOutcome = fetchWithRetries(current, pinnedForCurrent);
                 bytesRead += retryOutcome.bytesRead();
                 if (retryOutcome.result().isEmpty()) {
                     return FetchOutcome.failure(
@@ -530,13 +590,16 @@ public final class HttpCrawler implements ICrawler {
                     try {
                         target = normalizer.normalize(locationRaw.get());
                     } catch (IllegalArgumentException notNormalizable) {
+                        // A fixed, safe classification - never the raw exception message, which
+                        // could otherwise echo a redirect Location header's userinfo or query
+                        // text. The real exception is preserved in the structured cause field
+                        // below instead of being discarded.
                         return FetchOutcome.failure(
                                 CrawlFailureType.INVALID_REDIRECT,
-                                "redirect target could not be normalized: "
-                                        + notNormalizable.getMessage(),
+                                "redirect target could not be normalized",
                                 current,
                                 Optional.of(status),
-                                Optional.empty(),
+                                Optional.of(notNormalizable),
                                 attemptsMade,
                                 bytesRead,
                                 chain);
@@ -564,6 +627,24 @@ public final class HttpCrawler implements ICrawler {
                                 bytesRead,
                                 chain);
                     }
+                    NetworkAuthorization hopAuthorization = authorizeNetworkRequest(target);
+                    if (hopAuthorization.denial().isPresent()) {
+                        // Zero, not attemptsMade: attemptsMade counts requests already sent for
+                        // the referring URL that produced this redirect, but no real HTTP request
+                        // was ever sent for "target" itself - exactly like CRAWL_LIMIT_REACHED and
+                        // ALREADY_FETCHED just below, both handled the same way for the same
+                        // reason.
+                        return FetchOutcome.failure(
+                                hopAuthorization.denial().get().type(),
+                                hopAuthorization.denial().get().message(),
+                                target,
+                                Optional.of(status),
+                                Optional.empty(),
+                                0,
+                                bytesRead,
+                                chain);
+                    }
+                    pinnedForCurrent = hopAuthorization.pinnedAddresses();
                     FetchClaimOutcome hopClaim = claimFetchIdentity(target);
                     if (hopClaim == FetchClaimOutcome.LIMIT_REACHED) {
                         return FetchOutcome.failure(
@@ -626,14 +707,48 @@ public final class HttpCrawler implements ICrawler {
          * Retries one hop's fetch per {@link CrawlRequest#retryPolicy()}, sleeping via {@link
          * IWaitSleeper}. The returned {@link RetryOutcome} always carries the real attempt count,
          * whether it ultimately succeeded or exhausted its retry budget.
+         *
+         * <p>The caller has already authorized {@code url} once, for the first attempt, before ever
+         * calling this method - so attempt 1 below fetches immediately, pinned to {@code
+         * initialPinnedAddresses} exactly as that authorization determined. Every subsequent retry
+         * attempt is a genuinely new real HTTP request, so each one gets its own fresh network
+         * -policy evaluation (and, when offered, its own fresh pinned address set) immediately
+         * before it is sent, never reusing the first attempt's decision: a policy that resolves
+         * hostnames may legitimately see a different answer by the time a retry fires after
+         * backoff. A denial on a retry stops retrying immediately - no further HTTP request and no
+         * further retry sleep - and the returned {@code attempts} honestly reflects only the real
+         * requests already sent before the denial, never the request that was prevented.
          */
-        private RetryOutcome fetchWithRetries(URI url) {
+        private RetryOutcome fetchWithRetries(
+                URI url, Optional<VerifiedNetworkAddresses> initialPinnedAddresses) {
             RetryPolicy policy = request.retryPolicy();
             int attempt = 1;
             long bytesRead = 0;
+            Optional<VerifiedNetworkAddresses> pinnedAddresses = initialPinnedAddresses;
             while (true) {
+                if (attempt > 1) {
+                    NetworkAuthorization retryAuthorization = authorizeNetworkRequest(url);
+                    if (retryAuthorization.denial().isPresent()) {
+                        return new RetryOutcome(
+                                Optional.empty(),
+                                bytesRead,
+                                retryAuthorization.denial().get().type(),
+                                retryAuthorization.denial().get().message(),
+                                Optional.empty(),
+                                attempt - 1);
+                    }
+                    pinnedAddresses = retryAuthorization.pinnedAddresses();
+                }
                 try {
-                    HttpFetchResult result = fetcher.fetch(buildFetchRequest(url));
+                    // Calls the exact same one-argument fetch() overload as before whenever there
+                    // is nothing to pin - an ungoverned crawl, or a policy that never offers a
+                    // verified address set - so such a fetcher's behavior is completely unchanged,
+                    // never even routed through the pinning-aware overload's default no-op
+                    // delegation.
+                    HttpFetchResult result =
+                            pinnedAddresses.isPresent()
+                                    ? fetcher.fetch(buildFetchRequest(url), pinnedAddresses)
+                                    : fetcher.fetch(buildFetchRequest(url));
                     bytesRead += result.responseBytes();
                     if (HttpResponseClassifier.isRetryable(
                                     result.statusCode(), request.retryableStatusCodes())
@@ -662,26 +777,149 @@ public final class HttpCrawler implements ICrawler {
                             tooLarge,
                             attempt,
                             bytesRead);
+                } catch (PinnedSocketHttpTransport.TransportInterruptedException interrupted) {
+                    // Interruption means "stop this operation," never "try again": never eligible
+                    // for retry regardless of retryOnIoException or remaining attempt budget,
+                    // unlike an ordinary IOException below. The interrupt flag was already
+                    // restored by the transport layer; nothing further to do here beyond
+                    // reporting a terminal, honestly-classified failure.
+                    return RetryOutcome.failure(
+                            CrawlFailureType.NETWORK,
+                            "network request was interrupted",
+                            interrupted,
+                            attempt,
+                            bytesRead);
                 } catch (IOException io) {
                     if (request.retryOnIoException() && attempt < policy.maxAttempts()) {
                         sleeper.sleep(policy.delayBeforeAttempt(attempt + 1));
                         attempt++;
                         continue;
                     }
+                    // A fixed, safe classification - never the raw exception message, which may
+                    // originate from a transport layer that has no reason to keep its own text
+                    // free of connection details, protocol lines, or other unsafe data. The real
+                    // exception is preserved in the structured cause field, not this text.
                     return RetryOutcome.failure(
                             CrawlFailureType.NETWORK,
-                            String.valueOf(io.getMessage()),
+                            "network request failed",
                             io,
                             attempt,
                             bytesRead);
                 } catch (RuntimeException opaque) {
                     return RetryOutcome.failure(
                             CrawlFailureType.BACKEND_FAILURE,
-                            String.valueOf(opaque.getMessage()),
+                            "backend request failed unexpectedly",
                             opaque,
                             attempt,
                             bytesRead);
                 }
+            }
+        }
+
+        /**
+         * Evaluates this crawler's configured network policy, if any, against {@code uri} - always
+         * called strictly before that URI's real HTTP request is ever sent, never after. An ALLOW
+         * additionally offers a {@link VerifiedNetworkAddresses} for the transport to pin its
+         * connection to, when {@link #networkPolicy} implements {@link INetworkAddressAuthority}
+         * and can re-confirm a specific address set for this exact connection attempt - closing the
+         * gap between "the address this check verified" and "the address the transport actually
+         * used" (DNS rebinding). A policy that cannot offer this falls back to an ordinary,
+         * unpinned authorization - never a new failure mode for a policy that never implemented the
+         * capability. A policy that <em>does</em> implement it but cannot re-confirm a destination
+         * it just allowed is instead reported as denied: silently falling back to unpinned there
+         * would defeat the guarantee the policy itself claims to offer.
+         */
+        private NetworkAuthorization authorizeNetworkRequest(URI uri) {
+            if (networkPolicy.isEmpty()) {
+                return NetworkAuthorization.allowed(Optional.empty());
+            }
+            NetworkDestination destination;
+            try {
+                destination = NetworkDestination.of(uri);
+            } catch (RuntimeException malformed) {
+                return NetworkAuthorization.denied(
+                        new PolicyDenial(
+                                CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                "network destination could not be evaluated"));
+            }
+            // A policy that also implements INetworkAddressAuthority is authorized through
+            // authorizeConnection() alone - never through a separate, preceding evaluate() call
+            // too. Each of those two calls would otherwise resolve this destination
+            // independently, so an ALLOW decision could rest on one DNS answer while the pinned
+            // address set a transport actually connects to came from a second, later resolution
+            // that a DNS-rebinding attacker had a real (if narrow) window to answer differently.
+            // authorizeConnection()'s own documented contract already applies every rule
+            // evaluate() would, so a present result here is exactly as authoritative as an
+            // ALLOW from evaluate() would have been, without the redundant second resolution.
+            if (networkPolicy.get() instanceof INetworkAddressAuthority authority) {
+                Optional<VerifiedNetworkAddresses> pinned;
+                try {
+                    pinned = authority.authorizeConnection(destination);
+                } catch (RuntimeException authorizationFailure) {
+                    return NetworkAuthorization.denied(
+                            new PolicyDenial(
+                                    CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                    "network address authorization failed"));
+                }
+                if (pinned.isEmpty()) {
+                    return NetworkAuthorization.denied(
+                            new PolicyDenial(
+                                    CrawlFailureType.NETWORK_POLICY_DENIED,
+                                    "network destination denied or could not be re-confirmed for"
+                                            + " a pinned connection"));
+                }
+                return NetworkAuthorization.allowed(pinned);
+            }
+            NetworkPolicyContext policyContext =
+                    new NetworkPolicyContext(
+                            NetworkRequestKind.HTTP_FETCH,
+                            destination,
+                            NetworkCheckPhase.PRE_REQUEST);
+            PolicyDecision decision;
+            try {
+                decision = networkPolicy.get().evaluate(policyContext);
+            } catch (RuntimeException evaluationFailure) {
+                return NetworkAuthorization.denied(
+                        new PolicyDenial(
+                                CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                "network policy evaluation failed"));
+            }
+            if (decision == null) {
+                return NetworkAuthorization.denied(
+                        new PolicyDenial(
+                                CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                "network policy returned no decision"));
+            }
+            if (decision.isDeny()) {
+                return NetworkAuthorization.denied(
+                        new PolicyDenial(
+                                CrawlFailureType.NETWORK_POLICY_DENIED,
+                                "network destination denied by policy: "
+                                        + decision.reason().code()));
+            }
+            return NetworkAuthorization.allowed(Optional.empty());
+        }
+
+        /**
+         * Outcome of one {@link #authorizeNetworkRequest(URI)} call: either a denial carrying the
+         * diagnostic to record, or an allow optionally carrying the address set a transport should
+         * pin its connection to.
+         */
+        private record NetworkAuthorization(
+                Optional<PolicyDenial> denial, Optional<VerifiedNetworkAddresses> pinnedAddresses) {
+
+            private static final NetworkAuthorization ALLOWED_WITHOUT_PINNING =
+                    new NetworkAuthorization(Optional.empty(), Optional.empty());
+
+            static NetworkAuthorization allowed(
+                    Optional<VerifiedNetworkAddresses> pinnedAddresses) {
+                return pinnedAddresses.isEmpty()
+                        ? ALLOWED_WITHOUT_PINNING
+                        : new NetworkAuthorization(Optional.empty(), pinnedAddresses);
+            }
+
+            static NetworkAuthorization denied(PolicyDenial denial) {
+                return new NetworkAuthorization(Optional.of(denial), Optional.empty());
             }
         }
 
@@ -705,6 +943,9 @@ public final class HttpCrawler implements ICrawler {
             }
         }
     }
+
+    /** A network-policy check's denial: the failure type and message to record for it. */
+    private record PolicyDenial(CrawlFailureType type, String message) {}
 
     /** Outcome of claiming a normalized URL against the crawl-wide fetch identity budget. */
     private enum FetchClaimOutcome {

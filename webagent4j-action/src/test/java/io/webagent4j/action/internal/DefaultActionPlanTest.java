@@ -105,6 +105,7 @@ class DefaultActionPlanTest {
                 List.of(VerificationType.URL_CONTAINS),
                 failure,
                 ActionDiagnostics.empty(),
+                List.of(),
                 executor);
     }
 

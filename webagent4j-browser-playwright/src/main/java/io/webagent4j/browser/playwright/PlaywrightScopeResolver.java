@@ -2,7 +2,6 @@ package io.webagent4j.browser.playwright;
 
 import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Frame;
-import com.microsoft.playwright.FrameLocator;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
@@ -348,8 +347,9 @@ final class PlaywrightScopeResolver {
             FrameDefinition definition,
             LocatorContext parent) {
         Locator iframeLocator = PlaywrightLocatorBackend.unwrap(iframe.element());
-        FrameLocator frameLocator = iframeLocator.contentFrame();
-        Locator documentRoot = frameLocator.locator("html");
+        Frame childFrame = resolveConcreteChildFrame(iframeLocator, definition);
+        Locator documentRoot = childFrame.locator("html");
+        requireSettledDocument(documentRoot, definition);
         PlaywrightLocatorBackend backend =
                 new PlaywrightLocatorBackend(
                         documentRoot,
@@ -357,6 +357,106 @@ final class PlaywrightScopeResolver {
                         parent.config(),
                         LocatorScope.frame(describeFrame(definition)));
         return backend.context();
+    }
+
+    /**
+     * Proves the child frame's own document is no longer mid-transition before this descent hands
+     * back a {@link LocatorContext} a caller may capture a physical-node identity token against.
+     *
+     * <p>At least one non-Chromium engine is documented ({@link
+     * PlaywrightCandidateIdentityBridge}'s own init script and {@link #resolveConcreteChildFrame})
+     * to tear down and recreate a still-attached iframe document's own execution context - and,
+     * with it, this process's per-document identity bridge - around the frame's initial attachment,
+     * entirely independently of {@link #resolveConcreteChildFrame}'s own capture of {@code
+     * childFrame} already succeeding. A caller that captured an identity token against the
+     * pre-transition bridge instance could never reprove it against the post-transition one: the
+     * two are unrelated random namespaces for what is, physically, the exact same, never-detached
+     * DOM, so every later governed re-verification would fail closed forever, not merely once. One
+     * inexpensive round-trip query here, absorbed by this method's own caller (the existing bounded
+     * frame-resolution poll loop) exactly like {@link #resolveConcreteChildFrame}'s own mid-capture
+     * race already is, proves the document has settled before any identity is ever captured against
+     * it - closing the gap without weakening identity verification itself or reintroducing a
+     * second, independently re-resolved lookup at click time.
+     */
+    private static void requireSettledDocument(Locator documentRoot, FrameDefinition definition) {
+        try {
+            documentRoot.count();
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)
+                    || PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)) {
+                throw new LocatorNotFoundException(
+                        "Content document for "
+                                + describeFrame(definition)
+                                + " raced a frame/document transition while settling");
+            }
+            throw failure;
+        }
+    }
+
+    /**
+     * Captures the iframe element's content frame atomically, in a single round trip against one
+     * already-resolved physical node - never through a live, continuously re-resolving {@link
+     * com.microsoft.playwright.FrameLocator}, which re-walks the iframe's own selector on every
+     * downstream operation and can silently rebind to a *different*, merely selector-equivalent
+     * iframe element if one replaces the original between resolution and use. The physical iframe
+     * element and the child {@link Frame} returned here are bound together by construction: {@code
+     * elementHandle.contentFrame()} names the exact frame owned by this exact node, never whichever
+     * node the selector happens to match at some later moment.
+     *
+     * <p>A frame/document transition observed mid-capture (child frame not yet attached, an
+     * execution context racing a navigation) is reported as retryable rather than fatal: descending
+     * into a frame inherently races the browser's own frame/document lifecycle, and the caller's
+     * existing bounded poll loop - the same one already used for ordinary target resolution - is
+     * the correct place to absorb that, on the same shared deadline, replaying no side effect.
+     */
+    private static Frame resolveConcreteChildFrame(
+            Locator iframeLocator, FrameDefinition definition) {
+        List<ElementHandle> handles = List.of();
+        try {
+            handles = iframeLocator.elementHandles();
+            if (handles.isEmpty()) {
+                throw new LocatorNotFoundException(
+                        "Iframe element for "
+                                + describeFrame(definition)
+                                + " disappeared before its content frame could be captured");
+            }
+            if (handles.size() > 1) {
+                throw new AmbiguousLocatorException(
+                        "Iframe element for "
+                                + describeFrame(definition)
+                                + " became ambiguous while capturing its content frame");
+            }
+            Frame childFrame = handles.getFirst().contentFrame();
+            if (childFrame == null || childFrame.isDetached()) {
+                throw new LocatorNotFoundException(
+                        "Iframe element for "
+                                + describeFrame(definition)
+                                + " has no attached content frame");
+            }
+            return childFrame;
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)
+                    || PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)) {
+                throw new LocatorNotFoundException(
+                        "Iframe element for "
+                                + describeFrame(definition)
+                                + " raced a frame/document transition while capturing its content"
+                                + " frame");
+            }
+            throw failure;
+        } finally {
+            disposeHandles(handles);
+        }
+    }
+
+    private static void disposeHandles(List<ElementHandle> handles) {
+        for (ElementHandle handle : handles) {
+            try {
+                handle.dispose();
+            } catch (PlaywrightException ignored) {
+                // Best-effort cleanup only. Never replace the semantic result/failure of the probe.
+            }
+        }
     }
 
     private static boolean matchesUrl(

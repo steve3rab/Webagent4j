@@ -14,7 +14,7 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 ## Browser and frame boundaries
 
 - Frame criteria are intentionally limited to supported `id`, `name`, `title`, and URL matching modes; there is no arbitrary frame CSS/XPath/fuzzy DSL.
-- Browser-engine implementation is broader than full robustness qualification. Chromium is the current release-gated engine; Firefox/WebKit do not yet run the complete adversarial corpus. See [support-matrix.md](support-matrix.md).
+- Browser-engine implementation is broader than full robustness qualification in general, but for Chromium, Firefox, and WebKit specifically, exact-head evidence has observed all three passing the complete adversarial corpus together, and the release workflow gates every engine equally. That evidence is currently Linux-only: it does not establish any engine's qualification on Windows or macOS, since browser and operating-system qualification are independent axes. See [support-matrix.md](support-matrix.md#browser-and-robustness-qualification-by-operating-system).
 - Live browser objects are not generally thread-safe.
 
 ## Observation
@@ -50,6 +50,40 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 - No `robots.txt` engine or universal SSRF protection.
 - Navigation/stability share a bounded timeout, but post-stability `url()`, observation, and title capture are separate calls without a common backend-native deadline.
 - A browser-initiated download is not a general crawl-document type.
+
+## Governed execution
+
+- `IActionPolicy`/`INetworkPolicy` are opt-in; nothing is governed unless a caller explicitly
+  configures one. Direct `IPage`/`IBrowser` calls made outside a governed action or crawl bypass
+  both entirely.
+- Atomic action-target identity verification (`IElement#verifiedForExecution()`, which binds
+  identity revalidation and the native backend call to the exact same physical handle) is currently
+  wired for the Playwright adapter's `click()` only. Every other Playwright action method (`fill`,
+  `check`, `uncheck`, `select`, `hover`, `focus`, `blur`, `press`, `upload`, `submit`, `scrollTo`,
+  `download`, `doubleClick`) still revalidates identity via the boolean-only
+  `isStillTheOriginallyResolvedTarget()` and then performs its native call through a second,
+  independently re-resolved `Locator` - the residual TOCTOU window this method exists to close
+  remains open for those methods.
+- `INetworkPolicy` is not a general SSRF firewall. `HttpCrawler` binds its actual transport
+  connection to the exact addresses a policy verified - closing the DNS-rebinding gap between
+  check and connect - only when the configured policy implements `INetworkAddressAuthority` (the
+  built-in `NetworkPolicies` policy does; a fully custom `INetworkPolicy` lambda does not unless it
+  implements that capability too).
+- A governed `NAVIGATE` action or `BrowserCrawler` visit can only detect, never prevent, a
+  browser-internal redirect landing somewhere a network policy would have denied - unlike
+  `HttpCrawler`, which controls its own redirect loop and can prevent every hop. Browser navigation
+  also has no transport-level pinning at all: its own DNS resolution for policy evaluation is never
+  bound to whatever address the browser's network stack ultimately connects to.
+- `PinnedSocketHttpTransport` (the pinned connection `HttpCrawler` uses) is GET-only, HTTP/1.1, and
+  never pools or reuses a connection across requests - matching what `HttpCrawler` itself needs, not
+  a general-purpose HTTP client.
+- A configured policy is ordinary, trusted, unsandboxed Java code - the same trust posture as a
+  plugin. WebAgent4J cannot prevent or undo a side effect a malicious or buggy policy performs
+  itself during evaluation.
+- `networkPolicy(...)` only applies to a `NAVIGATE` action; no other action type has a network
+  destination knowable before its backend call.
+- No policy persistence, serialization, remote/LLM-assisted authorization, or governance DSL is
+  provided.
 
 ## Workflows
 

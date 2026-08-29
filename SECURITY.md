@@ -54,6 +54,14 @@ allowlist or equivalent network policy before invoking WebAgent4J.
 `robots.txt` is not automatically enforced. Applications remain responsible for legal, contractual,
 operational, and site-policy compliance.
 
+Optional governed execution (`INetworkPolicy`) adds authorization before a request is sent, and,
+specifically for `HttpCrawler` when the configured policy exposes `INetworkAddressAuthority`, binds
+the physical connection to the exact address the policy verified for that attempt - closing the
+check-to-connect DNS-rebinding window for that one controlled transport path. This is still not a
+general SSRF firewall: a custom policy without that capability gets no pinning, and browser
+navigation has no equivalent transport-level seam. See
+[`docs/governed-execution.md`](docs/governed-execution.md).
+
 ### Browser and page trust boundary
 
 Browser pages and their JavaScript are untrusted input.

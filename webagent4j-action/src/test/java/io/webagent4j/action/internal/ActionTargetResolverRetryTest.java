@@ -153,7 +153,8 @@ class ActionTargetResolverRetryTest {
                 ActionSideEffect.LOCAL_PAGE_STATE,
                 target,
                 (backend, resolvedTarget) -> null,
-                null);
+                null,
+                java.util.Optional.empty());
     }
 
     private static IElement presentElement() {

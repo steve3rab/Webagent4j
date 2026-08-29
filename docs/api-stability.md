@@ -1,6 +1,6 @@
 # API stability policy
 
-This policy defines the compatibility surface intended for WebAgent4J 1.0 and later. Until `1.0.0` is actually published, the source tree is a release candidate and necessary pre-release corrections remain possible. Once `1.0.0` is published, the commitments below govern supported surfaces.
+This policy defines the compatibility surface for WebAgent4J 1.0 and later. `1.0.0` is published; the commitments below govern its supported surfaces and all subsequent 1.x releases.
 
 ## Semantic Versioning
 

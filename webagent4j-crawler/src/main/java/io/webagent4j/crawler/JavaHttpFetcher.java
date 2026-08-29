@@ -1,5 +1,6 @@
 package io.webagent4j.crawler;
 
+import io.webagent4j.policy.network.VerifiedNetworkAddresses;
 import io.webagent4j.wait.IMonotonicClock;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -11,6 +12,7 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow;
@@ -35,6 +37,7 @@ public final class JavaHttpFetcher implements IHttpFetcher {
 
     private final HttpClient client;
     private final IMonotonicClock clock;
+    private final PinnedSocketHttpTransport pinnedTransport;
 
     /** Creates a fetcher with a dedicated, redirect-never {@link HttpClient}. */
     public JavaHttpFetcher() {
@@ -45,6 +48,27 @@ public final class JavaHttpFetcher implements IHttpFetcher {
     public JavaHttpFetcher(IMonotonicClock clock) {
         this.client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.pinnedTransport = new PinnedSocketHttpTransport(this.clock);
+    }
+
+    /**
+     * Performs one round trip, connecting directly to one of {@code pinnedAddresses} when present
+     * instead of letting {@code HttpClient} resolve the destination host itself - {@code
+     * HttpClient} has no public hook to pin a connection to a caller-supplied address while still
+     * using the hostname for the {@code Host} header, TLS SNI, and certificate verification, so a
+     * present {@code pinnedAddresses} routes the request through {@link PinnedSocketHttpTransport}
+     * instead. Absent, this is identical to {@link #fetch(HttpFetchRequest)} - the ordinary,
+     * unpinned path used whenever no network policy offers a verified address set.
+     */
+    @Override
+    public HttpFetchResult fetch(
+            HttpFetchRequest request, Optional<VerifiedNetworkAddresses> pinnedAddresses)
+            throws IOException {
+        Objects.requireNonNull(pinnedAddresses, "pinnedAddresses");
+        if (pinnedAddresses.isPresent()) {
+            return pinnedTransport.fetch(request, pinnedAddresses.get());
+        }
+        return fetch(request);
     }
 
     @Override
@@ -65,8 +89,16 @@ public final class JavaHttpFetcher implements IHttpFetcher {
                                     new BoundedByteArraySubscriber(
                                             request.uri(), request.maxResponseBytes()));
         } catch (InterruptedException interrupted) {
+            // Interruption means "stop this operation," never "try again" - reported as a
+            // distinct, terminal type so HttpCrawler's retry loop can never mistake it for an
+            // ordinary, retryable connectivity failure. The message is a fixed, safe string
+            // rather than one embedding the request URI, matching this codebase's diagnostics
+            // rule against caller-facing text carrying userinfo/query/fragment. HttpClient offers
+            // no way to learn whether request bytes had already reached the peer, so this is
+            // conservatively reported as "may have started" rather than falsely claiming
+            // certainty that nothing was sent.
             Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while fetching " + request.uri(), interrupted);
+            throw new PinnedSocketHttpTransport.TransportInterruptedException(true, interrupted);
         } catch (IOException wrapped) {
             // HttpClient wraps a body subscriber's exceptional completion in its own IOException
             // rather than propagating it directly - unwrap so callers can catch

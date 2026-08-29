@@ -12,9 +12,9 @@ closed rather than guess.
 Playwright is the first browser backend.
 
 > [!IMPORTANT]
-> The repository is in release-readiness work for the first stable `1.0.0` release. Public Maven
-> artifacts are not yet published from this repository's current release workflow. Until publication
-> is enabled, build and install the artifacts locally.
+> `1.0.x` is the current stable line; `develop` is now `1.1.0-SNAPSHOT`. Public Maven artifacts are
+> not yet published from this repository's release workflow. Until publication is enabled, build and
+> install the artifacts locally.
 
 ## Design goals
 
@@ -159,6 +159,7 @@ explicitly transfers ownership.
 | Wait and stability | `webagent4j-wait` | Monotonic budgets, polling, stability windows |
 | Observation | `webagent4j-observation-api`, `webagent4j-observation` | Bounded detached semantic page snapshots |
 | Actions | `webagent4j-action` | Planning, dry-run, execution, stabilization, structured results |
+| Governed execution | `webagent4j-common`, `webagent4j-action` | Opt-in action/network authorization policies with decision provenance |
 | Verification | `webagent4j-verification` | Read-only deterministic conditions and postconditions |
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
 | HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
@@ -196,6 +197,10 @@ Important examples:
 - Recording V1 excludes documented raw workflow/action value channels, but caller identifiers such
   as recording/action IDs remain a verbatim metadata boundary.
 - Browser side effects are not automatically retried by wait logic.
+- Optional governed execution (`IActionPolicy`/`INetworkPolicy`) lets a caller authorize an action
+  or network destination before it runs; a configured policy is untrusted, unsandboxed Java code
+  like any plugin, and network governance is not a general SSRF firewall. See
+  [`docs/governed-execution.md`](docs/governed-execution.md).
 
 See [`SECURITY.md`](SECURITY.md) and
 [`docs/security-model.md`](docs/security-model.md) before exposing WebAgent4J to untrusted input.
@@ -216,6 +221,7 @@ Start with [`docs/index.md`](docs/index.md). The main references are:
 - [Wait and stability](docs/wait-and-stability.md)
 - [Semantic observation](docs/observation.md)
 - [Actions](docs/actions.md)
+- [Governed execution](docs/governed-execution.md)
 - [Verification](docs/verification.md)
 - [Extraction](docs/extraction.md)
 - [HTTP crawler](docs/http-crawler.md)
@@ -256,7 +262,7 @@ must not be inferred from Java serialization or Java object identity.
 
 ## Project status
 
-The functional scope intended for 1.0 is implemented:
+`1.0.0` is released and is the current stable line (`1.0.x`). Its functional scope is implemented:
 
 - browser lifecycle and semantic location;
 - bounded observation;
@@ -268,10 +274,7 @@ The functional scope intended for 1.0 is implemented:
 - explicit trusted locator plugins;
 - adversarial hardening of cross-module contracts.
 
-Current work is release readiness: packaging, publication metadata, release automation,
-documentation/version alignment, artifact inspection, and final release qualification.
-
-No new product capability should be inferred from release-readiness changes.
+`develop` is the active line for the next release, currently `1.1.0-SNAPSHOT`.
 
 ## Contributing
 
