@@ -31,6 +31,7 @@
     <module>webagent4j-common</module>
     <module>webagent4j-wait</module>
     <module>webagent4j-locator-api</module>
+    <module>webagent4j-api-compat</module>
     <module>webagent4j-dom</module>
     <module>webagent4j-observation-api</module>
     <module>webagent4j-locator</module>
