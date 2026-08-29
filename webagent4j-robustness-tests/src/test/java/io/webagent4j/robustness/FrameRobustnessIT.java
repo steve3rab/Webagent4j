@@ -3,6 +3,7 @@ package io.webagent4j.robustness;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
+import io.webagent4j.action.ActionResult;
 import io.webagent4j.browser.IBrowser;
 import io.webagent4j.browser.IFrame;
 import io.webagent4j.browser.IPage;
@@ -37,6 +38,16 @@ import org.junit.jupiter.api.TestInstance;
  * scheduling latency on some browsers can leave the local HTTP round-trip still in flight when
  * {@code execute()} already returned. Purely negative scenarios that never click anything keep
  * asserting {@code executionCount()} directly; there is no side effect to await there.
+ *
+ * <p>Every positive scenario asserts success through {@link #assertActionSucceeded(ActionResult)}
+ * rather than {@link ActionResult#throwIfFailed()} directly: a bare {@code throwIfFailed()} failure
+ * message carries only the action id and {@link io.webagent4j.action.ActionStatus}, which is enough
+ * to know an action failed but not why. {@link ActionResult#toCompactText()} is a backend-agnostic,
+ * already-safe rendering - documented to never expose backend objects or sensitive values - that
+ * additionally surfaces the resolved target description, the structured {@link
+ * io.webagent4j.action.ActionFailureType} taxonomy, and precondition/postcondition counts, which is
+ * exactly the taxonomy needed to tell a resolution failure from a governed-identity failure from a
+ * backend failure without ever printing a raw Playwright exception message.
  */
 @Tag("robustness")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -63,10 +74,11 @@ class FrameRobustnessIT {
         try (IPage page = browser.open(application.fixtureUrl("frames/frame-scenarios.html"))) {
             IFrame checkout = page.frame().named("checkout-simple").single();
 
-            checkout.action()
-                    .click(checkout.find().button().named("Pay").reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    checkout.action()
+                            .click(checkout.find().button().named("Pay").reference())
+                            .execute();
+            assertActionSucceeded(result);
 
             application.awaitExecution("frame-001-checkout", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-001-checkout");
@@ -80,10 +92,11 @@ class FrameRobustnessIT {
         try (IPage page = browser.open(application.fixtureUrl("frames/frame-scenarios.html"))) {
             IFrame stable = page.frame().withId("dashboard-stable").single();
 
-            stable.action()
-                    .click(stable.find().button().named("Continue").reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    stable.action()
+                            .click(stable.find().button().named("Continue").reference())
+                            .execute();
+            assertActionSucceeded(result);
 
             application.awaitExecution("frame-002-target", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-002-target");
@@ -107,10 +120,11 @@ class FrameRobustnessIT {
         try (IPage page = browser.open(application.fixtureUrl("frames/frame-scenarios.html"))) {
             IFrame productA = page.frame().named("product-a-frame").single();
 
-            productA.action()
-                    .click(productA.find().button().named("Buy").reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    productA.action()
+                            .click(productA.find().button().named("Buy").reference())
+                            .execute();
+            assertActionSucceeded(result);
 
             application.awaitExecution("frame-004-product-a", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-004-product-a");
@@ -125,10 +139,9 @@ class FrameRobustnessIT {
             IFrame outer = page.frame().named("outer-frame").single();
             IFrame inner = outer.frame().named("inner-frame").single();
 
-            inner.action()
-                    .click(inner.find().button().named("Pay").reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    inner.action().click(inner.find().button().named("Pay").reference()).execute();
+            assertActionSucceeded(result);
 
             application.awaitExecution("frame-005-nested", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-005-nested");
@@ -165,10 +178,11 @@ class FrameRobustnessIT {
             IFrame delayed =
                     page.frame().named("delayed-frame").timeout(Duration.ofMillis(800)).single();
 
-            delayed.action()
-                    .click(delayed.find().button().named("Confirm").reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    delayed.action()
+                            .click(delayed.find().button().named("Confirm").reference())
+                            .execute();
+            assertActionSucceeded(result);
 
             application.awaitExecution("frame-008-target", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-008-target");
@@ -183,11 +197,12 @@ class FrameRobustnessIT {
             IFrame replaceFrame = page.frame().named("replace-frame").single();
 
             page.evaluate("replaceFrame()");
-            replaceFrame
-                    .action()
-                    .click(replaceFrame.find().button().named("Confirm").reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    replaceFrame
+                            .action()
+                            .click(replaceFrame.find().button().named("Confirm").reference())
+                            .execute();
+            assertActionSucceeded(result);
 
             application.awaitExecution("frame-009-v2", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-009-v2");
@@ -201,14 +216,27 @@ class FrameRobustnessIT {
         try (IPage page = browser.open(application.fixtureUrl("frames/frame-scenarios.html"))) {
             IFrame billing = page.frame().named("billing").single();
 
-            billing.action()
-                    .click(billing.find().button().named("Continue").reference())
-                    .execute()
-                    .throwIfFailed();
+            ActionResult<Void> result =
+                    billing.action()
+                            .click(billing.find().button().named("Continue").reference())
+                            .execute();
+            assertActionSucceeded(result);
 
             application.awaitExecution("frame-010-target", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-010-target");
             assertThat(application.executionCount()).isEqualTo(1);
         }
+    }
+
+    /**
+     * Asserts a governed click succeeded, and on failure surfaces {@link
+     * ActionResult#toCompactText()} in the assertion message rather than relying on {@link
+     * ActionResult#throwIfFailed()}'s minimal id-and-status-only message: the compact rendering
+     * adds the resolved target description, the {@link io.webagent4j.action.ActionFailureType}
+     * taxonomy, and precondition/postcondition counts, all through an API already documented to
+     * never expose backend objects or sensitive values.
+     */
+    private static void assertActionSucceeded(ActionResult<Void> result) {
+        assertThat(result.success()).as("%s", result.toCompactText()).isTrue();
     }
 }

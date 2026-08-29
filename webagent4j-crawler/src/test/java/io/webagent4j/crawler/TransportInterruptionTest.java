@@ -59,18 +59,38 @@ import org.junit.jupiter.api.Test;
  * HttpCrawlerTest} instead, next to the rest of that class's retry-classification coverage; since
  * HttpCrawler dispatches on the interruption exception's type alone, that one test already covers
  * every phase an interruption could originate from, connect included.
+ *
+ * <p>Every test's real, physical fixture binds only to the IPv4 loopback ({@code 127.0.0.1}) - the
+ * one loopback address guaranteed bindable without host-level configuration on every platform this
+ * suite runs on. A second numbered {@code 127.0.0.x} alias binds without any setup on Linux, whose
+ * kernel treats the entire {@code 127.0.0.0/8} block as local, but not on macOS, which only
+ * recognizes {@code 127.0.0.1} unless a second address is explicitly aliased onto the loopback
+ * interface - exactly the {@code BindException: Can't assign requested address} this suite must
+ * never risk. The second, never-really-contacted pinned address is never bound to anything at all:
+ * {@link #delegatingButGuardingSecondAddress} routes a connect attempt for it straight to a counter
+ * instead of the network, so its {@link InetAddress} value only ever needs to be distinct from the
+ * first address's, never independently bindable or routable - with no change to which address is
+ * contacted first, how many times, or what a genuine connectivity failure there would look like to
+ * the code under test.
  */
 class TransportInterruptionTest {
 
     @Test
     void intConnect001InterruptDuringConnectNeverFallsBackToASecondPinnedAddress()
             throws Exception {
-        InetAddress firstAddress = InetAddress.getByName("127.0.0.10");
-        InetAddress secondAddress = InetAddress.getByName("127.0.0.11");
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.1");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.2");
         CountDownLatch connectStarted = new CountDownLatch(1);
         AtomicInteger connectInvocations = new AtomicInteger();
+        AtomicInteger secondAddressAttempts = new AtomicInteger();
         PinnedSocketHttpTransport.ISocketConnector blockingUntilInterruptedConnector =
                 (socket, address, timeoutMillis) -> {
+                    if (address.getAddress().equals(secondAddress)) {
+                        secondAddressAttempts.incrementAndGet();
+                        throw new IOException(
+                                "must never be reached: the second pinned address must never be"
+                                        + " contacted");
+                    }
                     connectInvocations.incrementAndGet();
                     connectStarted.countDown();
                     try {
@@ -84,51 +104,47 @@ class TransportInterruptionTest {
                         throw new IOException("simulated connect interrupted", interrupted);
                     }
                 };
-        try (CountingHealthyServer second =
-                CountingHealthyServer.bindingToEphemeralPort(secondAddress)) {
-            int port = second.port();
-            URI uri = URI.create("http://pinned.example.test:" + port + "/");
-            VerifiedNetworkAddresses pinned =
-                    new VerifiedNetworkAddresses(
-                            "pinned.example.test", port, List.of(firstAddress, secondAddress));
+        int port = 1;
+        URI uri = URI.create("http://pinned.example.test:" + port + "/");
+        VerifiedNetworkAddresses pinned =
+                new VerifiedNetworkAddresses(
+                        "pinned.example.test", port, List.of(firstAddress, secondAddress));
 
-            FetchOutcome outcome =
-                    fetchOnInterruptibleThread(
-                            uri,
-                            pinned,
-                            () -> {
-                                boolean reached = connectStarted.await(10, TimeUnit.SECONDS);
-                                assertThat(reached)
-                                        .as("the fake connector's connect() was invoked")
-                                        .isTrue();
-                            },
-                            Map.of(),
-                            Optional.of(blockingUntilInterruptedConnector));
+        FetchOutcome outcome =
+                fetchOnInterruptibleThread(
+                        uri,
+                        pinned,
+                        () -> {
+                            boolean reached = connectStarted.await(10, TimeUnit.SECONDS);
+                            assertThat(reached)
+                                    .as("the fake connector's connect() was invoked")
+                                    .isTrue();
+                        },
+                        Map.of(),
+                        Optional.of(blockingUntilInterruptedConnector));
 
-            assertThat(outcome.thrown())
-                    .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
-            PinnedSocketHttpTransport.TransportInterruptedException interrupted =
-                    (PinnedSocketHttpTransport.TransportInterruptedException) outcome.thrown();
-            assertThat(interrupted.transmissionMayHaveStarted())
-                    .as("connect precedes TLS and the HTTP request write entirely")
-                    .isFalse();
-            assertThat(outcome.interruptFlagPreserved()).isTrue();
-            assertThat(connectInvocations.get())
-                    .as("the first pinned address's connect was attempted exactly once")
-                    .isEqualTo(1);
-            assertThat(second.acceptedConnectionCount())
-                    .as("the second pinned address was never contacted")
-                    .isEqualTo(0);
-        }
+        assertThat(outcome.thrown())
+                .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
+        PinnedSocketHttpTransport.TransportInterruptedException interrupted =
+                (PinnedSocketHttpTransport.TransportInterruptedException) outcome.thrown();
+        assertThat(interrupted.transmissionMayHaveStarted())
+                .as("connect precedes TLS and the HTTP request write entirely")
+                .isFalse();
+        assertThat(outcome.interruptFlagPreserved()).isTrue();
+        assertThat(connectInvocations.get())
+                .as("the first pinned address's connect was attempted exactly once")
+                .isEqualTo(1);
+        assertThat(secondAddressAttempts.get())
+                .as("the second pinned address was never contacted")
+                .isEqualTo(0);
     }
 
     @Test
     void int001InterruptDuringTlsHandshakeNeverFallsBackToASecondPinnedAddress() throws Exception {
-        InetAddress firstAddress = InetAddress.getByName("127.0.0.4");
-        InetAddress secondAddress = InetAddress.getByName("127.0.0.5");
-        try (SilentServer first = SilentServer.bindingTo(firstAddress);
-                CountingHealthyServer second =
-                        CountingHealthyServer.bindingTo(secondAddress, first.port())) {
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.1");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.2");
+        AtomicInteger secondAddressAttempts = new AtomicInteger();
+        try (SilentServer first = SilentServer.bindingTo(firstAddress)) {
             URI uri = URI.create("https://pinned.example.test:" + first.port() + "/");
             VerifiedNetworkAddresses pinned =
                     new VerifiedNetworkAddresses(
@@ -136,7 +152,15 @@ class TransportInterruptionTest {
                             first.port(),
                             List.of(firstAddress, secondAddress));
 
-            FetchOutcome outcome = fetchOnInterruptibleThread(uri, pinned, first::awaitAccepted);
+            FetchOutcome outcome =
+                    fetchOnInterruptibleThread(
+                            uri,
+                            pinned,
+                            first::awaitAccepted,
+                            Map.of(),
+                            Optional.of(
+                                    delegatingButGuardingSecondAddress(
+                                            secondAddress, secondAddressAttempts)));
 
             assertThat(outcome.thrown())
                     .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
@@ -146,17 +170,16 @@ class TransportInterruptionTest {
                     .as("TLS handshake precedes the HTTP request write entirely")
                     .isFalse();
             assertThat(outcome.interruptFlagPreserved()).isTrue();
-            assertThat(second.acceptedConnectionCount()).isEqualTo(0);
+            assertThat(secondAddressAttempts.get()).isEqualTo(0);
         }
     }
 
     @Test
     void int002InterruptDuringABlockedWriteNeverFallsBackToASecondPinnedAddress() throws Exception {
-        InetAddress firstAddress = InetAddress.getByName("127.0.0.6");
-        InetAddress secondAddress = InetAddress.getByName("127.0.0.7");
-        try (NeverReadingServer first = NeverReadingServer.bindingTo(firstAddress);
-                CountingHealthyServer second =
-                        CountingHealthyServer.bindingTo(secondAddress, first.port())) {
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.1");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.2");
+        AtomicInteger secondAddressAttempts = new AtomicInteger();
+        try (NeverReadingServer first = NeverReadingServer.bindingTo(firstAddress)) {
             URI uri = URI.create("http://pinned.example.test:" + first.port() + "/");
             VerifiedNetworkAddresses pinned =
                     new VerifiedNetworkAddresses(
@@ -165,7 +188,14 @@ class TransportInterruptionTest {
                             List.of(firstAddress, secondAddress));
 
             FetchOutcome outcome =
-                    fetchOnInterruptibleThread(uri, pinned, first::awaitAccepted, largeHeaders());
+                    fetchOnInterruptibleThread(
+                            uri,
+                            pinned,
+                            first::awaitAccepted,
+                            largeHeaders(),
+                            Optional.of(
+                                    delegatingButGuardingSecondAddress(
+                                            secondAddress, secondAddressAttempts)));
 
             assertThat(outcome.thrown())
                     .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
@@ -175,18 +205,17 @@ class TransportInterruptionTest {
                     .as("the write was genuinely in flight when interrupted")
                     .isTrue();
             assertThat(outcome.interruptFlagPreserved()).isTrue();
-            assertThat(second.acceptedConnectionCount()).isEqualTo(0);
+            assertThat(secondAddressAttempts.get()).isEqualTo(0);
         }
     }
 
     @Test
     void int003InterruptDuringAResponseReadNeverFallsBackToASecondPinnedAddress() throws Exception {
-        InetAddress firstAddress = InetAddress.getByName("127.0.0.8");
-        InetAddress secondAddress = InetAddress.getByName("127.0.0.9");
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.1");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.2");
+        AtomicInteger secondAddressAttempts = new AtomicInteger();
         try (AcceptsRequestThenSilentServer first =
-                        AcceptsRequestThenSilentServer.bindingTo(firstAddress);
-                CountingHealthyServer second =
-                        CountingHealthyServer.bindingTo(secondAddress, first.port())) {
+                AcceptsRequestThenSilentServer.bindingTo(firstAddress)) {
             URI uri = URI.create("http://pinned.example.test:" + first.port() + "/");
             VerifiedNetworkAddresses pinned =
                     new VerifiedNetworkAddresses(
@@ -194,7 +223,15 @@ class TransportInterruptionTest {
                             first.port(),
                             List.of(firstAddress, secondAddress));
 
-            FetchOutcome outcome = fetchOnInterruptibleThread(uri, pinned, first::awaitRequestRead);
+            FetchOutcome outcome =
+                    fetchOnInterruptibleThread(
+                            uri,
+                            pinned,
+                            first::awaitRequestRead,
+                            Map.of(),
+                            Optional.of(
+                                    delegatingButGuardingSecondAddress(
+                                            secondAddress, secondAddressAttempts)));
 
             assertThat(outcome.thrown())
                     .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
@@ -204,15 +241,15 @@ class TransportInterruptionTest {
                     .as("the request was already fully written before the read began")
                     .isTrue();
             assertThat(outcome.interruptFlagPreserved()).isTrue();
-            assertThat(second.acceptedConnectionCount()).isEqualTo(0);
+            assertThat(secondAddressAttempts.get()).isEqualTo(0);
         }
     }
 
     @Test
     void intPre001ACallerAlreadyInterruptedBeforeFetchNeverStartsAnyPhysicalNetworkOperation()
             throws Exception {
-        InetAddress firstAddress = InetAddress.getByName("127.0.0.12");
-        InetAddress secondAddress = InetAddress.getByName("127.0.0.13");
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.1");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.2");
         AtomicInteger connectInvocations = new AtomicInteger();
         PinnedSocketHttpTransport.ISocketConnector neverInvokedConnector =
                 (socket, address, timeoutMillis) -> {
@@ -278,8 +315,8 @@ class TransportInterruptionTest {
     @Test
     void intFallback001InterruptObservedAfterAnOrdinaryFailureBlocksTheNextPinnedAddress()
             throws Exception {
-        InetAddress firstAddress = InetAddress.getByName("127.0.0.14");
-        InetAddress secondAddress = InetAddress.getByName("127.0.0.15");
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.1");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.2");
         AtomicInteger firstAddressAttempts = new AtomicInteger();
         AtomicInteger secondAddressAttempts = new AtomicInteger();
         InterruptOnNextClockReadAfterArmed clock = new InterruptOnNextClockReadAfterArmed();
@@ -432,6 +469,29 @@ class TransportInterruptionTest {
         boolean completed = finished.await(10, TimeUnit.SECONDS);
         assertThat(completed).as("fetch thread terminated after being interrupted").isTrue();
         return new FetchOutcome(thrown.get(), interruptFlagPreserved.get());
+    }
+
+    /**
+     * A connector that behaves exactly like a real {@code Socket::connect} for any address other
+     * than {@code guardedAddress}, and for {@code guardedAddress} itself never touches a socket at
+     * all - it only counts the attempt and fails immediately. The seam this suite uses whenever a
+     * test needs a second, distinct pinned address that must never really be contacted: the guarded
+     * address only ever needs to be a distinct {@link InetAddress} value for this connector's own
+     * {@code equals} check, never independently bindable or routable, so a platform on which a
+     * second numbered loopback alias cannot be bound (macOS, without an explicit interface alias)
+     * is exactly as portable as one where it can (Linux).
+     */
+    private static PinnedSocketHttpTransport.ISocketConnector delegatingButGuardingSecondAddress(
+            InetAddress guardedAddress, AtomicInteger guardedAddressAttempts) {
+        return (socket, address, timeoutMillis) -> {
+            if (address.getAddress().equals(guardedAddress)) {
+                guardedAddressAttempts.incrementAndGet();
+                throw new IOException(
+                        "must never be reached: the second pinned address must never be"
+                                + " contacted");
+            }
+            socket.connect(address, timeoutMillis);
+        };
     }
 
     private record FetchOutcome(Throwable thrown, boolean interruptFlagPreserved) {}
@@ -609,56 +669,6 @@ class TransportInterruptionTest {
                 }
                 previous = current;
             }
-        }
-    }
-
-    /** Accepts one connection, replies with a fixed response, and counts accepted connections. */
-    private static final class CountingHealthyServer implements AutoCloseable {
-        private final ServerSocket serverSocket;
-        private final Thread thread;
-        private final java.util.concurrent.atomic.AtomicInteger acceptedConnections =
-                new java.util.concurrent.atomic.AtomicInteger();
-
-        private CountingHealthyServer(ServerSocket serverSocket) {
-            this.serverSocket = serverSocket;
-            this.thread = new Thread(this::serve);
-            this.thread.setDaemon(true);
-            this.thread.start();
-        }
-
-        static CountingHealthyServer bindingTo(InetAddress address, int port) throws IOException {
-            return new CountingHealthyServer(new ServerSocket(port, 1, address));
-        }
-
-        static CountingHealthyServer bindingToEphemeralPort(InetAddress address)
-                throws IOException {
-            return new CountingHealthyServer(new ServerSocket(0, 1, address));
-        }
-
-        int port() {
-            return serverSocket.getLocalPort();
-        }
-
-        int acceptedConnectionCount() {
-            return acceptedConnections.get();
-        }
-
-        private void serve() {
-            try (Socket client = serverSocket.accept()) {
-                acceptedConnections.incrementAndGet();
-                client.getOutputStream()
-                        .write(
-                                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
-                                        .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
-                client.getOutputStream().flush();
-            } catch (IOException ignored) {
-                // Best-effort test server: never contacted at all on an interruption test.
-            }
-        }
-
-        @Override
-        public void close() throws IOException {
-            serverSocket.close();
         }
     }
 }
