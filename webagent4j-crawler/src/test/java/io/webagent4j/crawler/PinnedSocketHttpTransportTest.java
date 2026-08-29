@@ -228,6 +228,9 @@ class PinnedSocketHttpTransportTest {
         // separately already renders its own fixed "request timed out" text rather than reading
         // this exception's message).
         String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_582719";
+        // The fixture never responds until this test explicitly releases it below - never a
+        // fixed sleep standing in for "long enough to outlast the request's own timeout".
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
         try (ServerSocket serverSocket =
                 ServerSocketFactory.getDefault()
                         .createServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
@@ -235,9 +238,11 @@ class PinnedSocketHttpTransportTest {
                     new Thread(
                             () -> {
                                 try (Socket ignored = serverSocket.accept()) {
-                                    Thread.sleep(Duration.ofSeconds(10).toMillis());
-                                } catch (Exception ignored) {
-                                    // test server best-effort
+                                    release.await();
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                } catch (IOException ignored) {
+                                    // Best-effort test server: closed during shutdown.
                                 }
                             });
             acceptor.setDaemon(true);
@@ -275,6 +280,8 @@ class PinnedSocketHttpTransportTest {
                                 assertThat(message).doesNotContain("#");
                                 assertThat(message).doesNotContain(uri.toString());
                             });
+        } finally {
+            release.countDown();
         }
     }
 

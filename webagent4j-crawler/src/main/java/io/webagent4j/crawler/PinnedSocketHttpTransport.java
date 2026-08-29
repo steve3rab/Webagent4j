@@ -128,6 +128,13 @@ final class PinnedSocketHttpTransport {
 
         IOException lastFailure = null;
         for (InetAddress address : pinnedAddresses.addresses()) {
+            // Checked at the top of every iteration - before the very first address and again
+            // before every fallback address - so a caller already interrupted (whether before
+            // fetch() was even called, or observed only after an earlier address's ordinary
+            // pre-send failure) never causes a new physical attempt to begin at all. This is
+            // deliberately distinct from runBoundedOnDeadline's own interruption handling below,
+            // which stops an attempt already in flight; this stops one from ever starting.
+            requireNotInterrupted();
             try {
                 RawResponse raw =
                         attempt(request, host, port, tls, address, requestBytes, deadline);
@@ -392,6 +399,12 @@ final class PinnedSocketHttpTransport {
     static <T> T runBoundedOnDeadline(Socket socket, Deadline deadline, IOSupplier<T> task)
             throws IOException {
         int remainingMillis = requireTimeBudget(deadline);
+        // Checked immediately before submitting the task - never after - so a caller already
+        // interrupted when this phase is about to begin never has that phase actually started on
+        // its behalf. This narrows, but cannot fully eliminate, the inherent check-then-act gap
+        // between observing the interrupt flag and the executor accepting the task; closing that
+        // last sliver would require a deeper synchronization redesign this fix does not attempt.
+        requireNotInterrupted();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             Future<T> future = executor.submit(task::get);
             try {
@@ -420,6 +433,21 @@ final class PinnedSocketHttpTransport {
                 closeQuietly(socket);
                 throw new TransportInterruptedException(interrupted);
             }
+        }
+    }
+
+    /**
+     * Fails closed, before any new blocking network operation is submitted or started, when the
+     * calling thread is already known to be interrupted - the boundary distinct from (and checked
+     * strictly earlier than) {@link #runBoundedOnDeadline}'s own handling of an interruption that
+     * arrives only after a phase is already in flight. Uses {@link Thread#isInterrupted()}, never
+     * {@link Thread#interrupted()}, since the latter clears the flag as a side effect of reading it
+     * - this method only ever observes the flag, never consumes it.
+     */
+    private static void requireNotInterrupted() throws TransportInterruptedException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new TransportInterruptedException(
+                    new InterruptedException("network operation interrupted"));
         }
     }
 
