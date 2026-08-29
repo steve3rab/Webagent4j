@@ -239,8 +239,10 @@ class PinnedSocketHttpTransportTest {
                             () -> {
                                 try (Socket ignored = serverSocket.accept()) {
                                     release.await();
-                                } catch (Exception ignored) {
-                                    // test server best-effort
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                } catch (IOException ignored) {
+                                    // Best-effort test server: closed during shutdown.
                                 }
                             });
             acceptor.setDaemon(true);
