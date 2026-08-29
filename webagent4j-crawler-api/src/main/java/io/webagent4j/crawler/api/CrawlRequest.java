@@ -1,6 +1,7 @@
 package io.webagent4j.crawler.api;
 
 import io.webagent4j.common.RetryPolicy;
+import io.webagent4j.crawler.api.internal.HttpHeaderValidation;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -39,8 +40,14 @@ import java.util.regex.Pattern;
  * @param retryPolicy attempt count and backoff shared by every retryable fetch
  * @param retryableStatusCodes HTTP status codes eligible for retry
  * @param retryOnIoException whether a network/IO failure is eligible for retry
- * @param userAgent the {@code User-Agent} header sent with every request
- * @param defaultHeaders additional headers sent with every request
+ * @param userAgent the {@code User-Agent} header sent with every request; validated as an HTTP
+ *     header value at construction (see {@code defaultHeaders})
+ * @param defaultHeaders additional headers sent with every request. Every name/value is validated
+ *     against the HTTP/1.1 header grammar at construction time, before any DNS resolution, network
+ *     policy evaluation, or connection - identically regardless of which internal HTTP transport
+ *     eventually sends the request. A header this framework computes and owns exclusively ({@code
+ *     Host}, {@code Connection}, {@code Content-Length}, {@code Transfer-Encoding}, {@code Expect},
+ *     {@code Upgrade}) is rejected here rather than silently ignored or overridden later
  * @param allowedContentTypes {@code Content-Type} values (without parameters) this crawl will parse
  *     as HTML
  * @param traversalStrategy the frontier's release order
@@ -123,7 +130,16 @@ public record CrawlRequest(
         if (userAgent.isBlank()) {
             throw new IllegalArgumentException("userAgent cannot be blank");
         }
-        defaultHeaders = Map.copyOf(Objects.requireNonNull(defaultHeaders, "defaultHeaders"));
+        // userAgent ultimately becomes the User-Agent header value (see HttpCrawler), so it is
+        // held to the same transport-independent header-value grammar as defaultHeaders below -
+        // never just a non-blank check.
+        HttpHeaderValidation.requireValidHeaderValue(userAgent);
+        Objects.requireNonNull(defaultHeaders, "defaultHeaders");
+        // Validated in defaultHeaders' own iteration order, before Map.copyOf: Map.copyOf's
+        // iteration order is unspecified, so validating after it would risk a nondeterministic
+        // first-failure when more than one header is invalid.
+        HttpHeaderValidation.requireValidHeaders(defaultHeaders);
+        defaultHeaders = Map.copyOf(defaultHeaders);
         allowedContentTypes = lowercased(allowedContentTypes);
         Objects.requireNonNull(traversalStrategy, "traversalStrategy");
         if (traversalStrategy == TraversalStrategy.DEPTH_FIRST) {
@@ -145,12 +161,26 @@ public record CrawlRequest(
     private static void requireAbsoluteHttpSeed(URI seed) {
         Objects.requireNonNull(seed, "seed");
         if (!seed.isAbsolute() || seed.getHost() == null) {
-            throw new IllegalArgumentException("seed must be an absolute URL: " + seed);
+            throw new IllegalArgumentException(
+                    "seed must be an absolute HTTP(S) URL: " + safeSeedDescription(seed));
         }
         String scheme = seed.getScheme().toLowerCase(Locale.ROOT);
         if (!scheme.equals("http") && !scheme.equals("https")) {
-            throw new IllegalArgumentException("seed must be http(s): " + seed);
+            throw new IllegalArgumentException(
+                    "seed must be an absolute HTTP(S) URL: " + safeSeedDescription(seed));
         }
+    }
+
+    /**
+     * Renders {@code scheme://host} only - never userinfo, path, query, or fragment, any of which
+     * could carry credentials or another sensitive token embedded in the seed URL a caller is
+     * trying to configure. Mirrors {@code DefaultUrlNormalizer}'s identical convention in the
+     * {@code webagent4j-crawler} module (that module cannot be depended on from here).
+     */
+    private static String safeSeedDescription(URI seed) {
+        String scheme = seed.getScheme() == null ? "(no scheme)" : seed.getScheme();
+        String host = seed.getHost() == null ? "(no host)" : seed.getHost();
+        return scheme + "://" + host;
     }
 
     private static Set<String> lowercased(Set<String> values) {
@@ -291,6 +321,10 @@ public record CrawlRequest(
          * Adds one default header sent with every request. Never add {@code Authorization} or
          * {@code Cookie} here unless the caller genuinely intends every request to carry it -
          * neither is added by default.
+         *
+         * <p>{@code name} and {@code value} are validated against the HTTP/1.1 header grammar by
+         * {@link #build()}, not here - an invalid header is rejected at construction time, never
+         * silently accepted at this call.
          */
         public Builder defaultHeader(String name, String value) {
             defaultHeaders.put(

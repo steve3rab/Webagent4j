@@ -1,6 +1,7 @@
 package io.webagent4j.crawler;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import io.webagent4j.crawler.api.CrawlDecisionType;
 import io.webagent4j.crawler.api.CrawlFailure;
@@ -33,6 +34,30 @@ import org.junit.jupiter.api.Test;
 class HttpCrawlerTest {
 
     private static final URI SEED = URI.create("https://example.test/");
+
+    // HDR-012: a malformed configured header is rejected before transport selection or network
+    // execution - CrawlRequest.Builder#build() throws while resolving the request, so the fake
+    // fetcher below is never invoked at all (fetchCount stays exactly zero), proving the rejection
+    // is transport-independent rather than something only a real HTTP call would ever discover.
+    @Test
+    void hdr012RejectsAMalformedConfiguredHeaderBeforeAnyFetchAttempt() {
+        FakeHttpFetcher fetcher = new FakeHttpFetcher();
+        fetcher.respond(SEED, htmlResponse(SEED, 200));
+        FakeHtmlLinkExtractor extractor = new FakeHtmlLinkExtractor();
+        extractor.stub(SEED, title("Home"));
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                crawl(
+                                        fetcher,
+                                        extractor,
+                                        CrawlRequest.builder()
+                                                .seed(SEED)
+                                                .defaultHeader("Host", "evil.example.test")));
+
+        assertThat(fetcher.fetchCount(SEED)).isZero();
+    }
 
     @Test
     void fetchesOnlyTheSeedWhenMaxDepthIsZero() {

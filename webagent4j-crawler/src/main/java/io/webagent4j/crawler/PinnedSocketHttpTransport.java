@@ -1,5 +1,6 @@
 package io.webagent4j.crawler;
 
+import io.webagent4j.crawler.api.internal.HttpHeaderValidation;
 import io.webagent4j.policy.network.NetworkDestination;
 import io.webagent4j.policy.network.VerifiedNetworkAddresses;
 import io.webagent4j.wait.IMonotonicClock;
@@ -714,18 +715,19 @@ final class PinnedSocketHttpTransport {
                 (tls && port == HTTPS_DEFAULT_PORT) || (!tls && port == HTTP_DEFAULT_PORT);
         String hostHeader = defaultPort ? host : host + ":" + port;
 
+        // Defense in depth: request.headers() should already be validated by HttpFetchRequest's
+        // own constructor, so this should never actually fire in normal operation. It stays a
+        // real, fail-closed check anyway - never removed merely because it is normally
+        // unreachable - so this transport still refuses a malformed or framework-controlled
+        // header even if some future internal code path ever manages to reach here without going
+        // through that constructor.
+        requireAllHeadersSafe(request.headers());
+
         StringBuilder text = new StringBuilder();
         text.append("GET ").append(requestTarget).append(" HTTP/1.1\r\n");
         text.append("Host: ").append(hostHeader).append("\r\n");
         for (Map.Entry<String, String> header : request.headers().entrySet()) {
-            String name = header.getKey();
-            String value = header.getValue();
-            if ("host".equalsIgnoreCase(name) || "connection".equalsIgnoreCase(name)) {
-                continue;
-            }
-            requireSafeHeaderText(name, "header name");
-            requireSafeHeaderText(value, "header value");
-            text.append(name).append(": ").append(value).append("\r\n");
+            text.append(header.getKey()).append(": ").append(header.getValue()).append("\r\n");
         }
         text.append("Connection: close\r\n");
         text.append("\r\n");
@@ -733,9 +735,37 @@ final class PinnedSocketHttpTransport {
     }
 
     /**
+     * Validates every caller header against the same canonical rule {@link HttpFetchRequest} itself
+     * already applies ({@link HttpHeaderValidation}), rather than a second, independently written
+     * check that could silently drift out of agreement with it over time. Package-private (not
+     * {@code private}) so a test can call it directly with a raw header map, bypassing {@link
+     * HttpFetchRequest}'s own constructor entirely, to prove this defense-in-depth layer still
+     * fails closed on its own even if nothing upstream had already validated - the seam already
+     * unreachable in normal operation, since {@code Host} and {@code Connection} are always
+     * validated away by {@link HttpFetchRequest} before headers ever reach here (so this method no
+     * longer skips them the way an earlier version of this code silently did).
+     */
+    static void requireAllHeadersSafe(Map<String, String> headers) throws IOException {
+        for (Map.Entry<String, String> header : headers.entrySet()) {
+            try {
+                HttpHeaderValidation.requireValidHeaderName(header.getKey());
+                HttpHeaderValidation.requireNotFrameworkControlled(header.getKey());
+                HttpHeaderValidation.requireValidHeaderValue(header.getValue());
+            } catch (IllegalArgumentException invalid) {
+                throw new IOException(
+                        "Invalid or framework-controlled request header rejected at the transport"
+                                + " boundary",
+                        invalid);
+            }
+        }
+    }
+
+    /**
      * Rejects a value that could inject an extra header or request line into this hand-built raw
      * request text (a CR/LF/NUL control character), or that is not representable in the pure-ASCII
-     * encoding this class writes requests in.
+     * encoding this class writes requests in. Used for the request line's host and request-target
+     * text, which are not HTTP header name/value pairs and so are not covered by {@link
+     * HttpHeaderValidation}.
      */
     private static void requireSafeHeaderText(String value, String what) throws IOException {
         for (int index = 0; index < value.length(); index++) {
