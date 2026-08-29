@@ -43,10 +43,21 @@ From a clean checkout of the candidate SHA:
 
 ```bash
 ./mvnw --batch-mode --no-transfer-progress clean verify
-./mvnw --batch-mode --no-transfer-progress -Probustness verify
 ```
 
-Run any release-specific packaging profile as required. Do not add test retry as a release workaround.
+The release workflow's own `verify` job additionally runs the complete adversarial robustness corpus
+once per qualified engine, failing closed on the first engine that does not pass with zero retry:
+
+```bash
+for browser in chromium firefox webkit; do
+  ./mvnw --batch-mode --no-transfer-progress -Probustness -Drobustness.browser="$browser" verify
+done
+```
+
+A release must not publish unless every qualified engine passes this way; see
+[support-matrix.md](support-matrix.md#browser-and-robustness-qualification-by-operating-system) for the
+current per-engine qualification scope. Run any release-specific packaging profile as required. Do
+not add test retry as a release workaround.
 
 Verify GitHub CI, CodeQL, and Dependency Review all correspond to the **same exact candidate SHA**. A green check on an older PR head does not certify a newer commit.
 
