@@ -27,6 +27,16 @@ import org.junit.jupiter.api.TestInstance;
  * {@link RobustnessCorpus}: that corpus's {@link RobustnessScenario} model and its own fixed
  * hundred-scenario invariant are element-only and were never designed for a document-boundary
  * concept, so extending them was a materially riskier change than adding a sibling scenario set.
+ *
+ * <p>Every positive scenario that performs a real click awaits {@link
+ * RobustnessTestApplication#awaitExecution} before reading {@link
+ * RobustnessTestApplication#actualTarget()}/{@link RobustnessTestApplication#executionCount()}: the
+ * fixture's click handler fires its {@code /track} side effect asynchronously, with no
+ * happens-before relationship to Playwright's click call returning, so reading that state
+ * immediately afterward is an observation race, not a resolver correctness question - purely
+ * scheduling latency on some browsers can leave the local HTTP round-trip still in flight when
+ * {@code execute()} already returned. Purely negative scenarios that never click anything keep
+ * asserting {@code executionCount()} directly; there is no side effect to await there.
  */
 @Tag("robustness")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -58,6 +68,7 @@ class FrameRobustnessIT {
                     .execute()
                     .throwIfFailed();
 
+            application.awaitExecution("frame-001-checkout", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-001-checkout");
             assertThat(application.executionCount()).isEqualTo(1);
         }
@@ -74,6 +85,7 @@ class FrameRobustnessIT {
                     .execute()
                     .throwIfFailed();
 
+            application.awaitExecution("frame-002-target", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-002-target");
             assertThat(application.executionCount()).isEqualTo(1);
         }
@@ -100,6 +112,7 @@ class FrameRobustnessIT {
                     .execute()
                     .throwIfFailed();
 
+            application.awaitExecution("frame-004-product-a", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-004-product-a");
             assertThat(application.executionCount()).isEqualTo(1);
         }
@@ -117,6 +130,7 @@ class FrameRobustnessIT {
                     .execute()
                     .throwIfFailed();
 
+            application.awaitExecution("frame-005-nested", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-005-nested");
             assertThat(application.executionCount()).isEqualTo(1);
         }
@@ -156,6 +170,7 @@ class FrameRobustnessIT {
                     .execute()
                     .throwIfFailed();
 
+            application.awaitExecution("frame-008-target", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-008-target");
             assertThat(application.executionCount()).isEqualTo(1);
         }
@@ -174,6 +189,7 @@ class FrameRobustnessIT {
                     .execute()
                     .throwIfFailed();
 
+            application.awaitExecution("frame-009-v2", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-009-v2");
             assertThat(application.executionCount()).isEqualTo(1);
         }
@@ -190,6 +206,7 @@ class FrameRobustnessIT {
                     .execute()
                     .throwIfFailed();
 
+            application.awaitExecution("frame-010-target", 1, Duration.ofSeconds(1));
             assertThat(application.actualTarget()).isEqualTo("frame-010-target");
             assertThat(application.executionCount()).isEqualTo(1);
         }
