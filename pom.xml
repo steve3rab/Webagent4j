@@ -54,7 +54,6 @@
     <module>webagent4j-cli</module>
     <module>webagent4j-examples</module>
     <module>webagent4j-integration-tests</module>
-    <module>webagent4j-api-compat</module>
   </modules>
 
   <scm>
