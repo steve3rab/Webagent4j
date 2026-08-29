@@ -349,6 +349,7 @@ final class PlaywrightScopeResolver {
         Locator iframeLocator = PlaywrightLocatorBackend.unwrap(iframe.element());
         Frame childFrame = resolveConcreteChildFrame(iframeLocator, definition);
         Locator documentRoot = childFrame.locator("html");
+        requireSettledDocument(documentRoot, definition);
         PlaywrightLocatorBackend backend =
                 new PlaywrightLocatorBackend(
                         documentRoot,
@@ -356,6 +357,40 @@ final class PlaywrightScopeResolver {
                         parent.config(),
                         LocatorScope.frame(describeFrame(definition)));
         return backend.context();
+    }
+
+    /**
+     * Proves the child frame's own document is no longer mid-transition before this descent hands
+     * back a {@link LocatorContext} a caller may capture a physical-node identity token against.
+     *
+     * <p>At least one non-Chromium engine is documented ({@link
+     * PlaywrightCandidateIdentityBridge}'s own init script and {@link #resolveConcreteChildFrame})
+     * to tear down and recreate a still-attached iframe document's own execution context - and,
+     * with it, this process's per-document identity bridge - around the frame's initial attachment,
+     * entirely independently of {@link #resolveConcreteChildFrame}'s own capture of {@code
+     * childFrame} already succeeding. A caller that captured an identity token against the
+     * pre-transition bridge instance could never reprove it against the post-transition one: the
+     * two are unrelated random namespaces for what is, physically, the exact same, never-detached
+     * DOM, so every later governed re-verification would fail closed forever, not merely once. One
+     * inexpensive round-trip query here, absorbed by this method's own caller (the existing bounded
+     * frame-resolution poll loop) exactly like {@link #resolveConcreteChildFrame}'s own mid-capture
+     * race already is, proves the document has settled before any identity is ever captured against
+     * it - closing the gap without weakening identity verification itself or reintroducing a
+     * second, independently re-resolved lookup at click time.
+     */
+    private static void requireSettledDocument(Locator documentRoot, FrameDefinition definition) {
+        try {
+            documentRoot.count();
+        } catch (PlaywrightException failure) {
+            if (PlaywrightFailureClassifier.isFrameUnavailable(failure)
+                    || PlaywrightFailureClassifier.isDifferentDocumentAdoptionRace(failure)) {
+                throw new LocatorNotFoundException(
+                        "Content document for "
+                                + describeFrame(definition)
+                                + " raced a frame/document transition while settling");
+            }
+            throw failure;
+        }
     }
 
     /**
