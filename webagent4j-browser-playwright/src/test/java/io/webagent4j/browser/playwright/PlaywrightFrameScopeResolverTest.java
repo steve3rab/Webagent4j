@@ -681,6 +681,142 @@ class PlaywrightFrameScopeResolverTest {
     }
 
     @Test
+    void descendingIntoAFrameSettlesTheDocumentBeforeReturningItsContext() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        Frame frame = mock(Frame.class);
+        Locator documentRoot = mock(Locator.class);
+        when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
+        when(handle.contentFrame()).thenReturn(frame);
+        when(frame.locator("html")).thenReturn(documentRoot);
+        when(documentRoot.count()).thenReturn(1);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        LocatorContext resolved =
+                PlaywrightScopeResolver.resolveFrameScope(
+                        engine, context, FrameDefinition.frame().named("checkout"));
+
+        // The settle probe is a plain, current-DOM count() - never a nested locator wait, and
+        // never in addition to a second, independent capture of the content frame or document
+        // root: exactly one round trip against the exact same handle/frame/document already
+        // captured above.
+        verify(documentRoot).count();
+        assertThat(resolved).isNotNull();
+    }
+
+    @Test
+    void aDocumentTransitionRaceWhileSettlingTheContentDocumentIsRetryableNotFatal() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        Frame frame = mock(Frame.class);
+        Locator documentRoot = mock(Locator.class);
+        when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
+        when(handle.contentFrame()).thenReturn(frame);
+        when(frame.locator("html")).thenReturn(documentRoot);
+        PlaywrightException contextDestroyed =
+                new PlaywrightException(
+                        "locator.count: Execution context was destroyed, most likely because of a"
+                                + " navigation");
+        when(documentRoot.count()).thenThrow(contextDestroyed);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        // At least one non-Chromium engine is documented to tear down and recreate a
+        // still-attached iframe document's own execution context - and, with it, this process's
+        // per-document identity bridge - around the frame's initial attachment. This proves that
+        // race, observed on the settle probe itself rather than during content-frame capture, is
+        // absorbed by the caller's own bounded wait loop instead of aborting resolution: never a
+        // permanent, non-retried failure for what is, physically, the exact same, never-detached
+        // document.
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameScope(
+                                        engine, context, FrameDefinition.frame().named("checkout")))
+                .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    @Test
+    void aFrameUnavailableSignalWhileSettlingTheContentDocumentIsRetryableNotFatal() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        Frame frame = mock(Frame.class);
+        Locator documentRoot = mock(Locator.class);
+        when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
+        when(handle.contentFrame()).thenReturn(frame);
+        when(frame.locator("html")).thenReturn(documentRoot);
+        when(documentRoot.count()).thenThrow(new PlaywrightException("Frame was detached"));
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameScope(
+                                        engine, context, FrameDefinition.frame().named("checkout")))
+                .isInstanceOf(LocatorNotFoundException.class);
+    }
+
+    @Test
+    void aGenuineBackendFailureWhileSettlingTheContentDocumentPropagatesUnchanged() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext context = pageContext();
+        Locator iframeLocator = mock(Locator.class);
+        ElementHandle handle = mock(ElementHandle.class);
+        Frame frame = mock(Frame.class);
+        Locator documentRoot = mock(Locator.class);
+        when(iframeLocator.elementHandles()).thenReturn(List.of(handle));
+        when(handle.contentFrame()).thenReturn(frame);
+        when(frame.locator("html")).thenReturn(documentRoot);
+        PlaywrightException opaqueBackendFailure =
+                new PlaywrightException("Target page, context or browser has been closed");
+        when(documentRoot.count()).thenThrow(opaqueBackendFailure);
+        IElement iframe =
+                new PlaywrightElement(
+                        iframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+        when(engine.locateAll(eq(context), any())).thenReturn(List.of(candidate(iframe)));
+
+        // An opaque, unclassified backend failure while settling must never be silently
+        // reclassified as a retryable not-found - only the two narrow, stable disappearance
+        // signals above ever are.
+        assertThatRuntimeException()
+                .isThrownBy(
+                        () ->
+                                PlaywrightScopeResolver.resolveFrameScope(
+                                        engine, context, FrameDefinition.frame().named("checkout")))
+                .isSameAs(opaqueBackendFailure);
+    }
+
+    @Test
     void resolveFrameScopeProbesExactlyOnceWhenNothingMatchesRatherThanRetrying() {
         ILocatorEngine engine = mock(ILocatorEngine.class);
         LocatorContext context = pageContext();
