@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -29,19 +30,22 @@ import org.junit.jupiter.api.Test;
  * (headers) is large enough to comfortably exceed both that buffer and typical default socket
  * buffers, so the client's write call genuinely blocks on backpressure rather than merely buffering
  * locally - a real, not simulated, write stall.
+ *
+ * <p>The real fixture binds only the IPv4 loopback ({@code 127.0.0.1}) - the one loopback address
+ * guaranteed bindable without host configuration on every platform this suite runs on, unlike a
+ * second {@code 127.0.0.x} alias, which macOS (unlike Linux) does not treat as local without an
+ * explicit interface alias. The second pinned address, which must never be contacted at all, is
+ * never bound to anything: a connector routes any connect attempt for it straight to a counter
+ * instead of the network.
  */
 class PinnedSocketHttpTransportWriteDeadlineTest {
 
     @Test
     void aWriteThatCannotCompleteIsBoundedByTheSharedDeadlineAndNeverRetried() throws Exception {
-        InetAddress firstAddress = InetAddress.getByName("127.0.0.2");
-        InetAddress secondAddress = InetAddress.getByName("127.0.0.3");
-        try (NeverReadingServer first = NeverReadingServer.bindingTo(firstAddress, 0);
-                CountingHealthyServer second =
-                        CountingHealthyServer.bindingTo(
-                                secondAddress,
-                                first.port(),
-                                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")) {
+        InetAddress firstAddress = InetAddress.getByName("127.0.0.1");
+        InetAddress secondAddress = InetAddress.getByName("127.0.0.2");
+        AtomicInteger secondAddressAttempts = new AtomicInteger();
+        try (NeverReadingServer first = NeverReadingServer.bindingTo(firstAddress, 0)) {
             Duration timeout = Duration.ofMillis(400);
             URI uri = URI.create("http://pinned.example.test:" + first.port() + "/");
             HttpFetchRequest request = new HttpFetchRequest(uri, timeout, largeHeaders(), 1_000);
@@ -50,12 +54,27 @@ class PinnedSocketHttpTransportWriteDeadlineTest {
                             "pinned.example.test",
                             first.port(),
                             List.of(firstAddress, secondAddress));
+            PinnedSocketHttpTransport.ISocketConnector connector =
+                    (socket, address, timeoutMillis) -> {
+                        if (address.getAddress().equals(secondAddress)) {
+                            secondAddressAttempts.incrementAndGet();
+                            throw new IOException(
+                                    "must never be reached: the second pinned address must never"
+                                            + " be contacted");
+                        }
+                        socket.connect(address, timeoutMillis);
+                    };
 
             long startNanos = System.nanoTime();
 
             assertThatThrownBy(
                             () ->
-                                    new PinnedSocketHttpTransport(IMonotonicClock.systemClock())
+                                    new PinnedSocketHttpTransport(
+                                                    IMonotonicClock.systemClock(),
+                                                    (javax.net.ssl.SSLSocketFactory)
+                                                            javax.net.ssl.SSLSocketFactory
+                                                                    .getDefault(),
+                                                    connector)
                                             .fetch(request, pinned))
                     .isInstanceOf(HttpTimeoutException.class);
 
@@ -67,7 +86,7 @@ class PinnedSocketHttpTransportWriteDeadlineTest {
             assertThat(elapsed).isLessThan(Duration.ofSeconds(5));
             // The write-blocked attempt must never fall back to a second pinned address once
             // transmission may have started - address 2 is never contacted at all.
-            assertThat(second.acceptedConnectionCount()).isEqualTo(0);
+            assertThat(secondAddressAttempts.get()).isEqualTo(0);
         }
     }
 
@@ -130,51 +149,6 @@ class PinnedSocketHttpTransportWriteDeadlineTest {
             if (accepted != null) {
                 accepted.close();
             }
-        }
-    }
-
-    /** Accepts one connection, replies with a fixed response, and counts accepted connections. */
-    private static final class CountingHealthyServer implements AutoCloseable {
-        private final ServerSocket serverSocket;
-        private final Thread thread;
-        private final java.util.concurrent.atomic.AtomicInteger acceptedConnections =
-                new java.util.concurrent.atomic.AtomicInteger();
-
-        private CountingHealthyServer(ServerSocket serverSocket, byte[] response) {
-            this.serverSocket = serverSocket;
-            this.thread = new Thread(() -> serve(response));
-            this.thread.setDaemon(true);
-            this.thread.start();
-        }
-
-        static CountingHealthyServer bindingTo(InetAddress address, int port, String rawResponse)
-                throws IOException {
-            return new CountingHealthyServer(
-                    new ServerSocket(port, 1, address),
-                    rawResponse.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
-        }
-
-        int port() {
-            return serverSocket.getLocalPort();
-        }
-
-        int acceptedConnectionCount() {
-            return acceptedConnections.get();
-        }
-
-        private void serve(byte[] response) {
-            try (Socket client = serverSocket.accept()) {
-                acceptedConnections.incrementAndGet();
-                client.getOutputStream().write(response);
-                client.getOutputStream().flush();
-            } catch (IOException ignored) {
-                // Best-effort test server: never contacted at all on a write-timeout test.
-            }
-        }
-
-        @Override
-        public void close() throws IOException {
-            serverSocket.close();
         }
     }
 }

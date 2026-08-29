@@ -148,12 +148,14 @@ class PinnedSocketHttpTransportTest {
 
     @Test
     void triesTheNextPinnedAddressWhenTheFirstIsUnreachable() throws Exception {
-        // The entire 127.0.0.0/8 range is loopback, so 127.0.0.3 with nothing listening on it
-        // fails fast with connection-refused rather than hanging, while 127.0.0.2 hosts the real
-        // test server - both addresses share the exact same port, since the port always comes
-        // from the request URI and only the address is pinned/multi-valued.
-        InetAddress unreachable = InetAddress.getByName("127.0.0.3");
-        InetAddress serverAddress = InetAddress.getByName("127.0.0.2");
+        // The unreachable address is never bound to anything - the connector below simulates its
+        // connect() failing fast, exactly as a real unreachable loopback target would, without
+        // needing a second bindable/routable physical address. The real server binds only the
+        // IPv4 loopback, the one loopback address guaranteed bindable without host configuration
+        // on every platform this suite runs on: a second numbered 127.0.0.x alias binds without
+        // any setup on Linux, but not on macOS without an explicit interface alias.
+        InetAddress unreachable = InetAddress.getByName("127.0.0.2");
+        InetAddress serverAddress = InetAddress.getByName("127.0.0.1");
         try (TestHttpServer server =
                 TestHttpServer.respondingWithOn(
                         serverAddress, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")) {
@@ -165,9 +167,19 @@ class PinnedSocketHttpTransportTest {
                             "pinned.example.test",
                             server.port(),
                             List.of(unreachable, serverAddress));
+            PinnedSocketHttpTransport.ISocketConnector connector =
+                    (socket, address, timeoutMillis) -> {
+                        if (address.getAddress().equals(unreachable)) {
+                            throw new java.net.ConnectException("simulated connection refused");
+                        }
+                        socket.connect(address, timeoutMillis);
+                    };
 
             HttpFetchResult result =
-                    new PinnedSocketHttpTransport(IMonotonicClock.systemClock())
+                    new PinnedSocketHttpTransport(
+                                    IMonotonicClock.systemClock(),
+                                    (SSLSocketFactory) SSLSocketFactory.getDefault(),
+                                    connector)
                             .fetch(request, pinned);
 
             assertThat(result.statusCode()).isEqualTo(200);
