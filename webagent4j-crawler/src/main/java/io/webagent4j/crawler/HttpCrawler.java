@@ -276,10 +276,14 @@ public final class HttpCrawler implements ICrawler {
             try {
                 html = new String(response.body(), charset);
             } catch (RuntimeException malformed) {
+                // A fixed, safe classification - never the raw exception message, which could in
+                // principle echo attacker-controlled response bytes back into a caller-visible
+                // diagnostic. The real exception remains available in-process via the structured
+                // cause field below.
                 recordFailure(
                         task,
                         CrawlFailureType.INVALID_CONTENT,
-                        "could not decode response body: " + malformed.getMessage(),
+                        "response body could not be decoded as text",
                         finalUrl,
                         Optional.of(response.statusCode()),
                         Optional.of(malformed),
@@ -342,14 +346,16 @@ public final class HttpCrawler implements ICrawler {
             try {
                 normalizedCandidate = normalizer.normalize(link.resolvedUrl());
             } catch (IllegalArgumentException notNormalizable) {
+                // A fixed, safe classification - never the raw exception message. The link's own
+                // resolvedUrl() field already carries the structured URL a caller can inspect;
+                // this text is never the place a query string, userinfo, or fragment belongs.
                 DiscoveredLink rejected =
                         rejectedLink(
                                 link,
                                 Optional.empty(),
                                 CrawlDecision.reject(
                                         CrawlDecisionType.REJECT_URL_FILTER,
-                                        "could not be normalized: "
-                                                + notNormalizable.getMessage()));
+                                        "URL could not be normalized"));
                 rejectedUrls.add(rejected);
                 return rejected;
             }
@@ -584,13 +590,16 @@ public final class HttpCrawler implements ICrawler {
                     try {
                         target = normalizer.normalize(locationRaw.get());
                     } catch (IllegalArgumentException notNormalizable) {
+                        // A fixed, safe classification - never the raw exception message, which
+                        // could otherwise echo a redirect Location header's userinfo or query
+                        // text. The real exception is preserved in the structured cause field
+                        // below instead of being discarded.
                         return FetchOutcome.failure(
                                 CrawlFailureType.INVALID_REDIRECT,
-                                "redirect target could not be normalized: "
-                                        + notNormalizable.getMessage(),
+                                "redirect target could not be normalized",
                                 current,
                                 Optional.of(status),
-                                Optional.empty(),
+                                Optional.of(notNormalizable),
                                 attemptsMade,
                                 bytesRead,
                                 chain);
@@ -768,22 +777,38 @@ public final class HttpCrawler implements ICrawler {
                             tooLarge,
                             attempt,
                             bytesRead);
+                } catch (PinnedSocketHttpTransport.TransportInterruptedException interrupted) {
+                    // Interruption means "stop this operation," never "try again": never eligible
+                    // for retry regardless of retryOnIoException or remaining attempt budget,
+                    // unlike an ordinary IOException below. The interrupt flag was already
+                    // restored by the transport layer; nothing further to do here beyond
+                    // reporting a terminal, honestly-classified failure.
+                    return RetryOutcome.failure(
+                            CrawlFailureType.NETWORK,
+                            "network request was interrupted",
+                            interrupted,
+                            attempt,
+                            bytesRead);
                 } catch (IOException io) {
                     if (request.retryOnIoException() && attempt < policy.maxAttempts()) {
                         sleeper.sleep(policy.delayBeforeAttempt(attempt + 1));
                         attempt++;
                         continue;
                     }
+                    // A fixed, safe classification - never the raw exception message, which may
+                    // originate from a transport layer that has no reason to keep its own text
+                    // free of connection details, protocol lines, or other unsafe data. The real
+                    // exception is preserved in the structured cause field, not this text.
                     return RetryOutcome.failure(
                             CrawlFailureType.NETWORK,
-                            String.valueOf(io.getMessage()),
+                            "network request failed",
                             io,
                             attempt,
                             bytesRead);
                 } catch (RuntimeException opaque) {
                     return RetryOutcome.failure(
                             CrawlFailureType.BACKEND_FAILURE,
-                            String.valueOf(opaque.getMessage()),
+                            "backend request failed unexpectedly",
                             opaque,
                             attempt,
                             bytesRead);
@@ -817,6 +842,34 @@ public final class HttpCrawler implements ICrawler {
                                 CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
                                 "network destination could not be evaluated"));
             }
+            // A policy that also implements INetworkAddressAuthority is authorized through
+            // authorizeConnection() alone - never through a separate, preceding evaluate() call
+            // too. Each of those two calls would otherwise resolve this destination
+            // independently, so an ALLOW decision could rest on one DNS answer while the pinned
+            // address set a transport actually connects to came from a second, later resolution
+            // that a DNS-rebinding attacker had a real (if narrow) window to answer differently.
+            // authorizeConnection()'s own documented contract already applies every rule
+            // evaluate() would, so a present result here is exactly as authoritative as an
+            // ALLOW from evaluate() would have been, without the redundant second resolution.
+            if (networkPolicy.get() instanceof INetworkAddressAuthority authority) {
+                Optional<VerifiedNetworkAddresses> pinned;
+                try {
+                    pinned = authority.authorizeConnection(destination);
+                } catch (RuntimeException authorizationFailure) {
+                    return NetworkAuthorization.denied(
+                            new PolicyDenial(
+                                    CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
+                                    "network address authorization failed"));
+                }
+                if (pinned.isEmpty()) {
+                    return NetworkAuthorization.denied(
+                            new PolicyDenial(
+                                    CrawlFailureType.NETWORK_POLICY_DENIED,
+                                    "network destination denied or could not be re-confirmed for"
+                                            + " a pinned connection"));
+                }
+                return NetworkAuthorization.allowed(pinned);
+            }
             NetworkPolicyContext policyContext =
                     new NetworkPolicyContext(
                             NetworkRequestKind.HTTP_FETCH,
@@ -843,25 +896,6 @@ public final class HttpCrawler implements ICrawler {
                                 CrawlFailureType.NETWORK_POLICY_DENIED,
                                 "network destination denied by policy: "
                                         + decision.reason().code()));
-            }
-            if (networkPolicy.get() instanceof INetworkAddressAuthority authority) {
-                Optional<VerifiedNetworkAddresses> pinned;
-                try {
-                    pinned = authority.authorizeConnection(destination);
-                } catch (RuntimeException authorizationFailure) {
-                    return NetworkAuthorization.denied(
-                            new PolicyDenial(
-                                    CrawlFailureType.NETWORK_POLICY_EVALUATION_FAILED,
-                                    "network address authorization failed"));
-                }
-                if (pinned.isEmpty()) {
-                    return NetworkAuthorization.denied(
-                            new PolicyDenial(
-                                    CrawlFailureType.NETWORK_POLICY_DENIED,
-                                    "network destination could not be re-confirmed for a pinned"
-                                            + " connection"));
-                }
-                return NetworkAuthorization.allowed(pinned);
             }
             return NetworkAuthorization.allowed(Optional.empty());
         }

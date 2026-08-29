@@ -1,5 +1,6 @@
 package io.webagent4j.crawler;
 
+import io.webagent4j.policy.network.NetworkDestination;
 import io.webagent4j.policy.network.VerifiedNetworkAddresses;
 import io.webagent4j.wait.IMonotonicClock;
 import java.io.BufferedInputStream;
@@ -20,6 +21,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -54,6 +61,7 @@ final class PinnedSocketHttpTransport {
 
     private final IMonotonicClock clock;
     private final SSLSocketFactory sslSocketFactory;
+    private final ISocketConnector socketConnector;
 
     /**
      * Creates a transport that validates TLS certificates against the JVM's default trust store.
@@ -68,8 +76,34 @@ final class PinnedSocketHttpTransport {
      * specific test certificate, without touching any JVM-global trust configuration.
      */
     PinnedSocketHttpTransport(IMonotonicClock clock, SSLSocketFactory sslSocketFactory) {
+        this(clock, sslSocketFactory, Socket::connect);
+    }
+
+    /**
+     * Creates a transport connecting through {@code socketConnector} instead of a plain socket's
+     * own {@code connect} - the seam a test uses to make the connect phase itself block on a
+     * deterministic, test-controlled signal, since (unlike the TLS handshake, request write, or
+     * response read) a real, silently-dropped connect attempt gives no peer-observable event a test
+     * could otherwise synchronize on.
+     */
+    PinnedSocketHttpTransport(
+            IMonotonicClock clock,
+            SSLSocketFactory sslSocketFactory,
+            ISocketConnector socketConnector) {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.sslSocketFactory = Objects.requireNonNull(sslSocketFactory, "sslSocketFactory");
+        this.socketConnector = Objects.requireNonNull(socketConnector, "socketConnector");
+    }
+
+    /**
+     * The exact shape of {@link Socket#connect(java.net.SocketAddress, int)} - production code
+     * always uses that method itself ({@code Socket::connect}); a test substitutes a deterministic,
+     * controllable implementation instead.
+     */
+    @FunctionalInterface
+    interface ISocketConnector {
+        void connect(Socket socket, InetSocketAddress address, int timeoutMillis)
+                throws IOException;
     }
 
     HttpFetchResult fetch(HttpFetchRequest request, VerifiedNetworkAddresses pinnedAddresses)
@@ -84,6 +118,7 @@ final class PinnedSocketHttpTransport {
                 uri.getPort() != -1
                         ? uri.getPort()
                         : (tls ? HTTPS_DEFAULT_PORT : HTTP_DEFAULT_PORT);
+        requireVerifiedAuthorityMatchesRequest(tls ? "https" : "http", host, port, pinnedAddresses);
         String requestTarget = requestTarget(uri);
         requireSafeHeaderText(requestTarget, "request target");
         byte[] requestBytes = buildRequestBytes(request, host, port, tls, requestTarget);
@@ -112,12 +147,30 @@ final class PinnedSocketHttpTransport {
                 // pre-check timeout, matching java.net.http.HttpClient's own HttpTimeoutException
                 // contract HttpCrawler's retry logic already relies on; never tried against another
                 // pinned address once the deadline itself is genuinely exhausted.
-                HttpTimeoutException timeout =
-                        new HttpTimeoutException("Request to " + uri + " timed out");
+                HttpTimeoutException timeout = newTimeoutException();
                 timeout.initCause(socketTimeout);
                 throw timeout;
-            } catch (IOException failure) {
-                lastFailure = failure;
+            } catch (TransportInterruptedException interrupted) {
+                // Interruption means "stop this operation," never "try a different transport
+                // path": it is surfaced immediately as terminal, regardless of whether
+                // transmission may already have started - unlike an ordinary connectivity
+                // failure, a caller thread asking to stop is never a reason to keep going
+                // against a different pinned address.
+                throw interrupted;
+            } catch (PinnedAttemptFailure failure) {
+                if (failure.transmissionMayHaveStarted()) {
+                    // The peer may already have received some or all of the request bytes for
+                    // this attempt - falling back to a different pinned address here would risk
+                    // silently sending the same request a second time. This failure is surfaced
+                    // immediately instead, exactly as terminal as it would be for an unpinned,
+                    // single-address request.
+                    throw failure.original();
+                }
+                // Nothing was ever written to this address's socket, so no request has been
+                // observable to any peer yet - trying the next pinned address is the same
+                // single logical request choosing a different equally-authorized destination,
+                // never a second physical send of an already-attempted one.
+                lastFailure = failure.original();
             }
         }
         throw lastFailure;
@@ -133,18 +186,71 @@ final class PinnedSocketHttpTransport {
             Deadline deadline)
             throws IOException {
         Socket socket = new Socket();
+        boolean transmissionMayHaveStarted = false;
         try {
-            socket.connect(
-                    new InetSocketAddress(address, port),
-                    requireTimeBudget(deadline, request.uri()));
+            // Bounded the same way TLS/write/read already are, so an interruption while a
+            // connection attempt is still outstanding is observed and made terminal exactly like
+            // an interruption in any later phase, rather than sitting unnoticed until connect()
+            // itself eventually returns or times out on its own. connect()'s own int-timeout
+            // parameter still bounds the call as a second, harmless line of defense; both are
+            // derived from the same shared deadline, so neither ever grants a longer budget than
+            // the other.
+            Socket connectingSocket = socket;
+            InetSocketAddress socketAddress = new InetSocketAddress(address, port);
+            runBoundedOnDeadline(
+                    connectingSocket,
+                    deadline,
+                    () -> {
+                        socketConnector.connect(
+                                connectingSocket, socketAddress, requireTimeBudget(deadline));
+                        return null;
+                    });
             if (tls) {
-                socket = wrapTls(sslSocketFactory, socket, host, port, deadline, request.uri());
+                socket = wrapTls(sslSocketFactory, socket, host, port, deadline);
             }
-            socket.setSoTimeout(requireTimeBudget(deadline, request.uri()));
-            socket.getOutputStream().write(requestBytes);
-            socket.getOutputStream().flush();
+            socket.setSoTimeout(requireTimeBudget(deadline));
+            // Once the write below is attempted, a failure can never again prove the peer saw
+            // nothing: a partial write is indistinguishable from a complete one at this API
+            // level, and even a fully successful write only proves bytes reached the local
+            // socket buffer, not that the peer failed to act on them. Everything from here
+            // onward is therefore "may have been observed by the peer," never "definitely not
+            // sent" - see the REQUEST_STARTED boundary this flag models.
+            transmissionMayHaveStarted = true;
+            // A plain Socket exposes no write-side timeout: SO_TIMEOUT bounds only blocking
+            // reads, so a peer applying TCP receive-window backpressure could otherwise stall
+            // write()/flush() past the request's own deadline. Bounding this call itself closes
+            // that gap - see runBoundedOnDeadline.
+            Socket writingSocket = socket;
+            runBoundedOnDeadline(
+                    writingSocket,
+                    deadline,
+                    () -> {
+                        writingSocket.getOutputStream().write(requestBytes);
+                        writingSocket.getOutputStream().flush();
+                        return null;
+                    });
             InputStream in = new BufferedInputStream(socket.getInputStream());
-            return readResponse(in, request);
+            ReadState readState = new ReadState(in, socket, deadline);
+            // The whole response read is bounded by the same shared deadline and owned socket
+            // this call already uses for the write/handshake phases above: a caller thread
+            // interrupted while a response is still being read must stop this attempt exactly as
+            // terminally as an interruption during the write does, never merely wait out
+            // whatever per-read SO_TIMEOUT happens to be active at that moment.
+            Socket readingSocket = socket;
+            return runBoundedOnDeadline(
+                    readingSocket, deadline, () -> readResponse(readState, request));
+        } catch (HttpTimeoutException | java.net.SocketTimeoutException timeoutLike) {
+            // Handled one level up, identically regardless of phase - never wrapped as a
+            // PinnedAttemptFailure, since a deadline/socket timeout is already never retried
+            // against another address.
+            throw timeoutLike;
+        } catch (TransportInterruptedException interrupted) {
+            // Finalized here with the transmission-observability this call site actually knows -
+            // runBoundedOnDeadline itself has no visibility into whether the write phase has
+            // already run, only this method's own local tracking does.
+            throw interrupted.withTransmissionMayHaveStarted(transmissionMayHaveStarted);
+        } catch (IOException failure) {
+            throw new PinnedAttemptFailure(failure, transmissionMayHaveStarted);
         } finally {
             try {
                 socket.close();
@@ -154,13 +260,79 @@ final class PinnedSocketHttpTransport {
         }
     }
 
+    /**
+     * Internal-only signal from one pinned-address attempt distinguishing "definitely no request
+     * bytes were sent" from "the peer may already have observed this request" - the boundary that
+     * gates whether {@link #fetch} may retry against a different pinned address. Always unwrapped
+     * back to {@link #original()} before crossing this class's boundary, so a caller-visible
+     * exception type (for example {@link ResponseTooLargeException}) is never masked by this
+     * control-flow-only wrapper.
+     */
+    private static final class PinnedAttemptFailure extends IOException {
+        private final IOException original;
+        private final boolean transmissionMayHaveStarted;
+
+        PinnedAttemptFailure(IOException original, boolean transmissionMayHaveStarted) {
+            super(original.getMessage(), original);
+            this.original = original;
+            this.transmissionMayHaveStarted = transmissionMayHaveStarted;
+        }
+
+        IOException original() {
+            return original;
+        }
+
+        boolean transmissionMayHaveStarted() {
+            return transmissionMayHaveStarted;
+        }
+    }
+
+    /**
+     * Signals that a blocking network operation was interrupted before it could complete - a
+     * distinct, terminal outcome from an ordinary connectivity failure. Interruption means "stop
+     * this operation," never "try a different transport path": this type is never wrapped as a
+     * {@link PinnedAttemptFailure} and is never eligible for a pinned-address fallback or a
+     * crawler-level retry, regardless of {@link #transmissionMayHaveStarted()}.
+     *
+     * <p>{@link #transmissionMayHaveStarted()} preserves the same truthfulness an ordinary attempt
+     * failure already tracks: once a physical request may have reached the peer, this reports
+     * {@code true} so a caller downstream never claims certainty that the request's side effect did
+     * not happen, purely because the local thread stopped waiting for a response.
+     */
+    static final class TransportInterruptedException extends IOException {
+        private final boolean transmissionMayHaveStarted;
+
+        /**
+         * Creates an instance whose caller does not yet know whether transmission may have started;
+         * a caller with that ambient knowledge (such as {@link #attempt}) is expected to
+         * immediately reclassify it via {@link #withTransmissionMayHaveStarted(boolean)}.
+         */
+        TransportInterruptedException(InterruptedException cause) {
+            this(false, cause);
+        }
+
+        TransportInterruptedException(
+                boolean transmissionMayHaveStarted, InterruptedException cause) {
+            super("blocking network operation interrupted", cause);
+            this.transmissionMayHaveStarted = transmissionMayHaveStarted;
+        }
+
+        boolean transmissionMayHaveStarted() {
+            return transmissionMayHaveStarted;
+        }
+
+        /**
+         * Returns an equivalent exception carrying {@code value} as {@link
+         * #transmissionMayHaveStarted()} - used by a caller (such as {@link #attempt}) that knows
+         * the ambient transmission state this exception's own origin point did not.
+         */
+        TransportInterruptedException withTransmissionMayHaveStarted(boolean value) {
+            return new TransportInterruptedException(value, (InterruptedException) getCause());
+        }
+    }
+
     private static SSLSocket wrapTls(
-            SSLSocketFactory factory,
-            Socket plainSocket,
-            String host,
-            int port,
-            Deadline deadline,
-            URI uri)
+            SSLSocketFactory factory, Socket plainSocket, String host, int port, Deadline deadline)
             throws IOException {
         SSLSocket tlsSocket = (SSLSocket) factory.createSocket(plainSocket, host, port, true);
         SSLParameters parameters = tlsSocket.getSSLParameters();
@@ -175,23 +347,110 @@ final class PinnedSocketHttpTransport {
             // still verifies the certificate against `host`.
         }
         tlsSocket.setSSLParameters(parameters);
-        tlsSocket.setSoTimeout(requireTimeBudget(deadline, uri));
-        tlsSocket.startHandshake();
+        tlsSocket.setSoTimeout(requireTimeBudget(deadline));
+        // The handshake itself writes (ClientHello and later flights) as well as reads; SO_TIMEOUT
+        // bounds only the read side, so this is bounded the same way the request write is.
+        runBoundedOnDeadline(
+                tlsSocket,
+                deadline,
+                () -> {
+                    tlsSocket.startHandshake();
+                    return null;
+                });
         return tlsSocket;
     }
 
-    private static RawResponse readResponse(InputStream in, HttpFetchRequest request)
+    /**
+     * Runs one blocking socket operation - connecting, a TLS handshake, a request write, or a
+     * response read - under the same shared monotonic deadline every other phase of this fetch
+     * already uses, closing two gaps a plain blocking call otherwise leaves open: {@code
+     * Socket#setSoTimeout} bounds only blocking reads, never writes, so a peer applying TCP
+     * receive-window backpressure could otherwise stall a write call arbitrarily far past this
+     * request's real deadline; and neither a plain {@code Socket#connect} nor a blocking read is
+     * interruptible on its own, so without this wrapper an interrupted caller thread would not
+     * observe that interruption until the underlying call happened to return on its own.
+     *
+     * <p>{@code task} runs on a dedicated virtual thread owned entirely by this call: if it does
+     * not complete within the deadline's remaining budget, {@code socket} is closed to force it to
+     * unblock (a blocked read or write on a closed socket fails promptly), and a {@link
+     * HttpTimeoutException} is thrown - identical in every caller-visible respect to a timeout from
+     * any other phase, including never being retried against another pinned address. The executor
+     * is scoped to this one call (try-with-resources) and is not returned or retained, so no
+     * background work outlives this method: either the task already finished before the timeout
+     * fires, or the forced socket close unblocks it immediately afterward, so the executor's own
+     * close() - which waits for the task to finish - never waits on a still-live blocking
+     * operation.
+     *
+     * <p>An interruption of the calling thread while it waits on {@link Future#get(long, TimeUnit)}
+     * is handled distinctly from an ordinary timeout or I/O failure: it is reported as a {@link
+     * TransportInterruptedException}, the interrupt flag is restored on this thread, the
+     * still-running task is both cancelled and force-unblocked by closing {@code socket} (closure
+     * is the mechanism that actually unblocks a plain blocking socket call; cancellation alone
+     * cannot), and the caller must treat it as terminal - never retried against another pinned
+     * address, never reinterpreted as a transient network failure.
+     */
+    static <T> T runBoundedOnDeadline(Socket socket, Deadline deadline, IOSupplier<T> task)
             throws IOException {
-        String statusLine = readLine(in, MAX_STATUS_LINE_LENGTH);
+        int remainingMillis = requireTimeBudget(deadline);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<T> future = executor.submit(task::get);
+            try {
+                return future.get(remainingMillis, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException expired) {
+                future.cancel(true);
+                closeQuietly(socket);
+                HttpTimeoutException timeout = newTimeoutException();
+                timeout.initCause(expired);
+                throw timeout;
+            } catch (ExecutionException wrapped) {
+                Throwable cause = wrapped.getCause();
+                if (cause instanceof IOException ioFailure) {
+                    throw ioFailure;
+                }
+                if (cause instanceof RuntimeException runtimeFailure) {
+                    throw runtimeFailure;
+                }
+                if (cause instanceof Error error) {
+                    throw error;
+                }
+                throw new IOException("Blocking socket operation failed", cause);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                future.cancel(true);
+                closeQuietly(socket);
+                throw new TransportInterruptedException(interrupted);
+            }
+        }
+    }
+
+    private static void closeQuietly(Socket socket) {
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // Best-effort: the only purpose here is unblocking the operation racing this close.
+        }
+    }
+
+    @FunctionalInterface
+    interface IOSupplier<T> {
+        T get() throws IOException;
+    }
+
+    static RawResponse readResponse(ReadState state, HttpFetchRequest request) throws IOException {
+        // The response text below (status line, headers, chunk sizes) is entirely
+        // attacker-controlled - it comes verbatim from whatever the connected peer chose to
+        // send. None of it is ever embedded in an exception message; every failure here uses a
+        // fixed, safe classification instead.
+        String statusLine = readLine(state, MAX_STATUS_LINE_LENGTH);
         if (statusLine == null || statusLine.isEmpty()) {
-            throw new IOException("Empty response from " + request.uri());
+            throw new IOException("empty HTTP response");
         }
         if (!statusLine.startsWith("HTTP/1.")) {
-            throw new IOException("Unsupported HTTP response line: " + statusLine);
+            throw new IOException("unsupported HTTP response version");
         }
         int firstSpace = statusLine.indexOf(' ');
         if (firstSpace < 0) {
-            throw new IOException("Malformed status line: " + statusLine);
+            throw new IOException("malformed HTTP status line");
         }
         int secondSpace = statusLine.indexOf(' ', firstSpace + 1);
         String statusCodeText =
@@ -202,7 +461,7 @@ final class PinnedSocketHttpTransport {
         try {
             statusCode = Integer.parseInt(statusCodeText.trim());
         } catch (NumberFormatException malformed) {
-            throw new IOException("Malformed status code: " + statusLine);
+            throw new IOException("malformed HTTP status code");
         }
 
         Map<String, List<String>> headers = new LinkedHashMap<>();
@@ -211,7 +470,7 @@ final class PinnedSocketHttpTransport {
                 throw new IOException(
                         "Response carried more than " + MAX_HEADER_COUNT + " headers");
             }
-            String line = readLine(in, MAX_HEADER_LINE_LENGTH);
+            String line = readLine(state, MAX_HEADER_LINE_LENGTH);
             if (line == null) {
                 throw new IOException("Connection closed while reading response headers");
             }
@@ -220,20 +479,20 @@ final class PinnedSocketHttpTransport {
             }
             int colon = line.indexOf(':');
             if (colon <= 0) {
-                throw new IOException("Malformed response header: " + line);
+                throw new IOException("malformed HTTP response header");
             }
             String name = line.substring(0, colon).trim();
             String value = line.substring(colon + 1).trim();
             headers.computeIfAbsent(name, key -> new ArrayList<>()).add(value);
         }
 
-        byte[] body = readBody(in, headers, statusCode, request);
+        byte[] body = readBody(state, headers, statusCode, request);
         String contentType = firstHeaderIgnoreCase(headers, "Content-Type").orElse("");
         return new RawResponse(statusCode, headers, body, contentType);
     }
 
     private static byte[] readBody(
-            InputStream in,
+            ReadState state,
             Map<String, List<String>> headers,
             int statusCode,
             HttpFetchRequest request)
@@ -244,7 +503,7 @@ final class PinnedSocketHttpTransport {
         Optional<String> transferEncoding = firstHeaderIgnoreCase(headers, "Transfer-Encoding");
         if (transferEncoding.isPresent()
                 && transferEncoding.get().toLowerCase(Locale.ROOT).contains("chunked")) {
-            return readChunkedBody(in, request);
+            return readChunkedBody(state, request);
         }
         Optional<String> contentLengthHeader = firstHeaderIgnoreCase(headers, "Content-Length");
         if (contentLengthHeader.isPresent()) {
@@ -252,25 +511,25 @@ final class PinnedSocketHttpTransport {
             try {
                 contentLength = Long.parseLong(contentLengthHeader.get().trim());
             } catch (NumberFormatException malformed) {
-                throw new IOException("Malformed Content-Length: " + contentLengthHeader.get());
+                throw new IOException("malformed HTTP Content-Length header");
             }
             if (contentLength < 0) {
-                throw new IOException("Negative Content-Length: " + contentLength);
+                throw new IOException("negative HTTP Content-Length header");
             }
             if (contentLength > request.maxResponseBytes()) {
                 throw new ResponseTooLargeException(request.uri(), request.maxResponseBytes());
             }
-            return readExactly(in, contentLength);
+            return readExactly(state, contentLength);
         }
-        return readUntilEofBounded(in, request);
+        return readUntilEofBounded(state, request);
     }
 
-    private static byte[] readChunkedBody(InputStream in, HttpFetchRequest request)
+    private static byte[] readChunkedBody(ReadState state, HttpFetchRequest request)
             throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         long total = 0;
         while (true) {
-            String sizeLine = readLine(in, MAX_HEADER_LINE_LENGTH);
+            String sizeLine = readLine(state, MAX_HEADER_LINE_LENGTH);
             if (sizeLine == null) {
                 throw new IOException("Connection closed while reading a chunk size");
             }
@@ -280,14 +539,14 @@ final class PinnedSocketHttpTransport {
             try {
                 chunkSize = Long.parseLong(sizeText, 16);
             } catch (NumberFormatException malformed) {
-                throw new IOException("Malformed chunk size: " + sizeLine);
+                throw new IOException("malformed HTTP chunk size");
             }
             if (chunkSize < 0) {
-                throw new IOException("Negative chunk size: " + sizeLine);
+                throw new IOException("negative HTTP chunk size");
             }
             if (chunkSize == 0) {
                 while (true) {
-                    String trailer = readLine(in, MAX_HEADER_LINE_LENGTH);
+                    String trailer = readLine(state, MAX_HEADER_LINE_LENGTH);
                     if (trailer == null) {
                         throw new IOException("Connection closed while reading chunk trailers");
                     }
@@ -301,8 +560,8 @@ final class PinnedSocketHttpTransport {
             if (total > request.maxResponseBytes()) {
                 throw new ResponseTooLargeException(request.uri(), request.maxResponseBytes());
             }
-            buffer.write(readExactly(in, chunkSize));
-            String terminator = readLine(in, 2);
+            buffer.write(readExactly(state, chunkSize));
+            String terminator = readLine(state, 2);
             if (terminator == null || !terminator.isEmpty()) {
                 throw new IOException("Malformed chunk terminator");
             }
@@ -310,14 +569,20 @@ final class PinnedSocketHttpTransport {
         return buffer.toByteArray();
     }
 
-    private static byte[] readExactly(InputStream in, long length) throws IOException {
+    private static byte[] readExactly(ReadState state, long length) throws IOException {
         ByteArrayOutputStream buffer =
                 new ByteArrayOutputStream((int) Math.min(length, READ_CHUNK_SIZE));
         byte[] chunk = new byte[READ_CHUNK_SIZE];
         long remaining = length;
         while (remaining > 0) {
             int toRead = (int) Math.min(chunk.length, remaining);
-            int read = in.read(chunk, 0, toRead);
+            // Re-derived from the shared deadline before every blocking read, never the fixed
+            // per-call SO_TIMEOUT set once at the start of the response: a slow peer that
+            // trickles bytes just under that fixed timeout could otherwise keep resetting its
+            // own clock indefinitely, letting one logical response read run far longer than the
+            // action's overall shared budget.
+            state.refreshTimeout();
+            int read = state.in().read(chunk, 0, toRead);
             if (read < 0) {
                 throw new IOException("Connection closed before Content-Length bytes were read");
             }
@@ -327,13 +592,18 @@ final class PinnedSocketHttpTransport {
         return buffer.toByteArray();
     }
 
-    private static byte[] readUntilEofBounded(InputStream in, HttpFetchRequest request)
+    private static byte[] readUntilEofBounded(ReadState state, HttpFetchRequest request)
             throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         byte[] chunk = new byte[READ_CHUNK_SIZE];
         long total = 0;
         int read;
-        while ((read = in.read(chunk)) >= 0) {
+        while (true) {
+            state.refreshTimeout();
+            read = state.in().read(chunk);
+            if (read < 0) {
+                break;
+            }
             total += read;
             if (total > request.maxResponseBytes()) {
                 throw new ResponseTooLargeException(request.uri(), request.maxResponseBytes());
@@ -343,11 +613,21 @@ final class PinnedSocketHttpTransport {
         return buffer.toByteArray();
     }
 
-    private static String readLine(InputStream in, int maxLength) throws IOException {
+    private static String readLine(ReadState state, int maxLength) throws IOException {
         ByteArrayOutputStream line = new ByteArrayOutputStream();
         int previous = -1;
         int current;
-        while ((current = in.read()) >= 0) {
+        while (true) {
+            // Refreshed before every single byte, not just once per line: SO_TIMEOUT bounds one
+            // blocking read call, not the cumulative time spent reading a whole line, so a peer
+            // trickling one byte at a time - each individual read() call comfortably inside the
+            // per-call timeout - could otherwise stall a single line arbitrarily far past the
+            // request's overall shared deadline.
+            state.refreshTimeout();
+            current = state.in().read();
+            if (current < 0) {
+                break;
+            }
             if (previous == '\r' && current == '\n') {
                 byte[] bytes = line.toByteArray();
                 return new String(bytes, 0, bytes.length - 1, StandardCharsets.ISO_8859_1);
@@ -362,6 +642,31 @@ final class PinnedSocketHttpTransport {
             return null;
         }
         throw new IOException("Connection closed before a complete line was received");
+    }
+
+    /**
+     * Bundles the response {@link InputStream} with everything needed to re-derive and re-apply the
+     * socket's blocking-read timeout from the one shared action deadline before every individual
+     * blocking read - never a fixed timeout computed once at the start of the response and then
+     * left to apply, unchanged, to however many further blocking reads the response happens to
+     * require.
+     */
+    record ReadState(InputStream in, Socket socket, Deadline deadline) {
+        /**
+         * Re-derives the remaining deadline budget and applies it as this socket's blocking-read
+         * timeout - a deadline-sensitive blocking read may only begin once that has actually been
+         * installed. If installing it fails, this fails closed by throwing before the caller's next
+         * read: an unenforced timeout is never treated as an acceptable substitute for one that was
+         * never successfully applied, and the caller must not assume anything about what an
+         * unbounded read might do.
+         */
+        void refreshTimeout() throws IOException {
+            try {
+                socket.setSoTimeout(requireTimeBudget(deadline));
+            } catch (java.net.SocketException failure) {
+                throw new IOException("failed to apply the remaining request deadline", failure);
+            }
+        }
     }
 
     private static Optional<String> firstHeaderIgnoreCase(
@@ -419,7 +724,7 @@ final class PinnedSocketHttpTransport {
     private static boolean tlsForScheme(URI uri) throws IOException {
         String scheme = uri.getScheme();
         if (scheme == null) {
-            throw new IOException("Request URI has no scheme: " + uri);
+            throw new IOException("request URI has no scheme");
         }
         return switch (scheme.toLowerCase(Locale.ROOT)) {
             case "https" -> true;
@@ -429,10 +734,46 @@ final class PinnedSocketHttpTransport {
         };
     }
 
+    /**
+     * Verifies that the exact host and port this request is about to connect to are the same host
+     * and port {@code pinnedAddresses} was authorized for - using {@link NetworkDestination}'s own
+     * canonicalization and default-port rules, the identical ones a network policy already applied
+     * when it produced {@code pinnedAddresses}, rather than a second, independently written
+     * comparison that could silently drift out of agreement with it over time.
+     *
+     * <p>The already-resolved physical IP addresses being reachable is never sufficient on its own:
+     * a hostname mismatch is rejected here even when every pinned address happens to also be
+     * reachable under the requested host's own resolution, since authority identity is the
+     * hostname/port pair a policy actually reasoned about, never merely "some IP that responds."
+     * Every parameter here has already been validated non-blank/in-range by this method's own
+     * caller and by {@link VerifiedNetworkAddresses}'s constructor respectively, so a mismatch
+     * exception from constructing either side would indicate a defect in this class rather than
+     * caller input - defensive only, not a normally reachable path.
+     */
+    private static void requireVerifiedAuthorityMatchesRequest(
+            String scheme, String requestedHost, int requestedPort, VerifiedNetworkAddresses pinned)
+            throws IOException {
+        NetworkDestination requested;
+        NetworkDestination verified;
+        try {
+            requested = new NetworkDestination(scheme, requestedHost, requestedPort, false);
+            verified = new NetworkDestination(scheme, pinned.host(), pinned.port(), false);
+        } catch (RuntimeException malformed) {
+            throw new IOException("Network authority could not be evaluated for this request");
+        }
+        if (!requested.host().equals(verified.host()) || requested.port() != verified.port()) {
+            // Never includes the actual host/port values here: this is a security-relevant
+            // mismatch, not an ordinary connectivity failure, and the safe diagnostics rule this
+            // codebase applies elsewhere to policy denials applies here too.
+            throw new IOException(
+                    "Requested network authority does not match the verified, pinned authority");
+        }
+    }
+
     private static String requireHost(URI uri) throws IOException {
         String host = uri.getHost();
         if (host == null || host.isBlank()) {
-            throw new IOException("Request URI has no host: " + uri);
+            throw new IOException("request URI has no host");
         }
         return host;
     }
@@ -446,18 +787,36 @@ final class PinnedSocketHttpTransport {
         return query == null ? path : path + "?" + query;
     }
 
-    private static int requireTimeBudget(Deadline deadline, URI uri) throws HttpTimeoutException {
+    static int requireTimeBudget(Deadline deadline) throws HttpTimeoutException {
         int remaining = deadline.remainingMillis();
         if (remaining <= 0) {
-            throw new HttpTimeoutException("Request to " + uri + " timed out");
+            throw newTimeoutException();
         }
         return remaining;
     }
 
-    private record RawResponse(
+    /**
+     * A fixed, safe {@link HttpTimeoutException} carrying no request-specific text at all - in
+     * particular, never the request URI, which may carry userinfo (a password), query parameters,
+     * or a fragment that must never appear in a caller-visible diagnostic message. This transport
+     * can be called directly by code outside {@link HttpCrawler}, which already renders its own
+     * fixed "request timed out" text rather than this exception's message; a caller reading {@link
+     * Throwable#getMessage()} straight off this exception must see the same safe text.
+     */
+    private static HttpTimeoutException newTimeoutException() {
+        return new HttpTimeoutException("request timed out");
+    }
+
+    record RawResponse(
             int statusCode, Map<String, List<String>> headers, byte[] body, String contentType) {}
 
-    private static final class Deadline {
+    /**
+     * One shared monotonic deadline for an entire fetch attempt, derived once from an injected
+     * {@link IMonotonicClock} - never re-derived from a fresh {@code Instant.now()}-style call - so
+     * a fake clock can deterministically simulate budget already having been partially or fully
+     * consumed without any real wall-clock waiting.
+     */
+    static final class Deadline {
         private final IMonotonicClock clock;
         private final long deadlineNanos;
 

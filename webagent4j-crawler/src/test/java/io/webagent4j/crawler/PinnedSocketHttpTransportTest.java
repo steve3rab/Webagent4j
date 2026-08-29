@@ -108,6 +108,45 @@ class PinnedSocketHttpTransportTest {
     }
 
     @Test
+    void aMalformedResponseHeaderNeverLeaksItsRawTextIntoTheExceptionMessage() throws Exception {
+        // DG: the response text is entirely attacker/peer-controlled - a malformed header line
+        // carrying a secret-shaped marker must never have that marker echoed back into the
+        // exception this transport raises.
+        String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_582719";
+        try (TestHttpServer server =
+                TestHttpServer.respondingWith(
+                        "HTTP/1.1 200 OK\r\nX-No-Colon-Header-"
+                                + diagnosticSentinel
+                                + "\r\n\r\n")) {
+            assertThatThrownBy(
+                            () -> fetch(server.port(), "/", Map.of(), 1_000, Duration.ofSeconds(5)))
+                    .isInstanceOf(IOException.class)
+                    .satisfies(
+                            exception ->
+                                    assertThat(exception.getMessage())
+                                            .doesNotContain(diagnosticSentinel));
+        }
+    }
+
+    @Test
+    void aMalformedChunkSizeNeverLeaksItsRawTextIntoTheExceptionMessage() throws Exception {
+        String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_582719";
+        try (TestHttpServer server =
+                TestHttpServer.respondingWith(
+                        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                + diagnosticSentinel
+                                + "\r\n")) {
+            assertThatThrownBy(
+                            () -> fetch(server.port(), "/", Map.of(), 1_000, Duration.ofSeconds(5)))
+                    .isInstanceOf(IOException.class)
+                    .satisfies(
+                            exception ->
+                                    assertThat(exception.getMessage())
+                                            .doesNotContain(diagnosticSentinel));
+        }
+    }
+
+    @Test
     void triesTheNextPinnedAddressWhenTheFirstIsUnreachable() throws Exception {
         // The entire 127.0.0.0/8 range is loopback, so 127.0.0.3 with nothing listening on it
         // fails fast with connection-refused rather than hanging, while 127.0.0.2 hosts the real
@@ -174,6 +213,68 @@ class PinnedSocketHttpTransportTest {
                                             1_000,
                                             Duration.ofMillis(300)))
                     .isInstanceOf(HttpTimeoutException.class);
+        }
+    }
+
+    @Test
+    void timeoutDiag001ATimeoutExceptionNeverLeaksTheRequestUriOrItsSensitiveComponents()
+            throws Exception {
+        // TIMEOUT-DIAG-001: a URI carrying userinfo (a password), a query parameter, and a
+        // fragment - none of which is ever transmitted on the wire, but all of which the raw
+        // java.net.URI object itself still carries - must never appear in a timeout exception's
+        // message. The old "Request to " + uri + " timed out" pattern would have leaked all
+        // three; this transport must never depend on that request-identifying context to explain
+        // a timeout, since it can be called directly by any caller, not just HttpCrawler (which
+        // separately already renders its own fixed "request timed out" text rather than reading
+        // this exception's message).
+        String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_582719";
+        try (ServerSocket serverSocket =
+                ServerSocketFactory.getDefault()
+                        .createServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            Thread acceptor =
+                    new Thread(
+                            () -> {
+                                try (Socket ignored = serverSocket.accept()) {
+                                    Thread.sleep(Duration.ofSeconds(10).toMillis());
+                                } catch (Exception ignored) {
+                                    // test server best-effort
+                                }
+                            });
+            acceptor.setDaemon(true);
+            acceptor.start();
+
+            URI uri =
+                    URI.create(
+                            "http://user:"
+                                    + diagnosticSentinel
+                                    + "@pinned.example.test:"
+                                    + serverSocket.getLocalPort()
+                                    + "/path?token="
+                                    + diagnosticSentinel
+                                    + "#"
+                                    + diagnosticSentinel);
+            HttpFetchRequest request =
+                    new HttpFetchRequest(uri, Duration.ofMillis(300), Map.of(), 1_000);
+            VerifiedNetworkAddresses pinned =
+                    new VerifiedNetworkAddresses(
+                            "pinned.example.test",
+                            serverSocket.getLocalPort(),
+                            List.of(loopback()));
+
+            assertThatThrownBy(
+                            () ->
+                                    new PinnedSocketHttpTransport(IMonotonicClock.systemClock())
+                                            .fetch(request, pinned))
+                    .isInstanceOf(HttpTimeoutException.class)
+                    .satisfies(
+                            exception -> {
+                                String message = exception.getMessage();
+                                assertThat(message).doesNotContain(diagnosticSentinel);
+                                assertThat(message).doesNotContain("user:");
+                                assertThat(message).doesNotContain("?token=");
+                                assertThat(message).doesNotContain("#");
+                                assertThat(message).doesNotContain(uri.toString());
+                            });
         }
     }
 

@@ -402,8 +402,20 @@ final class ActionExecutor {
         IElement executionTarget = target;
         boolean disposeExecutionTarget = false;
         if (config.actionPolicy().isPresent() && target != null) {
-            Optional<IElement> verified = target.verifiedForExecution();
-            if (verified.isEmpty()) {
+            // verifiedForExecution() is a backend extension point, not framework-owned code: a
+            // RuntimeException it throws, or an outright null in place of Optional (a malformed
+            // implementation violating the interface contract), must fail exactly as closed as an
+            // explicit Optional.empty() - never escape this pipeline as a raw, unstructured
+            // exception, and never let inability to prove identity become permission by accident.
+            Optional<IElement> verified;
+            RuntimeException verificationFailure = null;
+            try {
+                verified = target.verifiedForExecution();
+            } catch (RuntimeException failure) {
+                verified = null;
+                verificationFailure = failure;
+            }
+            if (verified == null || verified.isEmpty()) {
                 events.add(
                         event(
                                 actionId,
@@ -433,10 +445,57 @@ final class ActionExecutor {
                         ActionStatus.EXECUTION_FAILED,
                         "The action target could not be proven unchanged immediately before"
                                 + " backend execution",
-                        null);
+                        verificationFailure);
             }
             executionTarget = verified.get();
             disposeExecutionTarget = true;
+
+            // Re-verification itself can consume real time (a remote or expensive identity
+            // check), so the budget/interrupt state proven valid immediately before calling
+            // verifiedForExecution() is not necessarily still valid immediately after it
+            // returns. This second check is what closes that window: expiring or being
+            // interrupted during verification must fail exactly as closed as expiring before it
+            // started, never silently spend the (possibly already negative) remaining budget on
+            // the backend call anyway.
+            if (budget.expired() || Thread.currentThread().isInterrupted()) {
+                boolean interrupted = !budget.expired() && Thread.currentThread().isInterrupted();
+                disposeQuietly(executionTarget);
+                events.add(
+                        event(
+                                actionId,
+                                command,
+                                ActionStage.ACTION_FAILED,
+                                interrupted
+                                        ? "interrupted-after-target-verification"
+                                        : "budget-expired-after-target-verification",
+                                targetDescription,
+                                startedNanos));
+                return failed(
+                        context,
+                        command,
+                        config,
+                        actionId,
+                        startedNanos,
+                        events,
+                        resolutionDuration,
+                        preconditionDuration,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        preconditions,
+                        List.of(),
+                        before,
+                        target,
+                        "",
+                        interrupted ? ActionFailureType.INTERRUPTED : ActionFailureType.TIMEOUT,
+                        ActionExecutionMode.NOT_EXECUTED,
+                        interrupted ? ActionStatus.CANCELLED : ActionStatus.TIMEOUT,
+                        interrupted
+                                ? "Action was interrupted after target verification but before"
+                                        + " the backend action could be invoked"
+                                : "Action budget expired during target verification, before the"
+                                        + " backend action could be invoked",
+                        null);
+            }
         }
 
         R value;
@@ -474,13 +533,8 @@ final class ActionExecutor {
                     "Backend action execution failed",
                     failure);
         } finally {
-            if (disposeExecutionTarget && executionTarget instanceof AutoCloseable closeable) {
-                try {
-                    closeable.close();
-                } catch (Exception ignored) {
-                    // Best-effort cleanup only. Never replace the semantic result/failure of the
-                    // backend call.
-                }
+            if (disposeExecutionTarget) {
+                disposeQuietly(executionTarget);
             }
         }
         Duration executionDuration = elapsedSince(executionStartedNanos);
@@ -1554,6 +1608,21 @@ final class ActionExecutor {
                         || policy == ObservationCapturePolicy.ON_FAILURE
                 ? context.observe()
                 : null;
+    }
+
+    /**
+     * Best-effort resource release for a verified execution target that turned out not to be used
+     * for a backend call after all (budget expired or the thread was interrupted between
+     * verification and execution). Never replaces or masks the semantic result already decided.
+     */
+    private static void disposeQuietly(Object executionTarget) {
+        if (executionTarget instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception ignored) {
+                // Best-effort cleanup only.
+            }
+        }
     }
 
     private static String describe(IElement target) {

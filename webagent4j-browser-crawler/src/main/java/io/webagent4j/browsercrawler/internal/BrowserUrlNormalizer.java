@@ -33,7 +33,8 @@ public final class BrowserUrlNormalizer implements IUrlNormalizer {
     @Override
     public URI normalize(URI uri) {
         if (!uri.isAbsolute() || uri.getHost() == null) {
-            throw new IllegalArgumentException("uri must be absolute with a host: " + uri);
+            throw new IllegalArgumentException(
+                    "uri must be absolute with a host: " + safeDescription(uri));
         }
         String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
         String host = uri.getHost().toLowerCase(Locale.ROOT);
@@ -45,6 +46,17 @@ public final class BrowserUrlNormalizer implements IUrlNormalizer {
         String query = filteredQuery(uri.getRawQuery());
         String rebuilt = scheme + "://" + host + portSuffix + path + query;
         return URI.create(rebuilt).normalize();
+    }
+
+    /**
+     * Renders {@code scheme://host} only - never userinfo, path, query, or fragment, any of which
+     * could carry credentials or another sensitive token embedded in the URL a caller is trying to
+     * normalize.
+     */
+    private static String safeDescription(URI uri) {
+        String scheme = uri.getScheme() == null ? "(no scheme)" : uri.getScheme();
+        String host = uri.getHost() == null ? "(no host)" : uri.getHost();
+        return scheme + "://" + host;
     }
 
     private static String portSuffix(String scheme, int port) {

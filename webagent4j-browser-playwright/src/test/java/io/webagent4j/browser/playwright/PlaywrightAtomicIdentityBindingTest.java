@@ -1,6 +1,7 @@
 package io.webagent4j.browser.playwright;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -142,10 +143,15 @@ class PlaywrightAtomicIdentityBindingTest {
     }
 
     @Test
-    void noCapturedIdentityFallsBackToTheOrdinaryPathWithoutAnyExtraNativeCall() {
-        // An element that never captured an identity (an ungoverned resolution) has nothing to
-        // atomically defend, so this must stay a pure no-cost pass-through: no elementHandles()
-        // call, no identity script evaluation - exactly this backend's pre-existing behavior.
+    void noCapturedIdentityFailsClosedWithoutAnyExtraNativeCall() {
+        // An element that never captured an identity has no positive proof to offer for the
+        // exact-target governed-execution boundary - absence of the capability is never treated
+        // as proof that identity still holds, matching IElement#verifiedForExecution()'s own
+        // fail-closed default. This stays a pure no-cost check even so: no elementHandles() call,
+        // no identity script evaluation. Ungoverned actions are unaffected by this: the action
+        // pipeline never calls this method for an ungoverned resolution in the first place, so
+        // this only ever matters once a caller has explicitly opted into exact-target
+        // verification.
         Locator locator = mock(Locator.class);
         PlaywrightElement element =
                 new PlaywrightElement(
@@ -157,7 +163,32 @@ class PlaywrightAtomicIdentityBindingTest {
 
         Optional<IElement> verified = element.verifiedForExecution();
 
-        assertThat(verified).contains(element);
+        assertThat(verified).isEmpty();
+        verify(locator, never()).elementHandles();
+    }
+
+    @Test
+    void noCapturedIdentityMeansAGovernedCallerNeverReachesTheNativeSideEffect() {
+        // A governed caller (ActionExecutor) treats an empty verifiedForExecution() result as
+        // fail-closed and never invokes the backend at all. This proves that contract holds one
+        // layer down too: attempting to use the empty result the way a governed caller would -
+        // requiring it to be present before any native call - throws before any native operation,
+        // rather than silently proceeding on the original element.
+        Locator locator = mock(Locator.class);
+        PlaywrightElement element =
+                new PlaywrightElement(
+                        locator,
+                        ElementRole.BUTTON,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.defaults());
+        PlaywrightActionBackend backend =
+                new PlaywrightActionBackend(mock(Page.class), BrowserOptions.defaults());
+
+        assertThatThrownBy(() -> backend.click(element.verifiedForExecution().orElseThrow()))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+
+        verify(locator, never()).click();
         verify(locator, never()).elementHandles();
     }
 
