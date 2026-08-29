@@ -44,14 +44,19 @@ crawler's network destination before a request is sent, both built on a shared s
 (`ActionResult#decisionTrace()`). Default behavior is unchanged; nothing is governed unless a caller
 configures a policy. See [Governed execution](governed-execution.md).
 
-This is not a general SSRF firewall, DNS-rebinding defense, policy sandbox, or remote/LLM-assisted
-authorization layer - see that document's "What this is not" section.
+This is not a general SSRF firewall, a policy sandbox, or a remote/LLM-assisted authorization layer.
+It is also not a blanket DNS-rebinding defense: `HttpCrawler` closes the check-to-connect window only
+for the specific case where the configured network policy exposes `INetworkAddressAuthority` (the
+built-in declarative policy does; a fully custom policy does not unless it implements that capability
+too), and browser navigation has no equivalent transport-level seam at all - see that document's
+"What this is not" section for the precise scope.
 
 ## Post-1.0 candidates
 
 Governed execution above addresses the "stronger network policy" item below for the destinations
-this framework itself requests; full SSRF isolation, `robots.txt` support, broader browser
-robustness tiers, distributed crawling, additional observation/extraction capabilities, explicit
-persistence, and optional external decision-system/MCP adapters remain candidates.
+this framework itself requests; full SSRF isolation, `robots.txt` support, adversarial robustness
+qualification for Firefox and WebKit on operating systems beyond Linux, distributed crawling,
+additional observation/extraction capabilities, explicit persistence, and optional external
+decision-system/MCP adapters remain candidates.
 
 These are candidates only. None is implied by the 1.0 API contract, and any optional decision/AI layer must consume the same fail-closed public contracts rather than bypassing them.

@@ -14,7 +14,7 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 ## Browser and frame boundaries
 
 - Frame criteria are intentionally limited to supported `id`, `name`, `title`, and URL matching modes; there is no arbitrary frame CSS/XPath/fuzzy DSL.
-- Browser-engine implementation is broader than full robustness qualification. Chromium is the current release-gated engine; `develop` now contains nightly and release qualification infrastructure for Firefox and WebKit too, but neither is promoted to release-gated status pending observed exact-head evidence, and scheduled nightly activation additionally depends on the workflow reaching the repository's default branch. See [support-matrix.md](support-matrix.md).
+- Browser-engine implementation is broader than full robustness qualification in general, but for Chromium, Firefox, and WebKit specifically, exact-head evidence has observed all three passing the complete adversarial corpus together, and the release workflow gates every engine equally. That evidence is currently Linux-only: it does not establish any engine's qualification on Windows or macOS, since browser and operating-system qualification are independent axes. See [support-matrix.md](support-matrix.md#browser-and-robustness-qualification-by-operating-system).
 - Live browser objects are not generally thread-safe.
 
 ## Observation

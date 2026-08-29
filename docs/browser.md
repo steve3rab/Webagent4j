@@ -45,7 +45,7 @@ Evaluation is not a sandbox or a safe-data channel. Do not interpolate secrets o
 
 ## Browser types
 
-The Playwright adapter implements Chromium, Firefox, and WebKit launch paths. `develop` now contains nightly and release qualification infrastructure covering all three engines through this same public browser path, but only Chromium has actually been observed passing it, Firefox and WebKit are not yet release-gated, and scheduled nightly activation additionally depends on this workflow reaching the repository's default branch. See [Support matrix](support-matrix.md#browser-backend) before treating engine availability as equal qualification.
+The Playwright adapter implements Chromium, Firefox, and WebKit launch paths. `develop` carries nightly and release qualification infrastructure covering all three engines through this same public browser path, and exact-head evidence has observed all three passing the complete adversarial corpus together, on Linux; the release workflow gates every engine equally before publication. Engine qualification and operating-system qualification are independent axes, so this is not evidence that any given engine has been qualified on every operating system. See [Support matrix](support-matrix.md#browser-and-robustness-qualification-by-operating-system) for the exact current evidence.
 
 ## Provider discovery
 
