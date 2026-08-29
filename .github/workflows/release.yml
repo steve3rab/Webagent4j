@@ -18,12 +18,23 @@ name: Release
 # avoid ever silently adopting a concurrently created release, publish
 # instead runs an explicit, ID-addressed sequence
 # (.github/scripts/release-draft.sh): create a draft only after that
-# check passes, immediately re-scan the releases list to confirm this
-# run's draft is the only one for the tag, upload the verified assets to
-# that exact release id, publish Pages, then finalize that same exact
-# release id -- refusing if it is no longer a draft by then. Nothing here
-# ever searches "by tag" again once the release id is known, and nothing
-# here deletes, replaces, or moves a tag or a release automatically.
+# check passes, verify it by its exact id, then wait -- with a bounded,
+# read-only GET poll, never a retried POST -- for the separately
+# eventually-consistent releases list to confirm this run's draft is the
+# only one for the tag, upload the verified assets to that exact release
+# id, publish Pages, then finalize that same exact release id -- refusing
+# if it is no longer a draft by then. Nothing here ever searches "by tag"
+# again once the release id is known, and nothing here deletes, replaces,
+# or moves a tag or a release automatically.
+#
+# If a run fails partway through (for example: the draft was created but
+# the list-visibility wait exhausted its bounded window, or a later step
+# failed after that), this guard's refusal on any leftover release is
+# correct and is never relaxed here. Resuming that specific, already-
+# identified release is instead the job of the separate, manually
+# triggered release-recovery.yml, which requires exact release/commit/
+# source-run identity before touching anything and is never triggered by
+# a push.
 
 on:
   push:
@@ -260,8 +271,21 @@ jobs:
       pages: write
       id-token: write
 
+    # A per-tag group, not the workflow-wide "pages-publish" group this
+    # used before release-recovery.yml existed: release-recovery.yml's
+    # recover job uses the same "release-<tag>" formula (derived from
+    # inputs.tag there, from github.ref_name here), so a normal publish
+    # and a manually triggered recovery run can never mutate the *same*
+    # tag's release concurrently, while two different tags' publishes no
+    # longer serialize against each other. The narrowed scope is a
+    # deliberate tradeoff: publish-pages-state.sh's single gh-pages push
+    # already fails closed (not silently) on a losing race, and two tags
+    # being published at literally the same moment is an exceptionally
+    # rare, human-triggered event -- accepting that narrow edge is what
+    # makes the explicit per-tag exclusivity recovery depends on possible
+    # with GitHub Actions' one-concurrency-group-per-job limit.
     concurrency:
-      group: pages-publish
+      group: release-${{ github.ref_name }}
       cancel-in-progress: false
 
     environment:
