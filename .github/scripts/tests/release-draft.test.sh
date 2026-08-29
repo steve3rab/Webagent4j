@@ -12,6 +12,14 @@ release_draft_script="$script_dir/../release-draft.sh"
 failures=0
 cases_run=0
 
+# Deterministic tests must never sleep for real: the production default
+# (a few seconds) would make the bounded-polling test cases slow without
+# adding any coverage. Attempt count stays generous enough that VIS-002
+# (several empty scans before success) and POST-001 have room to exercise
+# more than one retry within the budget.
+export RELEASE_VISIBILITY_MAX_ATTEMPTS=5
+export RELEASE_VISIBILITY_POLL_DELAY_SECONDS=0
+
 # shellcheck source=/dev/null
 source "$release_draft_script"
 
@@ -30,6 +38,18 @@ trap 'rm -rf "$work_dir"' EXIT
 #   MOCK_UPLOAD_STATUS / MOCK_UPLOAD_BODY   -- POST uploads.../assets
 #   MOCK_GET_ID_STATUS / MOCK_GET_ID_BODY   -- GET .../releases/{id}
 #   MOCK_PATCH_STATUS  / MOCK_PATCH_BODY    -- PATCH .../releases/{id}
+#   MOCK_POST_CREATE_LIST_SEQUENCE          -- optional array: one distinct
+#                                               releases-list body per
+#                                               post-create scan attempt
+#                                               (index 0 = first post-create
+#                                               attempt, index 1 = second,
+#                                               ...); the last element
+#                                               repeats once exhausted. When
+#                                               unset, every post-create
+#                                               attempt reuses
+#                                               MOCK_POST_CREATE_LIST_BODY,
+#                                               same as before this array
+#                                               existed.
 reset_mocks() {
   MOCK_BY_TAG_STATUS=404
   MOCK_BY_TAG_BODY='{"message":"Not Found"}'
@@ -42,16 +62,23 @@ reset_mocks() {
   MOCK_UPLOAD_STATUS=201
   MOCK_UPLOAD_BODY='{"id": 1, "name": "asset"}'
   MOCK_GET_ID_STATUS=200
-  MOCK_GET_ID_BODY='{"id": 4242, "tag_name": "v9.9.9", "draft": true}'
+  # Includes prerelease/target_commitish so the default scenario also
+  # satisfies verify_release_by_id's strict post-create identity check
+  # (cmd_create tests below call it with target_commitish "abc123sha" and
+  # prerelease "false" unless a case says otherwise).
+  MOCK_GET_ID_BODY='{"id": 4242, "tag_name": "v9.9.9", "draft": true, "prerelease": false, "target_commitish": "abc123sha"}'
   MOCK_PATCH_STATUS=200
   MOCK_PATCH_BODY='{"id": 4242, "tag_name": "v9.9.9", "draft": false}'
-  # The post-create uniqueness scan is a *second* call to the releases
-  # list, made after the create POST -- realistically it should now see
-  # the release create just made (id 4242, matching MOCK_CREATE_BODY),
-  # unlike the first (pre-create) scan which saw nothing. A scenario that
-  # wants to simulate a concurrent creation overrides this to include
-  # additional entries.
+  # The post-create visibility poll re-reads the releases list after the
+  # create POST -- realistically it should now see the release create
+  # just made (id 4242, matching MOCK_CREATE_BODY), unlike the first
+  # (pre-create) scan which saw nothing. A scenario that wants to
+  # simulate a concurrent/contradictory state, or delayed list
+  # visibility, overrides this (or MOCK_POST_CREATE_LIST_SEQUENCE for a
+  # multi-attempt scenario).
   MOCK_POST_CREATE_LIST_BODY='[{"id": 4242, "draft": true, "tag_name": "v9.9.9"}]'
+  MOCK_POST_CREATE_LIST_SEQUENCE=()
+  MOCK_POST_CREATE_LIST_TRANSPORT_FAIL=false
   # A plain shell variable does not survive across the $(...) command
   # substitutions every curl call in release-draft.sh is wrapped in --
   # each one forks a subshell, so increments made inside curl() here would
@@ -60,6 +87,34 @@ reset_mocks() {
   # fresh counter file.
   list_call_count_file="$work_dir/list-call-count"
   printf '0' > "$list_call_count_file"
+  # Counts only POST .../releases (create), never generate-notes or asset
+  # uploads, so POST-001 can prove the create POST is invoked exactly
+  # once even when the post-create visibility poll needs several GET
+  # attempts before the release becomes visible in the list.
+  create_post_call_count_file="$work_dir/create-post-call-count"
+  printf '0' > "$create_post_call_count_file"
+
+  # Pre-existing assets on the release, as seen by cmd_upload's
+  # pre-upload check (GET .../releases/{id}/assets). Default: none, so
+  # existing "upload succeeds" cases behave exactly as before Part 7's
+  # idempotence check was added.
+  MOCK_RELEASE_ASSETS_STATUS=200
+  MOCK_RELEASE_ASSETS_BODY='[]'
+  # Overrides the second (post-upload) assets-list response verbatim.
+  # Left unset by default so the stub auto-derives it from
+  # MOCK_RELEASE_ASSETS_BODY plus whatever was actually POSTed to the
+  # uploads stub during the call -- the natural "it worked" shape.
+  MOCK_RELEASE_ASSETS_AFTER_UPLOAD_BODY=""
+  asset_list_call_count_file="$work_dir/asset-list-call-count"
+  printf '0' > "$asset_list_call_count_file"
+  uploaded_asset_names_file="$work_dir/uploaded-asset-names"
+  : > "$uploaded_asset_names_file"
+
+  # Content/status returned when cmd_upload downloads an already-present
+  # asset (by numeric id) to prove byte-identity before skipping a
+  # re-upload.
+  MOCK_ASSET_DOWNLOAD_STATUS=200
+  MOCK_ASSET_DOWNLOAD_CONTENT=""
 }
 
 curl() {
@@ -89,11 +144,21 @@ curl() {
         if [[ "${MOCK_POST_CREATE_LIST_TRANSPORT_FAIL:-false}" == "true" ]]; then
           return 7
         fi
-        if [[ -n "${MOCK_POST_CREATE_LIST_BODY:-}" ]]; then
-          printf '%s' "$MOCK_POST_CREATE_LIST_BODY" > "$out_file"
+        local post_create_attempt_index=$(( list_call_count - 2 ))
+        local body_to_use
+        if [[ "${#MOCK_POST_CREATE_LIST_SEQUENCE[@]}" -gt 0 ]]; then
+          local seq_index="$post_create_attempt_index"
+          local seq_last=$(( ${#MOCK_POST_CREATE_LIST_SEQUENCE[@]} - 1 ))
+          if [[ "$seq_index" -gt "$seq_last" ]]; then
+            seq_index="$seq_last"
+          fi
+          body_to_use="${MOCK_POST_CREATE_LIST_SEQUENCE[$seq_index]}"
+        elif [[ -n "${MOCK_POST_CREATE_LIST_BODY:-}" ]]; then
+          body_to_use="$MOCK_POST_CREATE_LIST_BODY"
         else
-          printf '%s' "${MOCK_LIST_BODY:-"[]"}" > "$out_file"
+          body_to_use="${MOCK_LIST_BODY:-"[]"}"
         fi
+        printf '%s' "$body_to_use" > "$out_file"
         printf '%s' "${MOCK_POST_CREATE_LIST_STATUS:-${MOCK_LIST_STATUS:-200}}"
       else
         printf '%s' "${MOCK_LIST_BODY:-"[]"}" > "$out_file"
@@ -113,14 +178,59 @@ curl() {
   fi
 
   if [[ "$url" == *"uploads.github.com"* ]]; then
+    # Records the exact asset name this upload POST targeted (the URL's
+    # trailing name=... query param; test fixtures never use characters
+    # that would need percent-decoding) so the assets-list stub below
+    # can reflect it back on the post-upload re-fetch.
+    printf '%s\n' "${url##*name=}" >> "$uploaded_asset_names_file"
     printf '%s' "${MOCK_UPLOAD_BODY:-"{}"}" > "$out_file"
     printf '%s' "${MOCK_UPLOAD_STATUS:-201}"
     return 0
   fi
 
   if [[ "$url" == *"/releases"* && "$method" == "POST" ]]; then
+    local create_post_call_count
+    create_post_call_count="$(( $(cat "$create_post_call_count_file") + 1 ))"
+    printf '%s' "$create_post_call_count" > "$create_post_call_count_file"
     printf '%s' "${MOCK_CREATE_BODY:-"{}"}" > "$out_file"
     printf '%s' "${MOCK_CREATE_STATUS:-201}"
+    return 0
+  fi
+
+  if [[ "$url" == *"/releases/assets/"[0-9]* ]]; then
+    printf '%s' "${MOCK_ASSET_DOWNLOAD_CONTENT:-}" > "$out_file"
+    printf '%s' "${MOCK_ASSET_DOWNLOAD_STATUS:-200}"
+    return 0
+  fi
+
+  if [[ "$url" == *"/releases/"*"/assets?per_page="* ]]; then
+    local asset_list_call_count
+    asset_list_call_count="$(( $(cat "$asset_list_call_count_file") + 1 ))"
+    printf '%s' "$asset_list_call_count" > "$asset_list_call_count_file"
+    if [[ "$url" == *"&page=1" ]]; then
+      if [[ "$asset_list_call_count" -eq 1 ]]; then
+        printf '%s' "${MOCK_RELEASE_ASSETS_BODY:-"[]"}" > "$out_file"
+      elif [[ -n "${MOCK_RELEASE_ASSETS_AFTER_UPLOAD_BODY:-}" ]]; then
+        printf '%s' "$MOCK_RELEASE_ASSETS_AFTER_UPLOAD_BODY" > "$out_file"
+      else
+        # Auto-derive the post-upload state: the pre-existing entries
+        # plus a synthetic entry for every asset name actually POSTed
+        # to the uploads stub above during this call, so the final
+        # "exists exactly once" re-check naturally succeeds for a
+        # scenario that does not care about that exact response shape.
+        local uploaded_names_json
+        uploaded_names_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$uploaded_asset_names_file" 2>/dev/null || echo '[]')"
+        jq -c -n \
+          --argjson existing "${MOCK_RELEASE_ASSETS_BODY:-"[]"}" \
+          --argjson names "$uploaded_names_json" \
+          '$existing + ( $names | to_entries | map({id: (900000 + .key), name: .value}) )' \
+          > "$out_file"
+      fi
+      printf '%s' "${MOCK_RELEASE_ASSETS_STATUS:-200}"
+    else
+      printf '[]' > "$out_file"
+      printf '200'
+    fi
     return 0
   fi
 
@@ -291,11 +401,13 @@ assert_case "create refuses when the create POST itself fails" fail "Failed to c
   -- cmd_create "v9.9.9" "abc123sha" "false"
 
 reset_mocks
-# The pre-create scan sees nothing, the create POST succeeds, but the
-# immediate post-create uniqueness re-scan now finds two releases for the
-# tag -- a concurrent creation raced this run.
+# VIS-004: the pre-create scan sees nothing, the create POST succeeds,
+# but the very first post-create visibility scan already finds two
+# releases for the tag -- a genuine multi-release/concurrent state must
+# fail immediately, with no further polling (more waiting cannot resolve
+# a contradiction that already has more than one match).
 MOCK_POST_CREATE_LIST_BODY='[{"id": 4242, "draft": true, "tag_name": "v9.9.9"}, {"id": 9999, "draft": true, "tag_name": "v9.9.9"}]'
-assert_case "create refuses when a concurrent release creation is detected after its own POST" fail "concurrent release creation" \
+assert_case "VIS-004: create refuses immediately when the first post-create scan already finds 2 releases for the tag" fail "Multiple releases now claim tag" \
   -- cmd_create "v9.9.9" "abc123sha" "false"
 
 reset_mocks
@@ -401,13 +513,43 @@ MOCK_POST_CREATE_LIST_BODY='[{"id": 9999, "draft": true, "tag_name": "v9.9.9"}]'
 assert_case "create refuses when the post-create match has a different id than the create response (ownership mismatch)" fail "Post-create scan found release 9999" \
   -- cmd_create "v9.9.9" "abc123sha" "false"
 
+# VIS-003: the release never becomes visible in the list before the
+# bounded deadline -- every attempt sees zero matches. This must fail
+# closed (uniqueness could not be proven), but it must NOT be reported
+# as "concurrent release creation": zero matches is list-endpoint lag,
+# not evidence of a second creator. It also must not repeat the create
+# POST -- create_post_call_count_file proves exactly one POST happened
+# despite the repeated GET polling.
 reset_mocks
 MOCK_POST_CREATE_LIST_BODY='[]'
-assert_case "create refuses when the post-create scan finds zero matches" fail "expected exactly 1" \
+assert_case "VIS-003: create fails closed when the release never becomes visible before the bounded deadline" fail "did not become visible in the releases list within the bounded observation window" \
   -- cmd_create "v9.9.9" "abc123sha" "false"
+vis_003_post_count="$(cat "$create_post_call_count_file")"
+cases_run=$((cases_run + 1))
+if [[ "$vis_003_post_count" == "1" ]]; then
+  echo "PASS: VIS-003: the create POST is invoked exactly once even though the release never becomes visible"
+else
+  echo "FAIL: VIS-003: expected exactly 1 create POST call, got $vis_003_post_count" >&2
+  failures=$((failures + 1))
+fi
+# assert_case only supports asserting a substring IS present, not that a
+# different substring is absent, so the "must never say concurrent"
+# requirement is checked directly here instead.
+reset_mocks
+MOCK_POST_CREATE_LIST_BODY='[]'
+vis_003_output="$(cmd_create "v9.9.9" "abc123sha" "false" 2>&1 || true)"
+cases_run=$((cases_run + 1))
+if [[ "$vis_003_output" != *"concurrent release creation"* ]]; then
+  echo "PASS: VIS-003: the deadline failure message never says 'concurrent release creation'"
+else
+  echo "FAIL: VIS-003: the deadline failure message must not say 'concurrent release creation'" >&2
+  printf '%s\n' "$vis_003_output" | sed 's/^/    /' >&2
+  failures=$((failures + 1))
+fi
 
-# Two matches is already covered above by "create refuses when a concurrent
-# release creation is detected after its own POST".
+# Two matches is already covered above by "VIS-004: create refuses
+# immediately when the first post-create scan already finds 2 releases
+# for the tag".
 
 reset_mocks
 MOCK_POST_CREATE_LIST_BODY='[{"id": 4242, "draft": false, "tag_name": "v9.9.9"}]'
@@ -469,6 +611,137 @@ MOCK_POST_CREATE_LIST_TRANSPORT_FAIL="true"
 assert_case "create refuses when the post-create list scan hits a transport error" fail "post-create uniqueness scan could not be completed" \
   -- cmd_create "v9.9.9" "abc123sha" "false"
 
+# --- create: bounded post-create visibility polling -----------------------
+#
+# These cases exercise wait_for_unique_release_visibility()'s bounded,
+# read-only GET polling directly: GitHub's releases-list endpoint is not
+# guaranteed to be immediately consistent with a just-completed create,
+# so a freshly created release can be directly addressable by id yet
+# briefly absent from the list. VIS-003/VIS-004 above cover the
+# immediate-failure edges (never visible, contradictory multi-match);
+# the cases below cover eventual success and a same-tag ownership
+# mismatch that only appears after temporary invisibility.
+
+reset_mocks
+MOCK_POST_CREATE_LIST_SEQUENCE=(
+  '[]'
+  '[{"id": 4242, "draft": true, "tag_name": "v9.9.9"}]'
+)
+assert_create_stdout_contract "VIS-001: create succeeds once the second post-create scan finds the release (first scan empty)" "4242" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+reset_mocks
+MOCK_POST_CREATE_LIST_SEQUENCE=(
+  '[]'
+  '[]'
+  '[]'
+  '[{"id": 4242, "draft": true, "tag_name": "v9.9.9"}]'
+)
+assert_create_stdout_contract "VIS-002: create succeeds after several empty scans, before the bounded deadline" "4242" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+# VIS-005: the release is not visible on the first post-create scan, and
+# when it does become visible, a *different* release id owns the tag.
+# Temporary invisibility must never relax the ownership check once a
+# match does appear.
+reset_mocks
+MOCK_POST_CREATE_LIST_SEQUENCE=(
+  '[]'
+  '[{"id": 9999, "draft": true, "tag_name": "v9.9.9"}]'
+)
+assert_case "VIS-005: create refuses when a different release id owns the tag after temporary invisibility" fail "ownership mismatch" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+# POST-001: prove the create POST is invoked exactly once even though
+# the release only becomes visible after several bounded polling
+# attempts -- the fix must never retry the POST itself, only the
+# read-only GET/list verification after it.
+reset_mocks
+MOCK_POST_CREATE_LIST_SEQUENCE=(
+  '[]'
+  '[]'
+  '[{"id": 4242, "draft": true, "tag_name": "v9.9.9"}]'
+)
+assert_create_stdout_contract "POST-001: create succeeds under delayed visibility" "4242" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+post_001_count="$(cat "$create_post_call_count_file")"
+cases_run=$((cases_run + 1))
+if [[ "$post_001_count" == "1" ]]; then
+  echo "PASS: POST-001: the create POST is invoked exactly once despite delayed visibility"
+else
+  echo "FAIL: POST-001: expected exactly 1 create POST call, got $post_001_count" >&2
+  failures=$((failures + 1))
+fi
+
+# --- create: verify_release_by_id (GET-by-id identity proof) --------------
+#
+# validate_created_release_response already proved the create POST's own
+# response was well-formed; these cases prove the *separate* immediate
+# GET-by-id re-check (verify_release_by_id) also fails closed on its own,
+# independent response -- a POST that reports success does not by itself
+# guarantee the release is retrievable/consistent by id.
+
+reset_mocks
+MOCK_GET_ID_STATUS=404
+MOCK_GET_ID_BODY='{"message":"Not Found"}'
+assert_case "ID-001: create refuses when GET /releases/{id} returns 404 right after a successful POST" fail "returned HTTP 404, not 200" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+reset_mocks
+MOCK_GET_ID_BODY='{"id": 4242, "tag_name": "v-wrong-tag", "draft": true, "prerelease": false, "target_commitish": "abc123sha"}'
+assert_case "ID-002: create refuses when GET-by-id reports the wrong tag" fail "expected 'v9.9.9'" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+reset_mocks
+MOCK_GET_ID_BODY='{"id": 4242, "tag_name": "v9.9.9", "draft": false, "prerelease": false, "target_commitish": "abc123sha"}'
+assert_case "ID-003: create refuses when GET-by-id reports draft: false" fail "did not report draft == true (strict boolean check)" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+reset_mocks
+MOCK_GET_ID_BODY='{"id": 4242, "tag_name": "v9.9.9", "draft": "true", "prerelease": false, "target_commitish": "abc123sha"}'
+assert_case "ID-004: create refuses when GET-by-id reports draft as the string \"true\" rather than a real boolean" fail "did not report draft == true (strict boolean check)" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+# --- Part 13: synthetic reproduction of the exact v1.1.0 incident ---------
+#
+# Reproduces, with synthetic fixtures only, the exact sequence of GitHub
+# API responses observed during the real v1.1.0 release attempt: a
+# successful POST (id 4242) whose own releases-list visibility lagged
+# behind the by-id GET. The fixed pipeline must publish successfully in
+# that case, must fail closed (never adopt) when a second release
+# appears in the list, and must fail closed -- with a precise diagnostic,
+# never "concurrent release creation" -- when visibility never arrives
+# before the bounded deadline.
+
+reset_mocks
+MOCK_POST_CREATE_LIST_SEQUENCE=(
+  '[]'
+  '[]'
+  '[{"id": 4242, "draft": true, "tag_name": "v9.9.9"}]'
+)
+assert_create_stdout_contract "v1.1.0 scenario: pre-create=[], POST 201 id=4242, GET-by-id ok, post-create scans []/[]/[match] -> SUCCESS" "4242" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+reset_mocks
+MOCK_POST_CREATE_LIST_SEQUENCE=(
+  '[]'
+  '[{"id": 4242, "draft": true, "tag_name": "v9.9.9"}, {"id": 9999, "draft": true, "tag_name": "v9.9.9"}]'
+)
+assert_case "v1.1.0 scenario: post-create scans []/[two releases] -> FAIL" fail "Multiple releases now claim tag" \
+  -- cmd_create "v9.9.9" "abc123sha" "false"
+
+reset_mocks
+MOCK_POST_CREATE_LIST_BODY='[]'
+v1_1_0_deadline_output="$(cmd_create "v9.9.9" "abc123sha" "false" 2>&1 || true)"
+cases_run=$((cases_run + 1))
+if [[ "$v1_1_0_deadline_output" == *"uniqueness could not be proven"* && "$v1_1_0_deadline_output" != *"concurrent release creation"* ]]; then
+  echo "PASS: v1.1.0 scenario: identity confirmed by id but never visible in the list -> FAIL CLOSED with 'uniqueness could not be proven', never 'concurrent release creation'"
+else
+  echo "FAIL: v1.1.0 scenario: expected a 'uniqueness could not be proven' message and never 'concurrent release creation'" >&2
+  printf '%s\n' "$v1_1_0_deadline_output" | sed 's/^/    /' >&2
+  failures=$((failures + 1))
+fi
+
 # --- upload -------------------------------------------------------------
 
 reset_mocks
@@ -492,6 +765,63 @@ MOCK_UPLOAD_STATUS=422
 MOCK_UPLOAD_BODY='{"message":"Validation Failed", "errors":[{"code":"already_exists"}]}'
 assert_case "upload refuses when the uploads API rejects the asset" fail "Failed to upload asset" \
   -- cmd_upload "4242" "$asset_file"
+
+# --- upload: Part 7 asset idempotence --------------------------------------
+#
+# Proves cmd_upload() is safely re-runnable: an asset already present
+# under the exact expected name is only ever skipped after a strong,
+# content-level identity proof (a downloaded byte-for-byte hash match),
+# never silently overwritten and never re-uploaded because a name merely
+# matches.
+
+reset_mocks
+MOCK_RELEASE_ASSETS_BODY='[{"id": 555, "name": "asset.bin"}]'
+MOCK_ASSET_DOWNLOAD_CONTENT='fake jar bytes'
+assert_case "REC-idempotent-005-style: upload skips re-uploading an asset already present and byte-identical" pass "verified byte-identical; skipping upload" \
+  -- cmd_upload "4242" "$asset_file"
+idempotent_upload_did_not_reupload=1
+if grep -q "^asset.bin$" "$uploaded_asset_names_file" 2>/dev/null; then
+  idempotent_upload_did_not_reupload=0
+fi
+cases_run=$((cases_run + 1))
+if [[ "$idempotent_upload_did_not_reupload" -eq 1 ]]; then
+  echo "PASS: idempotent upload never re-POSTs an asset it already verified as identical"
+else
+  echo "FAIL: idempotent upload re-uploaded an asset it should have skipped" >&2
+  failures=$((failures + 1))
+fi
+
+reset_mocks
+MOCK_RELEASE_ASSETS_BODY='[{"id": 555, "name": "asset.bin"}]'
+MOCK_ASSET_DOWNLOAD_CONTENT='different content entirely'
+assert_case "REC-006: upload refuses when an existing same-named asset cannot be proven identical (content differs)" fail "sha256 mismatch" \
+  -- cmd_upload "4242" "$asset_file"
+
+reset_mocks
+MOCK_RELEASE_ASSETS_BODY='[{"id": 555, "name": "asset.bin"}]'
+MOCK_ASSET_DOWNLOAD_STATUS=500
+assert_case "REC-006: upload refuses when downloading the existing same-named asset to prove identity fails" fail "downloading it to verify identity returned HTTP 500" \
+  -- cmd_upload "4242" "$asset_file"
+
+reset_mocks
+MOCK_RELEASE_ASSETS_STATUS=500
+MOCK_RELEASE_ASSETS_BODY='{"message":"Internal Server Error"}'
+assert_case "upload refuses when the pre-upload existing-asset list cannot be verified" fail "could not be verified, so overwrite safety cannot be proven" \
+  -- cmd_upload "4242" "$asset_file"
+
+reset_mocks
+jar_asset_file="$work_dir/webagent4j-cli-9.9.9.jar"
+printf 'shaded cli jar bytes' > "$jar_asset_file"
+checksum_asset_file="$work_dir/webagent4j-cli-9.9.9.jar.sha256"
+printf '%s' "$(local_sha256 "$jar_asset_file")" > "$checksum_asset_file"
+assert_case "upload succeeds when the .sha256 checksum file matches the jar it accompanies" pass "Uploaded asset" \
+  -- cmd_upload "4242" "$jar_asset_file" "$checksum_asset_file"
+
+reset_mocks
+bad_checksum_file="$work_dir/webagent4j-cli-9.9.9.jar.sha256"
+printf '%s' "0000000000000000000000000000000000000000000000000000000000000000" > "$bad_checksum_file"
+assert_case "upload refuses when the .sha256 checksum file does not match the jar it accompanies" fail "does not match the actual sha256" \
+  -- cmd_upload "4242" "$jar_asset_file" "$bad_checksum_file"
 
 # --- finalize -------------------------------------------------------------
 
@@ -528,6 +858,37 @@ MOCK_PATCH_STATUS=500
 MOCK_PATCH_BODY='{"message":"Internal Server Error"}'
 assert_case "finalize refuses when the publish PATCH itself fails" fail "Failed to finalize" \
   -- cmd_finalize "4242" "v9.9.9"
+
+# --- recovery-finalize (Part 9) ---------------------------------------------
+
+reset_mocks
+assert_case "recovery-finalize publishes a release that is still a draft, same as finalize" pass "published" \
+  -- cmd_recovery_finalize "4242" "v9.9.9"
+
+# The key distinction from finalize: an already-public release is an
+# expected, valid state for recovery (a human may have already
+# published it out-of-band) -- it must be verified and reported as an
+# idempotent success, never re-PATCHed, and never treated as a failure.
+reset_mocks
+MOCK_GET_ID_BODY='{"id": 4242, "tag_name": "v9.9.9", "draft": false}'
+assert_case "recovery-finalize treats an already-public release as an idempotent success, never re-PATCHing" pass "already public; recovery never re-finalizes" \
+  -- cmd_recovery_finalize "4242" "v9.9.9"
+
+reset_mocks
+MOCK_GET_ID_BODY='{"id": 4242, "tag_name": "v-some-other-tag", "draft": false}'
+assert_case "recovery-finalize still refuses on a tag mismatch even for an already-public release" fail "expected 'v9.9.9'" \
+  -- cmd_recovery_finalize "4242" "v9.9.9"
+
+reset_mocks
+MOCK_GET_ID_BODY='{"id": 4242, "tag_name": "v9.9.9", "draft": "true"}'
+assert_case "recovery-finalize refuses a non-boolean draft state rather than guessing" fail "not a well-formed boolean" \
+  -- cmd_recovery_finalize "4242" "v9.9.9"
+
+reset_mocks
+MOCK_GET_ID_STATUS=500
+MOCK_GET_ID_BODY='{"message":"Internal Server Error"}'
+assert_case "recovery-finalize refuses when the pre-finalize re-check fails" fail "Unexpected response" \
+  -- cmd_recovery_finalize "4242" "v9.9.9"
 
 unset -f curl
 
