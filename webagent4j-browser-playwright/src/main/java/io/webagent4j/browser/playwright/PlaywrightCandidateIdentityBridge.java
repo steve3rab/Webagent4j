@@ -43,6 +43,7 @@ final class PlaywrightCandidateIdentityBridge {
               const apply = Reflect.apply;
               const defineProperty = Object.defineProperty;
               const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+              const getPrototypeOf = Object.getPrototypeOf;
               const weakMapHas = WeakMap.prototype.has;
               const weakMapGet = WeakMap.prototype.get;
               const weakMapSet = WeakMap.prototype.set;
@@ -53,7 +54,41 @@ final class PlaywrightCandidateIdentityBridge {
                 getOwnPropertyDescriptor(Node.prototype, "isConnected").get;
               const ownerDocumentGetter =
                 getOwnPropertyDescriptor(Node.prototype, "ownerDocument").get;
-              const currentDocument = document;
+
+              /*
+               * At least one browser engine can keep this exact global/execution realm - and
+               * with it, this exact bridge instance - alive while silently replacing the
+               * Document that realm's own "document" accessor resolves to (observed for iframe
+               * documents, independent of any navigation this process itself initiates). A
+               * Document captured once, here, at install time would go stale the moment that
+               * happens: every later identity/containment check would compare a live node's
+               * real, current owner document against a Document object nothing can reach
+               * anymore, failing closed as a permanent, unrecoverable documentMismatch instead
+               * of correctly recognizing the realm's actual current document. The fix is to
+               * never trust a single snapshot: locate the realm's own live "document" accessor
+               * once, here, by walking globalThis's own descriptor chain before any application
+               * script can run at all, then re-invoke that one pristine getter function on every
+               * single identify()/contains() call, so "the current document" is always asked
+               * for fresh rather than assumed. The getter function reference itself, once found,
+               * is immune to being swapped out later even if application script could otherwise
+               * redefine where "document" resolves to.
+               */
+              const documentAccessor = (() => {
+                let target = globalThis;
+                while (target != null) {
+                  const descriptor = getOwnPropertyDescriptor(target, "document");
+                  if (descriptor && typeof descriptor.get === "function") {
+                    return descriptor.get;
+                  }
+                  target = getPrototypeOf(target);
+                }
+                return null;
+              })();
+              const installTimeDocument = document;
+              const activeDocument = () =>
+                documentAccessor == null
+                  ? installTimeDocument
+                  : apply(documentAccessor, globalThis, []);
 
               const ids = new WeakMap();
               let sequence = 0n;
@@ -71,6 +106,7 @@ final class PlaywrightCandidateIdentityBridge {
                   return { absent: true };
                 }
 
+                const currentDocument = activeDocument();
                 const ownerDocument =
                   apply(ownerDocumentGetter, element, []);
                 if (ownerDocument !== currentDocument) {
@@ -103,6 +139,7 @@ final class PlaywrightCandidateIdentityBridge {
                   return { absent: true };
                 }
 
+                const currentDocument = activeDocument();
                 const ancestorDocument =
                   apply(ownerDocumentGetter, ancestorOrSelf, []);
                 const elementDocument =

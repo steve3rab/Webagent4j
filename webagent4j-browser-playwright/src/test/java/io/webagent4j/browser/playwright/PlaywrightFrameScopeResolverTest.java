@@ -24,6 +24,7 @@ import io.webagent4j.locator.AmbiguousLocatorException;
 import io.webagent4j.locator.ILiveLocatorContext;
 import io.webagent4j.locator.ILocatorBackend;
 import io.webagent4j.locator.ILocatorEngine;
+import io.webagent4j.locator.LocatorBackendQuery;
 import io.webagent4j.locator.LocatorCandidate;
 import io.webagent4j.locator.LocatorConfig;
 import io.webagent4j.locator.LocatorContext;
@@ -958,6 +959,100 @@ class PlaywrightFrameScopeResolverTest {
                 PlaywrightScopeResolver.resolvePendingScopes(engine, base, pending);
 
         assertThat(resolved.scope().type()).isEqualTo(LocatorScopeType.FRAME);
+    }
+
+    /**
+     * FX-REALM-007: a two-level nested frame descent (outer, then inner) must bind the backend a
+     * caller finally searches with to the <em>inner</em> child frame's own document root, never the
+     * outer's - a physical node inside the inner document must never be discoverable, nor its
+     * identity ever captured, against the wrong document. {@link #descendableFrameElement()} gives
+     * the outer and inner iframe candidates each their own distinct mock {@link Frame} and content
+     * {@link Locator}, so this is directly observable: the inner document root's own {@code
+     * locator(...)} stub is the only one ever asked for the button, and the outer's is never
+     * touched at all.
+     */
+    @Test
+    void nestedFrameDescentBindsCandidateSearchToTheInnerFramesOwnDocumentRootNotTheOuters() {
+        ILocatorEngine engine = mock(ILocatorEngine.class);
+        LocatorContext base = pageContext();
+
+        Locator outerIframeLocator = mock(Locator.class);
+        ElementHandle outerHandle = mock(ElementHandle.class);
+        Frame outerChildFrame = mock(Frame.class);
+        Locator outerDocumentRoot = mock(Locator.class);
+        when(outerIframeLocator.elementHandles()).thenReturn(List.of(outerHandle));
+        when(outerHandle.contentFrame()).thenReturn(outerChildFrame);
+        when(outerChildFrame.locator("html")).thenReturn(outerDocumentRoot);
+        IElement outerIframe =
+                new PlaywrightElement(
+                        outerIframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+
+        Locator innerIframeLocator = mock(Locator.class);
+        ElementHandle innerHandle = mock(ElementHandle.class);
+        Frame innerChildFrame = mock(Frame.class);
+        Locator innerDocumentRoot = mock(Locator.class);
+        when(innerIframeLocator.elementHandles()).thenReturn(List.of(innerHandle));
+        when(innerHandle.contentFrame()).thenReturn(innerChildFrame);
+        when(innerChildFrame.locator("html")).thenReturn(innerDocumentRoot);
+        IElement innerIframe =
+                new PlaywrightElement(
+                        innerIframeLocator,
+                        ElementRole.UNKNOWN,
+                        null,
+                        LocatorScope.page(),
+                        LocatorConfig.builder().build());
+
+        when(engine.locateAll(any(LocatorContext.class), any()))
+                .thenAnswer(
+                        invocation -> {
+                            LocatorContext resolvedContext = invocation.getArgument(0);
+                            return base.equals(resolvedContext)
+                                    ? List.of(candidate(outerIframe))
+                                    : List.of(candidate(innerIframe));
+                        });
+
+        List<IPendingScope> pending =
+                PlaywrightScopeResolver.append(
+                        PlaywrightScopeResolver.append(
+                                List.of(),
+                                new IPendingScope.Frame(FrameDefinition.frame().named("outer"))),
+                        new IPendingScope.Frame(FrameDefinition.frame().named("inner")));
+
+        LocatorContext resolved =
+                PlaywrightScopeResolver.resolvePendingScopes(engine, base, pending);
+
+        Locator innerButtonMatch = mock(Locator.class);
+        Locator innerButtonItem = mock(Locator.class);
+        ElementHandle innerButtonHandle = mock(ElementHandle.class);
+        when(innerDocumentRoot.locator("button")).thenReturn(innerButtonMatch);
+        when(innerButtonMatch.count()).thenReturn(1);
+        when(innerButtonMatch.nth(0)).thenReturn(innerButtonItem);
+        when(innerButtonItem.elementHandles()).thenReturn(List.of(innerButtonHandle));
+        when(innerButtonHandle.evaluate(anyString(), any()))
+                .thenReturn(Map.of("identity", "webagent4j-inner-1", "domOrder", 0));
+
+        var searchResult =
+                ((ILocatorBackend) resolved.backend())
+                        .find(
+                                new LocatorBackendQuery(
+                                        LocatorStrategyType.CSS,
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        Optional.empty(),
+                                        Optional.of("button")),
+                                resolved.scope(),
+                                resolved.config(),
+                                Duration.ofSeconds(1),
+                                10);
+
+        assertThat(searchResult.candidates()).hasSize(1);
+        assertThat(searchResult.candidates().getFirst().identity()).isEqualTo("webagent4j-inner-1");
+        verify(innerDocumentRoot).locator("button");
+        verify(outerDocumentRoot, never()).locator(anyString());
     }
 
     @Test
