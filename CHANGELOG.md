@@ -10,6 +10,41 @@ not imply a published compatibility line.
 
 ## [1.1.1] - 2026-08-30
 
+### Fixed
+
+- `JsonWorkflowRecordingCodec#encode` now enforces the same step-count, string-length, and
+  total-document-size limits `decode` enforces, so `decode(encode(recording))` no longer fails on
+  this codec's own resource bounds: a recording too large for this codec to decode back is now
+  rejected by `encode` itself instead of being silently accepted and handed to a caller as JSON this
+  codec cannot read back. See
+  [docs/recording.md](docs/recording.md#decoding-resource-bounds).
+
+### Security
+
+- `JsonWorkflowRecordingCodec#decode` now enforces deterministic, framework-owned resource limits
+  (overall document size, JSON nesting depth, string/field-name/numeric-token length, and step
+  count) before the allocation each one protects, so a caller-supplied recording can no longer force
+  unbounded parsing, tree construction, or collection allocation before being rejected. See
+  [docs/recording.md](docs/recording.md#decoding-resource-bounds).
+- A built-in workflow condition (`WorkflowConditions#equals`/`notEquals`, and any `not`/`allOf`/
+  `anyOf` composed only from them) no longer renders its comparison literal eagerly at step-evaluation
+  time and retains the (potentially unbounded) rendered text for the rest of the execution; rendering
+  is now deferred to workflow finalization, when the complete secret set is already known, so the
+  text is created, redacted, and bounded in one step instead. The mandatory `render → redact → bound`
+  ordering, and behavior for a custom `IWorkflowCondition`, are unchanged. See
+  [docs/workflow.md](docs/workflow.md#resource-bounded-diagnostics).
+- `HostScopePolicy` now rejects a candidate URL longer than a documented maximum before evaluating
+  it against any configured `includeUrlPattern`/`excludeUrlPattern`, bounding the worst-case input
+  size a caller-supplied regex is ever evaluated against. Documented precisely, rather than as a
+  blanket claim, what this bound does and does not establish: it is a genuine, deterministic cap on
+  attacker-controlled input length, not a guarantee that every possible pattern is safe to evaluate
+  even within that bound, since Java's backtracking regex engine has no reliable way to cancel a
+  match already in progress. The exclude-pattern-match rejection diagnostic no longer echoes the
+  caller's own pattern text. See
+  [docs/security-model.md](docs/security-model.md#url-filter-pattern-safety).
+
+## [1.1.0] - 2026-08-29
+
 ### Added
 
 - Governed execution: `IActionPolicy` authorizes an action before its backend side effect runs, and
@@ -53,12 +88,6 @@ not imply a published compatibility line.
 - Corrected candidate-identity tracking in the Playwright frame/document trust bridge: a browser
   engine that can replace a document while keeping its owning execution realm alive no longer causes
   a still-current, still-attached physical node to be rejected as a stale document mismatch.
-- `JsonWorkflowRecordingCodec#encode` now enforces the same step-count, string-length, and
-  total-document-size limits `decode` enforces, so `decode(encode(recording))` no longer fails on
-  this codec's own resource bounds: a recording too large for this codec to decode back is now
-  rejected by `encode` itself instead of being silently accepted and handed to a caller as JSON this
-  codec cannot read back. See
-  [docs/recording.md](docs/recording.md#decoding-resource-bounds).
 
 ### Security
 
@@ -71,27 +100,7 @@ not imply a published compatibility line.
 - Documented that a governed `NAVIGATE` action or `BrowserCrawler` visit can only detect, never
   prevent, a browser-internal redirect landing somewhere a network policy would have denied, unlike
   `HttpCrawler`, which controls its own redirect loop.
-- `JsonWorkflowRecordingCodec#decode` now enforces deterministic, framework-owned resource limits
-  (overall document size, JSON nesting depth, string/field-name/numeric-token length, and step
-  count) before the allocation each one protects, so a caller-supplied recording can no longer force
-  unbounded parsing, tree construction, or collection allocation before being rejected. See
-  [docs/recording.md](docs/recording.md#decoding-resource-bounds).
-- A built-in workflow condition (`WorkflowConditions#equals`/`notEquals`, and any `not`/`allOf`/
-  `anyOf` composed only from them) no longer renders its comparison literal eagerly at step-evaluation
-  time and retains the (potentially unbounded) rendered text for the rest of the execution; rendering
-  is now deferred to workflow finalization, when the complete secret set is already known, so the
-  text is created, redacted, and bounded in one step instead. The mandatory `render → redact → bound`
-  ordering, and behavior for a custom `IWorkflowCondition`, are unchanged. See
-  [docs/workflow.md](docs/workflow.md#resource-bounded-diagnostics).
-- `HostScopePolicy` now rejects a candidate URL longer than a documented maximum before evaluating
-  it against any configured `includeUrlPattern`/`excludeUrlPattern`, bounding the worst-case input
-  size a caller-supplied regex is ever evaluated against. Documented precisely, rather than as a
-  blanket claim, what this bound does and does not establish: it is a genuine, deterministic cap on
-  attacker-controlled input length, not a guarantee that every possible pattern is safe to evaluate
-  even within that bound, since Java's backtracking regex engine has no reliable way to cancel a
-  match already in progress. The exclude-pattern-match rejection diagnostic no longer echoes the
-  caller's own pattern text. See
-  [docs/security-model.md](docs/security-model.md#url-filter-pattern-safety).
+
 
 ## [1.0.0] - 2026-08-27
 
