@@ -24,8 +24,11 @@ public enum CrawlDecisionType {
     REJECT_DOMAIN,
 
     /**
-     * The candidate's URL matched {@link CrawlRequest#excludeUrlPatterns()}, or {@link
-     * CrawlRequest#includeUrlPatterns()} is non-empty and the candidate matched none of them.
+     * The candidate's URL matched {@link CrawlRequest#excludeUrlPatterns()}, {@link
+     * CrawlRequest#includeUrlPatterns()} is non-empty and the candidate matched none of them, or
+     * (when at least one such pattern is configured) the candidate URL exceeded the maximum length
+     * evaluated against them - a resource bound, not a match outcome, but not worth a distinct type
+     * of its own since it is still fundamentally a URL-filter-stage rejection.
      */
     REJECT_URL_FILTER,
 
