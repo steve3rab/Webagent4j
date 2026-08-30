@@ -66,6 +66,10 @@ Decoding rejects malformed JSON, duplicate/unknown/missing fields, wrong JSON ty
 
 The machine-readable schema is [schema/recording-v1.schema.json](schema/recording-v1.schema.json). The Java model/codec invariants remain authoritative for cross-field rules that JSON Schema cannot express precisely.
 
+## Decoding resource bounds
+
+`JsonWorkflowRecordingCodec` treats `decode(String)` input as untrusted: acceptance never depends solely on available JVM heap or Jackson's own implementation defaults. Total document size, JSON nesting depth, string/field-name/numeric-token length, and step count are each checked against a deterministic, framework-owned limit strictly before the allocation that limit protects - never after building the full JSON tree or a step-sized collection first. A recording that exceeds a limit fails the same way any other malformed recording does: a safe `RecordingFormatException` that never echoes the rejected content. The exact numeric values are an internal implementation detail, not a published compatibility contract; they are chosen generously enough that no recording a supported encoder legitimately produces is affected.
+
 ## Replay comparison
 
 `WorkflowReplayVerifier` performs pure synchronous structural comparison. It never opens a browser, calls an action, or performs I/O.
