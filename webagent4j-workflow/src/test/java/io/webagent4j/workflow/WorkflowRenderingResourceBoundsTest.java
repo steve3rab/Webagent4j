@@ -142,9 +142,9 @@ class WorkflowRenderingResourceBoundsTest {
 
     @Test
     void wfMem002SecretAtBeginningOfLargeTextIsFullyRedacted() {
-        String secret = "WA4J_MEM_SECRET_AT_START_193847";
+        String sentinel = "WA4J_MEM_SENTINEL_AT_START_193847";
         WorkflowVariable<String> guard = WorkflowVariable.secret("guard");
-        String literal = secret + "y".repeat(500_000);
+        String literal = sentinel + "y".repeat(500_000);
         Workflow workflow =
                 Workflow.builder("wf")
                         .requiredInput(guard)
@@ -154,19 +154,19 @@ class WorkflowRenderingResourceBoundsTest {
                                         .when(WorkflowConditions.equals(STATUS, literal)))
                         .build();
         WorkflowInputs inputs =
-                WorkflowInputs.builder().put(guard, secret).put(STATUS, literal).build();
+                WorkflowInputs.builder().put(guard, sentinel).put(STATUS, literal).build();
 
         WorkflowResult result = engine.execute(workflow, inputs);
 
         assertThat(result.completed()).isTrue();
-        assertThat(conditionDescription(result)).doesNotContain(secret);
+        assertThat(conditionDescription(result)).doesNotContain(sentinel);
     }
 
     @Test
     void wfMem003SecretInMiddleOfLargeTextIsFullyRedacted() {
-        String secret = "WA4J_MEM_SECRET_IN_MIDDLE_284756";
+        String sentinel = "WA4J_MEM_SENTINEL_IN_MIDDLE_284756";
         WorkflowVariable<String> guard = WorkflowVariable.secret("guard");
-        String literal = "y".repeat(250_000) + secret + "y".repeat(250_000);
+        String literal = "y".repeat(250_000) + sentinel + "y".repeat(250_000);
         Workflow workflow =
                 Workflow.builder("wf")
                         .requiredInput(guard)
@@ -176,12 +176,12 @@ class WorkflowRenderingResourceBoundsTest {
                                         .when(WorkflowConditions.equals(STATUS, literal)))
                         .build();
         WorkflowInputs inputs =
-                WorkflowInputs.builder().put(guard, secret).put(STATUS, literal).build();
+                WorkflowInputs.builder().put(guard, sentinel).put(STATUS, literal).build();
 
         WorkflowResult result = engine.execute(workflow, inputs);
 
         assertThat(result.completed()).isTrue();
-        assertThat(conditionDescription(result)).doesNotContain(secret);
+        assertThat(conditionDescription(result)).doesNotContain(sentinel);
     }
 
     @Test
@@ -191,9 +191,9 @@ class WorkflowRenderingResourceBoundsTest {
         // secret's prefix would survive truncation and its (now-incomplete) text would never match
         // during redaction, leaking a still-identifying partial fragment - exactly what render →
         // redact → bound (never the reverse) exists to prevent.
-        String secret = "WA4J_MEM_BOUNDARY_SECRET_726354";
+        String sentinel = "WA4J_MEM_BOUNDARY_SENTINEL_726354";
         WorkflowVariable<String> guard = WorkflowVariable.secret("guard");
-        String literal = "y".repeat(190) + secret;
+        String literal = "y".repeat(190) + sentinel;
         Workflow workflow =
                 Workflow.builder("wf")
                         .requiredInput(guard)
@@ -203,13 +203,15 @@ class WorkflowRenderingResourceBoundsTest {
                                         .when(WorkflowConditions.equals(STATUS, literal)))
                         .build();
         WorkflowInputs inputs =
-                WorkflowInputs.builder().put(guard, secret).put(STATUS, literal).build();
+                WorkflowInputs.builder().put(guard, sentinel).put(STATUS, literal).build();
 
         WorkflowResult result = engine.execute(workflow, inputs);
 
         assertThat(result.completed()).isTrue();
         String description = conditionDescription(result);
-        assertThat(description).doesNotContain(secret).doesNotContain("WA4J_MEM_BOUNDARY_SECRET");
+        assertThat(description)
+                .doesNotContain(sentinel)
+                .doesNotContain("WA4J_MEM_BOUNDARY_SENTINEL");
     }
 
     // ---- WF-MEM-005: no chunked/windowed processing is used, so no chunk boundary exists to leak
@@ -222,9 +224,9 @@ class WorkflowRenderingResourceBoundsTest {
         // -
         // so there is no internal chunk boundary a secret could straddle. This test proves full
         // redaction holds at an arbitrary large offset regardless.
-        String secret = "WA4J_MEM_FAR_OFFSET_SECRET_54321";
+        String sentinel = "WA4J_MEM_FAR_OFFSET_SENTINEL_54321";
         WorkflowVariable<String> guard = WorkflowVariable.secret("guard");
-        String literal = "y".repeat(1_000_000) + secret + "y".repeat(1_000_000);
+        String literal = "y".repeat(1_000_000) + sentinel + "y".repeat(1_000_000);
         Workflow workflow =
                 Workflow.builder("wf")
                         .requiredInput(guard)
@@ -234,12 +236,12 @@ class WorkflowRenderingResourceBoundsTest {
                                         .when(WorkflowConditions.equals(STATUS, literal)))
                         .build();
         WorkflowInputs inputs =
-                WorkflowInputs.builder().put(guard, secret).put(STATUS, literal).build();
+                WorkflowInputs.builder().put(guard, sentinel).put(STATUS, literal).build();
 
         WorkflowResult result = engine.execute(workflow, inputs);
 
         assertThat(result.completed()).isTrue();
-        assertThat(conditionDescription(result)).doesNotContain(secret);
+        assertThat(conditionDescription(result)).doesNotContain(sentinel);
     }
 
     // ---- WF-MEM-006: multiple/overlapping known secrets are fully redacted before bounding ----
@@ -381,40 +383,40 @@ class WorkflowRenderingResourceBoundsTest {
 
     @Test
     void wfMem011SecretKnownOnlyLaterStillMasksAnEarlierBuiltInConditionDescription() {
-        String value = "WA4J_MEM_LATE_SECRET_918273";
+        String sentinel = "WA4J_MEM_LATE_SENTINEL_918273";
         WorkflowVariable<String> lateSecret = WorkflowVariable.secret("lateSecret");
         Workflow workflow =
                 Workflow.builder("wf")
                         .requiredInput(STATUS)
                         .step(
                                 WorkflowSteps.assign("s1", FLAG, true)
-                                        .when(WorkflowConditions.equals(STATUS, value)))
+                                        .when(WorkflowConditions.equals(STATUS, sentinel)))
                         .step(
                                 WorkflowSteps.action(
                                         "s2",
                                         vars ->
                                                 new FakePreparedAction<>(
-                                                        ActionResults.success(value),
+                                                        ActionResults.success(sentinel),
                                                         new AtomicInteger()),
                                         lateSecret))
                         .build();
-        WorkflowInputs inputs = WorkflowInputs.builder().put(STATUS, value).build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(STATUS, sentinel).build();
 
         WorkflowResult result = engine.execute(workflow, inputs);
 
         assertThat(result.completed()).isTrue();
         assertThat(result.steps().get(0).condition().orElseThrow().outcome()).isTrue();
         String description = conditionDescription(result);
-        assertThat(description).doesNotContain(value).contains("***");
+        assertThat(description).doesNotContain(sentinel).contains("***");
     }
 
     // ---- WF-MEM-012: no secret marker anywhere in public rendering ----
 
     @Test
     void wfMem012NoSecretMarkerInAnyPublicRenderingOfAResourceHardenedDescription() {
-        String secret = "WA4J_MEM_MARKER_SENTINEL_837465";
+        String sentinel = "WA4J_MEM_MARKER_SENTINEL_837465";
         WorkflowVariable<String> guard = WorkflowVariable.secret("guard");
-        String literal = "y".repeat(190) + secret;
+        String literal = "y".repeat(190) + sentinel;
         Workflow workflow =
                 Workflow.builder("wf")
                         .requiredInput(guard)
@@ -424,13 +426,13 @@ class WorkflowRenderingResourceBoundsTest {
                                         .when(WorkflowConditions.equals(STATUS, literal)))
                         .build();
         WorkflowInputs inputs =
-                WorkflowInputs.builder().put(guard, secret).put(STATUS, literal).build();
+                WorkflowInputs.builder().put(guard, sentinel).put(STATUS, literal).build();
 
         WorkflowResult result = engine.execute(workflow, inputs);
 
         assertThat(result.completed()).isTrue();
-        assertThat(conditionDescription(result)).doesNotContain(secret);
-        assertThat(result.steps().get(0).toString()).doesNotContain(secret);
-        assertThat(result.toString()).doesNotContain(secret);
+        assertThat(conditionDescription(result)).doesNotContain(sentinel);
+        assertThat(result.steps().get(0).toString()).doesNotContain(sentinel);
+        assertThat(result.toString()).doesNotContain(sentinel);
     }
 }
