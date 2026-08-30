@@ -130,6 +130,14 @@ Never execute downloaded content automatically based on a successful download re
 
 WebAgent4J does not claim legal, contractual, robots, rate-limit, or terms-of-service compliance merely because a crawl is technically possible. The caller is responsible for authorization, rate policy, and applicable site rules. The current crawlers are deterministic automation primitives, not a compliance engine.
 
+## URL filter pattern safety
+
+`CrawlRequest#includeUrlPattern`/`excludeUrlPattern` compile caller-supplied `java.util.regex.Pattern`s, evaluated by `HostScopePolicy` against every discovered URL before it enters the frontier. This is not remote regex injection - the caller authors the pattern, not an attacker - but a pathological pattern combined with a long, attacker-influenced discovered URL can still consume disproportionate CPU: Java's backtracking regex engine has no reliable, safe way to cancel a match already in progress, so a `Future`-with-timeout wrapper only abandons a still-running worker rather than actually stopping it.
+
+`HostScopePolicy` bounds what it can bound safely: once at least one URL filter pattern is configured, a candidate URL longer than its internal maximum length is rejected before any pattern ever sees it, capping the worst-case input size. This is a genuine, deterministic bound on attacker-controlled input length - **not** a claim that every possible pattern is safe to evaluate even at that bounded length. A sufficiently pathological pattern (catastrophic nested quantifiers, for example) can still be expensive against a comparatively short string. Replacing `java.util.regex.Pattern` with a linear-time engine (RE2/J or similar) would close this residually but changes the supported regex syntax/semantics and adds a dependency - out of scope for a patch-level hardening change; it remains a candidate for a future, deliberately-versioned API design rather than something forced into this release.
+
+The caller who configures a URL filter pattern is responsible for its complexity, exactly as they already are for its correctness. A crawl that configures no URL filter pattern at all is unaffected by any of this - there is no pattern for a URL to be evaluated against.
+
 ## Out of scope
 
 The framework does not attempt to:
