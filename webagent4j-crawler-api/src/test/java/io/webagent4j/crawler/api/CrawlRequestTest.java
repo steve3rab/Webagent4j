@@ -165,4 +165,150 @@ class CrawlRequestTest {
                                         .maxDepth(-5)
                                         .build());
     }
+
+    // --- HTTP-HDR-001: caller-supplied defaultHeaders are validated at build() -----------------
+
+    @Test
+    void acceptsAWellFormedDefaultHeader() {
+        CrawlRequest request =
+                CrawlRequest.builder()
+                        .seed("https://example.test/")
+                        .defaultHeader("X-Custom-Header", "value123")
+                        .build();
+
+        assertThat(request.defaultHeaders()).containsEntry("X-Custom-Header", "value123");
+    }
+
+    @Test
+    void rejectsADefaultHeaderNameContainingAColon() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed("https://example.test/")
+                                        .defaultHeader("X-Test:Injected", "value")
+                                        .build());
+    }
+
+    @Test
+    void rejectsADefaultHeaderValueContainingACrlfInjectionPayloadAndNeverEchoesIt() {
+        String injectionPayload = "value" + "\r\n" + "X-Injected: yes";
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed("https://example.test/")
+                                        .defaultHeader("X-Evil", injectionPayload)
+                                        .build())
+                .withMessageNotContaining(injectionPayload)
+                .withMessageNotContaining("X-Injected");
+    }
+
+    @Test
+    void rejectsFrameworkControlledDefaultHeadersCaseInsensitively() {
+        for (String name :
+                new String[] {
+                    "Host",
+                    "Connection",
+                    "Content-Length",
+                    "Transfer-Encoding",
+                    "Expect",
+                    "Upgrade",
+                    "host",
+                    "CONNECTION"
+                }) {
+            assertThatIllegalArgumentException()
+                    .as("header: %s", name)
+                    .isThrownBy(
+                            () ->
+                                    CrawlRequest.builder()
+                                            .seed("https://example.test/")
+                                            .defaultHeader(name, "anything")
+                                            .build());
+        }
+    }
+
+    @Test
+    void rejectsAnInvalidUserAgentHeaderValue() {
+        // userAgent flows into the User-Agent header (see HttpCrawler), so it is held to the same
+        // grammar as defaultHeaders - not just a non-blank check.
+        String injectionPayload = "MyBot" + "\r\n" + "X-Injected: yes";
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed("https://example.test/")
+                                        .userAgent(injectionPayload)
+                                        .build())
+                .withMessageNotContaining(injectionPayload);
+    }
+
+    // --- determinism: multiple invalid defaultHeaders fail on the first, in insertion order ----
+
+    @Test
+    void multipleInvalidDefaultHeadersFailDeterministicallyOnTheFirstOneAdded() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed("https://example.test/")
+                                        .defaultHeader("X-First-Bad", "value" + "\r\n" + "injected")
+                                        .defaultHeader("Host", "evil.example.test")
+                                        .build())
+                .withMessageContaining("header value contains a character forbidden");
+    }
+
+    // --- DIAG-URL-001: seed exception messages never expose the full URI -----------------------
+
+    @Test
+    void urlDiag001SeedExceptionNeverExposesUserinfo() {
+        String diagnosticSentinel = "DIAGNOSTIC-SENTINEL-604817";
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed("ftp://" + diagnosticSentinel + "@example.test/")
+                                        .build())
+                .withMessageNotContaining(diagnosticSentinel);
+    }
+
+    @Test
+    void urlDiag002SeedExceptionNeverExposesAQueryToken() {
+        String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_471182";
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed("ftp://example.test/?token=" + diagnosticSentinel)
+                                        .build())
+                .withMessageNotContaining(diagnosticSentinel);
+    }
+
+    @Test
+    void urlDiag003SeedExceptionNeverExposesAFragmentSecret() {
+        String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_735204";
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed("ftp://example.test/#" + diagnosticSentinel)
+                                        .build())
+                .withMessageNotContaining(diagnosticSentinel);
+    }
+
+    @Test
+    void relativeSeedExceptionNeverExposesQueryOrFragment() {
+        String diagnosticSentinel = "DIAGNOSTIC_SENTINEL_286650";
+        assertThatIllegalArgumentException()
+                .isThrownBy(
+                        () ->
+                                CrawlRequest.builder()
+                                        .seed(
+                                                "/relative?x="
+                                                        + diagnosticSentinel
+                                                        + "#"
+                                                        + diagnosticSentinel)
+                                        .build())
+                .withMessageNotContaining(diagnosticSentinel);
+    }
 }

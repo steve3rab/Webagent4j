@@ -1,7 +1,7 @@
 name: Nightly platforms
 
 # A scheduled run always qualifies the active development line, develop
-# (1.1.0-SNAPSHOT), regardless of whichever ref this workflow file happens
+# (1.1.1-SNAPSHOT), regardless of whichever ref this workflow file happens
 # to be read from -- every job here checks out develop explicitly for
 # schedule. A manual workflow_dispatch run instead checks out the exact
 # immutable commit SHA of the dispatched run (github.sha), not a

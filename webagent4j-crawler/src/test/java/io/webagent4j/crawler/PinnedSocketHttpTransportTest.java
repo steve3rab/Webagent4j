@@ -188,6 +188,12 @@ class PinnedSocketHttpTransportTest {
 
     @Test
     void rejectsAHeaderValueContainingACarriageReturnRatherThanInjectingIt() {
+        // A CRLF-carrying header value is now rejected by HttpFetchRequest's own construction-time
+        // validation (HttpHeaderValidation), never reaching this transport at all - fail early,
+        // per HTTP-HDR-001, rather than only being caught deep inside request serialization. This
+        // is therefore IllegalArgumentException, not the IOException a pre-fix run of this exact
+        // scenario would have thrown from inside the transport itself; requireAllHeadersSafe below
+        // still proves the transport's own defense-in-depth layer independently.
         assertThatThrownBy(
                         () ->
                                 fetch(
@@ -196,6 +202,31 @@ class PinnedSocketHttpTransportTest {
                                         Map.of("X-Evil", "value\r\nX-Injected: yes"),
                                         1_000,
                                         Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void defenseInDepthStillRejectsAMalformedHeaderEvenIfConstructedBypassingHttpFetchRequest() {
+        // requireAllHeadersSafe is the transport's own final-serialization-boundary check
+        // (PinnedSocketHttpTransport#buildRequestBytes calls it before writing any header text).
+        // HttpFetchRequest's constructor already makes it impossible to hand this transport a
+        // malformed header through normal construction, so this calls the package-private seam
+        // directly with a raw header map to prove the transport still fails closed on its own,
+        // independent of whatever upstream validation exists.
+        assertThatThrownBy(
+                        () ->
+                                PinnedSocketHttpTransport.requireAllHeadersSafe(
+                                        Map.of("X-Evil", "value\r\nX-Injected: yes")))
+                .isInstanceOf(IOException.class);
+    }
+
+    @Test
+    void
+            defenseInDepthStillRejectsAFrameworkControlledHeaderEvenIfConstructedBypassingHttpFetchRequest() {
+        assertThatThrownBy(
+                        () ->
+                                PinnedSocketHttpTransport.requireAllHeadersSafe(
+                                        Map.of("Host", "evil.example.test")))
                 .isInstanceOf(IOException.class);
     }
 

@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Deterministic, single-lane executor for {@link Workflow} definitions.
@@ -46,13 +47,18 @@ import java.util.Set;
  * {@link IllegalArgumentException} directly, since that is a build-time contract violation, not a
  * runtime execution outcome.
  *
- * <p><b>Condition-result finalization:</b> a condition's {@code describe()} is called at most once,
- * at evaluation time, but the resulting text is kept internally as unredacted, unbounded raw text
- * until the workflow terminates (see {@code PendingStepResult}/{@code PendingConditionResult}) -
- * mirroring how {@link WorkflowOutputs}' safe previews are computed once at final-result time. This
- * lets a secret revealed by a later successful step retroactively mask an earlier step's already-
- * recorded {@code SKIPPED}/{@code SUCCEEDED} condition description before it is ever redacted or
- * bounded, exactly like it already retroactively masks an earlier public output. A terminal {@link
+ * <p><b>Condition-result finalization:</b> a <em>custom</em> condition's {@code describe()} is
+ * called at most once, at evaluation time - it must be, since only the condition's own
+ * implementation can render its text - and the resulting raw text is kept internally, unredacted
+ * and unbounded, until the workflow terminates (see {@code PendingStepResult}/{@code
+ * PendingConditionResult}), mirroring how {@link WorkflowOutputs}' safe previews are computed once
+ * at final-result time. A <em>built-in</em> condition ({@link WorkflowConditions}) instead defers
+ * its description's rendering itself to finalization time (see {@link
+ * IDeferredConditionDescription}), so no unbounded intermediate text is ever retained for such a
+ * condition - see {@code docs/workflow.md#resource-bounded-diagnostics}. Either way, a secret
+ * revealed by a later successful step still retroactively masks an earlier step's already-recorded
+ * {@code SKIPPED}/{@code SUCCEEDED} condition description before it is ever redacted or bounded,
+ * exactly like it already retroactively masks an earlier public output. A terminal {@link
  * WorkflowFailure}'s own message is redacted and bounded immediately when it is constructed, not
  * deferred: once a step fails, no later step runs, so no later secret can ever be discovered.
  */
@@ -95,11 +101,16 @@ public final class WorkflowEngine {
         }
 
         /**
-         * A condition's outcome captured at evaluation time: {@code rawSafeDescription} is
-         * crash-safe but not yet redacted against any secret or bounded - see {@link
-         * #finalizeStepResult}.
+         * A condition's outcome captured at evaluation time. {@code finalizeDescription} produces
+         * the final, safe description when applied to the workflow's complete final {@link
+         * SecretRedactor} - see {@link #finalizeStepResult}. For a custom condition this closes
+         * over already-computed, crash-safe raw text (unredacted, unbounded, exactly as retained
+         * today); for a built-in {@link IDeferredConditionDescription} condition, it defers that
+         * condition's own rendering to the moment it is applied, so no unbounded intermediate text
+         * is ever retained in between (see {@code WF-MEM-001}).
          */
-        private record PendingConditionResult(boolean outcome, String rawSafeDescription) {}
+        private record PendingConditionResult(
+                boolean outcome, Function<SecretRedactor, String> finalizeDescription) {}
 
         /**
          * A step's outcome captured during execution, before the workflow's complete secret set is
@@ -218,9 +229,7 @@ public final class WorkflowEngine {
                                     raw ->
                                             new WorkflowConditionResult(
                                                     raw.outcome(),
-                                                    SafeRendering.bounded(
-                                                            redactor.redact(
-                                                                    raw.rawSafeDescription()))));
+                                                    raw.finalizeDescription().apply(redactor)));
             return new WorkflowStepResult(
                     pending.stepId(),
                     pending.stepType(),
@@ -399,20 +408,44 @@ public final class WorkflowEngine {
                             null);
                 }
 
-                RawDescription description = describeConditionRaw(condition);
-                if (description.failed()) {
-                    return failedResult(
-                            step,
-                            concreteStep.stepType(),
-                            Optional.empty(),
-                            WorkflowFailureType.CONDITION_EVALUATION_FAILED,
-                            description.failureMessage(),
-                            description.underlyingType(),
-                            null,
-                            null);
+                if (condition instanceof IDeferredConditionDescription deferred) {
+                    // Structurally crash-safe (framework-owned rendering only - see
+                    // IDeferredConditionDescription's Javadoc), so no describe()-failure check is
+                    // needed here: unlike a custom condition, this can never throw or return null.
+                    // SafeRendering.bounded is applied here, once, to whatever describeFinal
+                    // produces - exactly like the custom-condition branch below - rather than
+                    // inside
+                    // describeFinal itself, so a composite of many built-in conditions is bounded
+                    // as
+                    // a whole and cannot grow unbounded even though each leaf is individually safe.
+                    conditionResult =
+                            Optional.of(
+                                    new PendingConditionResult(
+                                            outcome,
+                                            redactor ->
+                                                    SafeRendering.bounded(
+                                                            deferred.describeFinal(redactor))));
+                } else {
+                    RawDescription description = describeConditionRaw(condition);
+                    if (description.failed()) {
+                        return failedResult(
+                                step,
+                                concreteStep.stepType(),
+                                Optional.empty(),
+                                WorkflowFailureType.CONDITION_EVALUATION_FAILED,
+                                description.failureMessage(),
+                                description.underlyingType(),
+                                null,
+                                null);
+                    }
+                    conditionResult =
+                            Optional.of(
+                                    new PendingConditionResult(
+                                            outcome,
+                                            redactor ->
+                                                    SafeRendering.bounded(
+                                                            redactor.redact(description.text()))));
                 }
-                conditionResult =
-                        Optional.of(new PendingConditionResult(outcome, description.text()));
                 if (!outcome) {
                     return new PendingStepResult(
                             step.id(),

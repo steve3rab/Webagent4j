@@ -40,6 +40,17 @@ import org.junit.jupiter.api.Test;
  * that signals a latch the instant it is invoked and then blocks until interrupted, exactly as a
  * real connect attempt that never receives a response would.
  *
+ * <p>INT-002 (write) needs its own, stronger synchronization point than "the peer accepted the
+ * connection": {@code accept()} completing on the fixture server and the fetching thread's own
+ * connect-phase {@code Future#get} returning are two independent events on two different threads
+ * that can be reordered under scheduling pressure, so waiting only for {@code accept()} can
+ * interrupt the fetching thread before it has even reached, let alone entered, the write phase -
+ * exactly the failure this test previously exhibited under load. {@link
+ * NeverReadingServer#awaitWriteInFlight()} instead waits for one real byte to actually arrive at
+ * the fixture server, which the kernel can never deliver before the client's {@code
+ * OutputStream.write(...)} call was genuinely entered; see that method's Javadoc for the full
+ * happens-before argument.
+ *
  * <p>INT-PRE-001 and INT-FALLBACK-001 cover a boundary distinct from all of the above: a caller
  * whose interruption is already known - either before {@code fetch()} is ever called, or observed
  * only after one pinned address's ordinary connectivity failure - must never let a new physical
@@ -178,7 +189,19 @@ class TransportInterruptionTest {
     void int002InterruptDuringABlockedWriteNeverFallsBackToASecondPinnedAddress() throws Exception {
         InetAddress firstAddress = InetAddress.getByName("127.0.0.1");
         InetAddress secondAddress = InetAddress.getByName("127.0.0.2");
+        AtomicInteger firstAddressAttempts = new AtomicInteger();
         AtomicInteger secondAddressAttempts = new AtomicInteger();
+        PinnedSocketHttpTransport.ISocketConnector connector =
+                (socket, address, timeoutMillis) -> {
+                    if (address.getAddress().equals(secondAddress)) {
+                        secondAddressAttempts.incrementAndGet();
+                        throw new IOException(
+                                "must never be reached: the second pinned address must never be"
+                                        + " contacted");
+                    }
+                    firstAddressAttempts.incrementAndGet();
+                    socket.connect(address, timeoutMillis);
+                };
         try (NeverReadingServer first = NeverReadingServer.bindingTo(firstAddress)) {
             URI uri = URI.create("http://pinned.example.test:" + first.port() + "/");
             VerifiedNetworkAddresses pinned =
@@ -191,11 +214,9 @@ class TransportInterruptionTest {
                     fetchOnInterruptibleThread(
                             uri,
                             pinned,
-                            first::awaitAccepted,
+                            first::awaitWriteInFlight,
                             largeHeaders(),
-                            Optional.of(
-                                    delegatingButGuardingSecondAddress(
-                                            secondAddress, secondAddressAttempts)));
+                            Optional.of(connector));
 
             assertThat(outcome.thrown())
                     .isInstanceOf(PinnedSocketHttpTransport.TransportInterruptedException.class);
@@ -205,7 +226,12 @@ class TransportInterruptionTest {
                     .as("the write was genuinely in flight when interrupted")
                     .isTrue();
             assertThat(outcome.interruptFlagPreserved()).isTrue();
-            assertThat(secondAddressAttempts.get()).isEqualTo(0);
+            assertThat(firstAddressAttempts.get())
+                    .as("the first pinned address's connect was attempted exactly once")
+                    .isEqualTo(1);
+            assertThat(secondAddressAttempts.get())
+                    .as("the second pinned address was never contacted")
+                    .isEqualTo(0);
         }
     }
 
@@ -558,11 +584,32 @@ class TransportInterruptionTest {
         }
     }
 
-    /** Accepts one connection with a constrained receive buffer and never reads it. */
+    /**
+     * Accepts one connection with a constrained receive buffer and never reads anything past the
+     * single synchronization byte {@link #awaitWriteInFlight()} waits for.
+     *
+     * <p>INT-002's determinism depends entirely on {@link #awaitWriteInFlight()}, not {@code
+     * accept()} alone: a real TCP accept completing on this server tells a test nothing about
+     * whether the <em>client's own thread</em> has yet returned from the connect phase's {@code
+     * Future#get}, let alone reached {@code PinnedSocketHttpTransport}'s {@code
+     * transmissionMayHaveStarted = true} assignment or entered the write call itself - accept() and
+     * the client-side connect-phase future completing are two independent events that can be
+     * reordered under scheduling pressure. Waiting instead for one real byte to actually arrive at
+     * this server closes that gap completely: a byte cannot be received here before the client's
+     * {@code OutputStream.write(...)} call has genuinely been entered and has begun handing bytes
+     * to the kernel, which in {@code PinnedSocketHttpTransport.attempt()} can only happen strictly
+     * after {@code transmissionMayHaveStarted} was already set - so by the time this returns, that
+     * flag is unconditionally already {@code true} on the fetching thread, regardless of how the
+     * interrupt and the write-phase {@code Future#get} happen to interleave afterward. Consuming
+     * that one byte barely dents this server's tiny, 2,048-byte receive buffer against the
+     * ~10&nbsp;MB payload {@link #largeHeaders()} sends, so the client's write call remains
+     * genuinely blocked immediately after this method returns.
+     */
     private static final class NeverReadingServer implements AutoCloseable {
         private final ServerSocket serverSocket;
         private final Thread thread;
         private final CountDownLatch accepted = new CountDownLatch(1);
+        private final CountDownLatch writeObserved = new CountDownLatch(1);
         private volatile Socket client;
 
         private NeverReadingServer(ServerSocket serverSocket) {
@@ -583,17 +630,33 @@ class TransportInterruptionTest {
             return serverSocket.getLocalPort();
         }
 
-        void awaitAccepted() throws InterruptedException {
-            boolean reached = accepted.await(10, TimeUnit.SECONDS);
-            assertThat(reached).as("fixture server accepted the connection").isTrue();
+        /**
+         * Blocks until the client's write has genuinely reached this server - see the class Javadoc
+         * for why this, and not merely a completed {@code accept()}, is INT-002's actual
+         * synchronization point.
+         */
+        void awaitWriteInFlight() throws InterruptedException {
+            boolean reachedAccept = accepted.await(10, TimeUnit.SECONDS);
+            assertThat(reachedAccept).as("fixture server accepted the connection").isTrue();
+            boolean reachedWrite = writeObserved.await(10, TimeUnit.SECONDS);
+            assertThat(reachedWrite)
+                    .as("the client's write genuinely reached this server's socket")
+                    .isTrue();
         }
 
         private void serve() {
             try {
                 client = serverSocket.accept();
                 accepted.countDown();
-                // Deliberately never reads: holds the connection open with its receive buffer
-                // full and undrained, forcing the client's write to genuinely block.
+                // This blocking read is the test's synchronization point, not a data consumer: it
+                // returns only once the client has actually transmitted a real byte, which the
+                // kernel can never deliver before the client's write() call was actually entered.
+                // No further byte is ever read afterward, so the connection's receive buffer stays
+                // full and undrained from here on, forcing the client's write to genuinely block.
+                int firstByte = client.getInputStream().read();
+                if (firstByte >= 0) {
+                    writeObserved.countDown();
+                }
             } catch (IOException ignored) {
                 // Best-effort test server: closed during shutdown.
             }
