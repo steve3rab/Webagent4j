@@ -74,6 +74,15 @@ not imply a published compatibility line.
   count) before the allocation each one protects, so a caller-supplied recording can no longer force
   unbounded parsing, tree construction, or collection allocation before being rejected. See
   [docs/recording.md](docs/recording.md#decoding-resource-bounds).
+- `HostScopePolicy` now rejects a candidate URL longer than a documented maximum before evaluating
+  it against any configured `includeUrlPattern`/`excludeUrlPattern`, bounding the worst-case input
+  size a caller-supplied regex is ever evaluated against. Documented precisely, rather than as a
+  blanket claim, what this bound does and does not establish: it is a genuine, deterministic cap on
+  attacker-controlled input length, not a guarantee that every possible pattern is safe to evaluate
+  even within that bound, since Java's backtracking regex engine has no reliable way to cancel a
+  match already in progress. The exclude-pattern-match rejection diagnostic no longer echoes the
+  caller's own pattern text. See
+  [docs/security-model.md](docs/security-model.md#url-filter-pattern-safety).
 
 ## [1.0.0] - 2026-08-27
 
