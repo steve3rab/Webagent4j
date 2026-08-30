@@ -40,6 +40,39 @@ class RecordingResourceBoundsTest {
         return new JsonWorkflowRecordingCodec().encode(recording);
     }
 
+    /**
+     * Builds a {@code steps} array with {@code count} entries via direct JSON text duplication
+     * rather than through {@link JsonWorkflowRecordingCodec#encode}: since REC-BOUND-001-followup,
+     * {@code encode()} itself refuses a recording with more than {@code MAX_STEPS} steps (see
+     * {@code RecordingCodecRoundTripBoundsTest}), so a decode-only test proving {@code decode()}
+     * still independently rejects such a document - as it must for input from any other encoder -
+     * needs a way to construct one that does not go through this codec's own {@code encode()}. Safe
+     * only because the minimal fixture step contains no {@code [} or {@code ]} in any field value.
+     */
+    private static String recordingJsonWithStepCountViaCorruption(
+            JsonWorkflowRecordingCodec codec, int count) {
+        String oneStepDoc =
+                codec.encode(
+                        RecordingFixtures.minimalCompleted(
+                                "wf", List.of(RecordingFixtures.succeededAssignStep("s0", "o0"))));
+        int arrayFieldStart = oneStepDoc.indexOf("\"steps\":[");
+        int arrayContentStart = arrayFieldStart + "\"steps\":[".length();
+        int arrayEnd = oneStepDoc.indexOf(']', arrayContentStart);
+        String stepJson = oneStepDoc.substring(arrayContentStart, arrayEnd);
+        StringBuilder stepsArray = new StringBuilder("[");
+        for (int i = 0; i < count; i++) {
+            if (i > 0) {
+                stepsArray.append(',');
+            }
+            stepsArray.append(stepJson);
+        }
+        stepsArray.append(']');
+        return oneStepDoc.substring(0, arrayFieldStart)
+                + "\"steps\":"
+                + stepsArray
+                + oneStepDoc.substring(arrayEnd + 1);
+    }
+
     /** Pads {@code validJson} to exactly {@code targetLength} chars with leading whitespace. */
     private static String padToLength(String validJson, int targetLength) {
         int currentLength = validJson.length();
@@ -108,7 +141,9 @@ class RecordingResourceBoundsTest {
 
     @Test
     void recLimit006StepCountOverMaximumIsRejectedBeforeDomainConstruction() {
-        String encoded = recordingWithStepCount(JsonWorkflowRecordingCodec.MAX_STEPS + 1);
+        String encoded =
+                recordingJsonWithStepCountViaCorruption(
+                        codec, JsonWorkflowRecordingCodec.MAX_STEPS + 1);
         // Confirms this fixture still exercises the step-count layer, not the size layer.
         assertThat(encoded.length())
                 .isLessThan(JsonWorkflowRecordingCodec.MAX_ENCODED_LENGTH_CHARS);
@@ -134,15 +169,20 @@ class RecordingResourceBoundsTest {
 
     @Test
     void recLimit008StringOneCharOverMaximumLengthIsRejected() {
+        // Since REC-BOUND-001-followup, encode() itself now refuses to produce this string (see
+        // RecordingCodecRoundTripBoundsTest), so this decode-only test builds the oversized JSON
+        // directly - proving decode() still rejects it independently, e.g. from any other encoder.
         String tooLong = "v".repeat(JsonWorkflowRecordingCodec.MAX_STRING_LENGTH_CHARS + 1);
-        WorkflowRecording oversized =
-                RecordingFixtures.minimalCompleted(
-                        "wf", List.of(RecordingFixtures.succeededAssignStep("s1", tooLong)));
-        // Built directly (bypassing the codec's own limit) so encode() itself is unbounded, exactly
-        // as today; decode() must still reject it.
-        String encoded = new JsonWorkflowRecordingCodec().encode(oversized);
+        String valid =
+                codec.encode(
+                        RecordingFixtures.minimalCompleted(
+                                "wf", List.of(RecordingFixtures.succeededAssignStep("s1", "o"))));
+        String corrupted =
+                valid.replace(
+                        "\"outputVariableName\":\"o\"",
+                        "\"outputVariableName\":\"" + tooLong + "\"");
 
-        assertThatThrownBy(() -> codec.decode(encoded))
+        assertThatThrownBy(() -> codec.decode(corrupted))
                 .isInstanceOf(RecordingFormatException.class)
                 .hasMessageContaining("exceeds a configured JSON resource limit");
     }
@@ -262,13 +302,21 @@ class RecordingResourceBoundsTest {
 
     @Test
     void recLimit017NoDiagnosticSentinelInResourceLimitDiagnostics() {
+        // Built by direct JSON corruption, not codec.encode(...): since REC-BOUND-001-followup,
+        // encode() itself refuses to produce an oversized string (see
+        // RecordingCodecRoundTripBoundsTest#roundtripBound005), so this decode-only safety property
+        // is proven against a document decode() could still receive from any other encoder.
         String oversized =
                 DIAGNOSTIC_SENTINEL
                         + "v".repeat(JsonWorkflowRecordingCodec.MAX_STRING_LENGTH_CHARS);
-        WorkflowRecording recording =
-                RecordingFixtures.minimalCompleted(
-                        "wf", List.of(RecordingFixtures.succeededAssignStep("s1", oversized)));
-        String encoded = new JsonWorkflowRecordingCodec().encode(recording);
+        String valid =
+                codec.encode(
+                        RecordingFixtures.minimalCompleted(
+                                "wf", List.of(RecordingFixtures.succeededAssignStep("s1", "o"))));
+        String encoded =
+                valid.replace(
+                        "\"outputVariableName\":\"o\"",
+                        "\"outputVariableName\":\"" + oversized + "\"");
 
         RecordingFormatException exception =
                 (RecordingFormatException)
@@ -285,7 +333,9 @@ class RecordingResourceBoundsTest {
 
     @Test
     void recLimit018RepeatedDecodeOfTheSameExcessiveFixtureFailsIdentically() {
-        String encoded = recordingWithStepCount(JsonWorkflowRecordingCodec.MAX_STEPS + 1);
+        String encoded =
+                recordingJsonWithStepCountViaCorruption(
+                        codec, JsonWorkflowRecordingCodec.MAX_STEPS + 1);
 
         for (int i = 0; i < 3; i++) {
             assertThatThrownBy(() -> codec.decode(encoded))

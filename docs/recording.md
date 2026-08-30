@@ -70,6 +70,8 @@ The machine-readable schema is [schema/recording-v1.schema.json](schema/recordin
 
 `JsonWorkflowRecordingCodec` treats `decode(String)` input as untrusted: acceptance never depends solely on available JVM heap or Jackson's own implementation defaults. Total document size, JSON nesting depth, string/field-name/numeric-token length, and step count are each checked against a deterministic, framework-owned limit strictly before the allocation that limit protects - never after building the full JSON tree or a step-sized collection first. A recording that exceeds a limit fails the same way any other malformed recording does: a safe `RecordingFormatException` that never echoes the rejected content. The exact numeric values are an internal implementation detail, not a published compatibility contract; they are chosen generously enough that no recording a supported encoder legitimately produces is affected.
 
+`encode(WorkflowRecording)` enforces the same step-count, string-length, and total-size limits before returning, so `decode(encode(recording))` never fails on this codec's own resource bounds: a recording too large to decode back is rejected by `encode` itself (`IllegalArgumentException`, with the same never-echo diagnostic discipline as decode) rather than silently accepted and handed to a caller as JSON this codec cannot read back. This guarantee belongs to `JsonWorkflowRecordingCodec` specifically, not to `IWorkflowRecordingCodec` in general.
+
 ## Replay comparison
 
 `WorkflowReplayVerifier` performs pure synchronous structural comparison. It never opens a browser, calls an action, or performs I/O.
