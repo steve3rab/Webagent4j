@@ -4,7 +4,7 @@
   <parent>
     <groupId>io.webagent4j</groupId>
     <artifactId>webagent4j-parent</artifactId>
-    <version>1.1.1-SNAPSHOT</version>
+    <version>1.1.1</version>
   </parent>
   <artifactId>webagent4j-robustness-tests</artifactId>
   <name>WebAgent4J Robustness Tests</name>

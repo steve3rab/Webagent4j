@@ -8,6 +8,8 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-30
+
 ### Added
 
 - Governed execution: `IActionPolicy` authorizes an action before its backend side effect runs, and
