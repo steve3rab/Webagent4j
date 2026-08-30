@@ -63,6 +63,11 @@ not imply a published compatibility line.
 - Documented that a governed `NAVIGATE` action or `BrowserCrawler` visit can only detect, never
   prevent, a browser-internal redirect landing somewhere a network policy would have denied, unlike
   `HttpCrawler`, which controls its own redirect loop.
+- `JsonWorkflowRecordingCodec#decode` now enforces deterministic, framework-owned resource limits
+  (overall document size, JSON nesting depth, string/field-name/numeric-token length, and step
+  count) before the allocation each one protects, so a caller-supplied recording can no longer force
+  unbounded parsing, tree construction, or collection allocation before being rejected. See
+  [docs/recording.md](docs/recording.md#decoding-resource-bounds).
 
 ## [1.0.0] - 2026-08-27
 

@@ -4,6 +4,9 @@ import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.core.StreamReadFeature;
+import com.fasterxml.jackson.core.exc.StreamConstraintsException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -62,8 +65,72 @@ import java.util.Set;
  * addition to) {@link WorkflowRecorder}'s structural avoidance of raw workflow secrets: decoded
  * field values (for example {@code safeMessage}) are stored as ordinary data even though this codec
  * cannot verify they are actually safe - it simply never repeats them into its own errors.
+ *
+ * <p><b>Decoding treats {@code data} as untrusted input bounded by deterministic resource
+ * limits:</b> {@link #decode(String)} never lets acceptance of a recording depend solely on
+ * available JVM heap, Jackson's own implementation defaults, or how large a collection the runtime
+ * is willing to allocate. Every limit is enforced strictly before the allocation it protects - the
+ * document's overall size is checked directly against the input {@code String} before any JSON tree
+ * is built, the JSON parser itself is configured with explicit constraints on nesting depth, string
+ * length, field-name length, and numeric-token length so those are bounded while the tree is being
+ * built, and the number of recorded steps is checked before any step-sized collection is allocated.
+ * A recording that exceeds a limit fails with {@link RecordingFormatException} exactly like any
+ * other malformed input - never with an unchecked exception, an {@link OutOfMemoryError}, or a
+ * {@link StackOverflowError}. The exact numeric values are an internal implementation detail, not a
+ * published compatibility contract: they are deliberately chosen to comfortably exceed anything the
+ * supported encoder can legitimately produce (see the constants below), so this is a hardening
+ * change, not a new format restriction a well-behaved caller would ever observe.
  */
 public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec {
+
+    // ---- REC-BOUND-001: framework-owned resource limits. This is the single location that owns
+    // these values - nowhere else in this module or its tests hardcodes an equivalent magic number.
+    // Each one is enforced strictly before the allocation it bounds (see decode(String) and its
+    // helpers below), and each is chosen generously relative to anything WorkflowRecorder recording
+    // a real WorkflowEngine execution could legitimately produce, so no genuine recording is
+    // affected - only adversarial input shaped to force unbounded resource consumption is. ----
+
+    /**
+     * Maximum accepted length, in {@code char}s, of an entire encoded recording document. Checked
+     * directly against the input {@link String} before any JSON parsing begins, so an oversized
+     * document is rejected without ever materializing a JSON tree.
+     */
+    static final int MAX_ENCODED_LENGTH_CHARS = 262_144;
+
+    /**
+     * Maximum accepted number of steps in a single recording's {@code workflow.steps} array.
+     * Checked against the parsed array's length before any step-sized {@code List} is allocated.
+     */
+    static final int MAX_STEPS = 1_000;
+
+    /**
+     * Maximum accepted length, in {@code char}s, of any single JSON string value in a recording
+     * document (for example {@code recordingId}, {@code stepId}, {@code safeMessage}, or {@code
+     * description}). Enforced by the parser itself via {@link StreamReadConstraints}, uniformly
+     * across every string-valued field, rather than as a per-field matrix of separate limits.
+     */
+    static final int MAX_STRING_LENGTH_CHARS = 32_768;
+
+    /**
+     * Maximum accepted JSON nesting depth of a recording document. The deepest a valid V1 recording
+     * ever legitimately nests is five levels (root, {@code workflow}, {@code steps[]}, a step
+     * object, one of its {@code condition}/{@code failure}/{@code action} sub-objects), so this
+     * leaves ample headroom while still bounding parser stack usage far below Jackson's own
+     * default.
+     */
+    static final int MAX_NESTING_DEPTH = 64;
+
+    /**
+     * Maximum accepted length, in {@code char}s, of a single JSON field name. Every field name this
+     * schema ever expects is a short fixed literal (see the {@code *_FIELDS} constants below).
+     */
+    static final int MAX_NAME_LENGTH_CHARS = 1_000;
+
+    /**
+     * Maximum accepted length, in digits, of a single JSON numeric token. The only numeric field
+     * this schema defines is {@code schemaVersion}, which is always a small integer.
+     */
+    static final int MAX_NUMBER_LENGTH_DIGITS = 1_000;
 
     private static final JsonFactory JSON_FACTORY = createStrictFactory();
     private static final ObjectMapper MAPPER = new ObjectMapper(JSON_FACTORY);
@@ -86,10 +153,25 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
     private static final Set<String> FAILURE_FIELDS =
             Set.of("type", "safeMessage", "stepId", "underlyingTypeName", "actionFailureType");
 
+    /**
+     * Builds the parser factory shared by every {@link #decode(String)} call, hardened with
+     * explicit {@link StreamReadConstraints} instead of relying on Jackson's own version-dependent
+     * defaults. This factory and its constraints are immutable once built and are never
+     * reconfigured per call, so decoding one recording can never affect the limits applied to
+     * another.
+     */
     private static JsonFactory createStrictFactory() {
-        JsonFactory factory = new JsonFactory();
-        factory.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
-        return factory;
+        StreamReadConstraints constraints =
+                StreamReadConstraints.builder()
+                        .maxNestingDepth(MAX_NESTING_DEPTH)
+                        .maxStringLength(MAX_STRING_LENGTH_CHARS)
+                        .maxNameLength(MAX_NAME_LENGTH_CHARS)
+                        .maxNumberLength(MAX_NUMBER_LENGTH_DIGITS)
+                        .build();
+        return JsonFactory.builder()
+                .streamReadConstraints(constraints)
+                .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+                .build();
     }
 
     /** Creates a codec. Stateless: a single instance may encode/decode any number of recordings. */
@@ -233,7 +315,16 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
     // ---- decode ----
 
     private static JsonNode parseSingleDocument(String data) {
+        // REC-BOUND-001, layer 1: a cheap check against the String itself - O(1) via
+        // String.length(),
+        // no byte-array copy - rejects an oversized document before any JSON tree is built.
+        if (data.length() > MAX_ENCODED_LENGTH_CHARS) {
+            throw new RecordingFormatException("recording exceeds maximum encoded size");
+        }
         try (JsonParser parser = JSON_FACTORY.createParser(data)) {
+            // REC-BOUND-001, layer 2: nesting depth, string length, field-name length, and
+            // numeric-token length are bounded by JSON_FACTORY's StreamReadConstraints (see
+            // createStrictFactory) throughout this call, not just at its end.
             JsonNode node = MAPPER.readTree(parser);
             if (node == null) {
                 throw new RecordingFormatException("malformed recording JSON");
@@ -246,6 +337,12 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
             return node;
         } catch (RecordingFormatException e) {
             throw e;
+        } catch (StreamConstraintsException e) {
+            // Deliberately does not attach e as a cause or reuse its message: Jackson's own
+            // constraint-violation message can include the offending count or a source location -
+            // see RecordingFormatException.
+            throw new RecordingFormatException(
+                    "recording exceeds a configured JSON resource limit");
         } catch (IOException e) {
             // Deliberately does not attach e as a cause: a Jackson parse exception's own message
             // can
@@ -270,6 +367,11 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
         WorkflowStatus status =
                 requireEnum(WorkflowStatus.class, workflowNode, "status", "$.workflow.status");
         ArrayNode stepsArray = requireArray(workflowNode, "steps", "$.workflow.steps");
+        // REC-BOUND-001, layer 4: validated before the List below is sized from an otherwise
+        // attacker-controlled length.
+        if (stepsArray.size() > MAX_STEPS) {
+            throw new RecordingFormatException("recording exceeds maximum step count");
+        }
         List<RecordedWorkflowStep> steps = new ArrayList<>(stepsArray.size());
         for (int i = 0; i < stepsArray.size(); i++) {
             String stepPath = "$.workflow.steps[" + i + "]";
