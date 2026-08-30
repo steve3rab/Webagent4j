@@ -11,3 +11,16 @@ c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/web
 c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/webagent4j/crawler/HttpCrawlerTest.java:generic-api-key:279
 c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/webagent4j/crawler/PinnedSocketHttpTransportTest.java:generic-api-key:115
 c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/webagent4j/crawler/PinnedSocketHttpTransportTest.java:generic-api-key:131
+
+# Three findings from commit db2351d0004d263118c8594431cddf9ad83c6980, already published and not
+# rewritten in a later corrective pass on this same branch because history rewrites here were
+# likewise not authorized. Each one is a synthetic WF-MEM-001 redaction-proof test constant (a
+# fixed marker string used as the expected value a workflow condition must redact from its
+# diagnostic description), never a real credential - the generic-api-key rule fired on the local
+# variable name ("secret") combined with the marker's assigned string shape, not on any actual
+# secret material. The live code at HEAD no longer uses that variable name or string value (see
+# WorkflowRenderingResourceBoundsTest, which now uses "sentinel" / "WA4J_MEM_SENTINEL_*"), so these
+# three exact, already-reviewed historical fingerprints are the only findings this entry can match.
+db2351d0004d263118c8594431cddf9ad83c6980:webagent4j-workflow/src/test/java/io/webagent4j/workflow/WorkflowRenderingResourceBoundsTest.java:generic-api-key:167
+db2351d0004d263118c8594431cddf9ad83c6980:webagent4j-workflow/src/test/java/io/webagent4j/workflow/WorkflowRenderingResourceBoundsTest.java:generic-api-key:194
+db2351d0004d263118c8594431cddf9ad83c6980:webagent4j-workflow/src/test/java/io/webagent4j/workflow/WorkflowRenderingResourceBoundsTest.java:generic-api-key:415
