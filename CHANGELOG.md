@@ -51,6 +51,12 @@ not imply a published compatibility line.
 - Corrected candidate-identity tracking in the Playwright frame/document trust bridge: a browser
   engine that can replace a document while keeping its owning execution realm alive no longer causes
   a still-current, still-attached physical node to be rejected as a stale document mismatch.
+- `JsonWorkflowRecordingCodec#encode` now enforces the same step-count, string-length, and
+  total-document-size limits `decode` enforces, so `decode(encode(recording))` no longer fails on
+  this codec's own resource bounds: a recording too large for this codec to decode back is now
+  rejected by `encode` itself instead of being silently accepted and handed to a caller as JSON this
+  codec cannot read back. See
+  [docs/recording.md](docs/recording.md#decoding-resource-bounds).
 
 ### Security
 

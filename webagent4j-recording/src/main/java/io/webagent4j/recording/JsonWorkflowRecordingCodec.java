@@ -80,6 +80,21 @@ import java.util.Set;
  * published compatibility contract: they are deliberately chosen to comfortably exceed anything the
  * supported encoder can legitimately produce (see the constants below), so this is a hardening
  * change, not a new format restriction a well-behaved caller would ever observe.
+ *
+ * <p><b>Encoding refuses to produce output this codec could not decode back:</b> {@link
+ * #encode(WorkflowRecording)} enforces the same {@code MAX_STEPS}, {@code MAX_STRING_LENGTH_CHARS},
+ * and {@code MAX_ENCODED_LENGTH_CHARS} limits {@link #decode(String)} enforces, failing with {@link
+ * IllegalArgumentException} - never by silently truncating a string, dropping a step, or otherwise
+ * rewriting the recording - before returning a representation this same codec's own {@link
+ * #decode(String)} would reject. So for this specific implementation, {@code
+ * decode(encode(recording))} never fails because of a resource limit this codec owns. This is a
+ * {@link JsonWorkflowRecordingCodec}-specific guarantee, not a general {@link
+ * IWorkflowRecordingCodec} contract - a different implementation may have different or no such
+ * limits. The remaining three limits ({@code MAX_NESTING_DEPTH}, {@code MAX_NAME_LENGTH_CHARS},
+ * {@code MAX_NUMBER_LENGTH_DIGITS}) bound the untrusted-input {@code decode(String)} parser only:
+ * this encoder's fixed, hardcoded schema (short framework-owned field names, at most five levels of
+ * nesting, and a single-digit {@code schemaVersion}) can never approach them, so there is nothing
+ * for {@code encode} to check for those three.
  */
 public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec {
 
@@ -177,16 +192,82 @@ public final class JsonWorkflowRecordingCodec implements IWorkflowRecordingCodec
     /** Creates a codec. Stateless: a single instance may encode/decode any number of recordings. */
     public JsonWorkflowRecordingCodec() {}
 
+    /**
+     * Encodes {@code recording} to its canonical JSON transport form.
+     *
+     * @throws IllegalArgumentException if {@code recording} cannot be represented within this
+     *     codec's own {@link #decode(String)} resource limits ({@link #MAX_STEPS}, {@link
+     *     #MAX_STRING_LENGTH_CHARS}, or {@link #MAX_ENCODED_LENGTH_CHARS}) - see the class Javadoc
+     */
     @Override
     public String encode(WorkflowRecording recording) {
         Objects.requireNonNull(recording, "recording");
+        // REC-BOUND-001 round-trip coherence, part 1: reject a recording this codec could never
+        // decode back before writing a single byte - see validateEncodable.
+        validateEncodable(recording);
         StringWriter writer = new StringWriter();
         try (JsonGenerator generator = JSON_FACTORY.createGenerator(writer)) {
             writeRecording(generator, recording);
         } catch (IOException e) {
             throw new UncheckedIOException("failed to encode recording", e);
         }
-        return writer.toString();
+        String encoded = writer.toString();
+        // REC-BOUND-001 round-trip coherence, part 2: individually bounded steps/strings can still
+        // sum to an oversized document, so the total is checked once more here, before return. The
+        // input to this check is trusted, already-validated in-memory data produced by this same
+        // call - not untrusted external input - so allocating the full String first (rather than
+        // bounding a writer mid-stream) is the simplest sound option; see the class Javadoc.
+        if (encoded.length() > MAX_ENCODED_LENGTH_CHARS) {
+            throw new IllegalArgumentException("encoded recording exceeds maximum supported size");
+        }
+        return encoded;
+    }
+
+    /**
+     * Rejects a recording this codec could not decode back, before any JSON is generated: exactly
+     * the step count and string-length limits {@link #decode(String)} enforces, checked against the
+     * trusted in-memory domain object instead of untrusted serialized text. Every caller-controlled
+     * string this codec ever writes is checked here; a fixed enum name or literal field name is
+     * not, since neither can approach {@link #MAX_STRING_LENGTH_CHARS}.
+     */
+    private static void validateEncodable(WorkflowRecording recording) {
+        if (recording.steps().size() > MAX_STEPS) {
+            throw new IllegalArgumentException("recording exceeds maximum encodable step count");
+        }
+        requireEncodableLength(recording.recordingId().value());
+        requireEncodableLength(recording.workflowId().value());
+        for (RecordedWorkflowStep step : recording.steps()) {
+            validateEncodableStep(step);
+        }
+        recording.failure().ifPresent(JsonWorkflowRecordingCodec::validateEncodableFailure);
+    }
+
+    private static void validateEncodableStep(RecordedWorkflowStep step) {
+        requireEncodableLength(step.stepId().value());
+        step.condition().ifPresent(condition -> requireEncodableLength(condition.description()));
+        step.outputVariableName().ifPresent(JsonWorkflowRecordingCodec::requireEncodableLength);
+        step.failure().ifPresent(JsonWorkflowRecordingCodec::validateEncodableFailure);
+        step.action().ifPresent(action -> requireEncodableLength(action.actionId().value()));
+    }
+
+    private static void validateEncodableFailure(RecordedFailure failure) {
+        requireEncodableLength(failure.safeMessage());
+        failure.stepId().ifPresent(stepId -> requireEncodableLength(stepId.value()));
+        failure.underlyingTypeName().ifPresent(JsonWorkflowRecordingCodec::requireEncodableLength);
+    }
+
+    /**
+     * Deliberately never includes {@code value} in the thrown message: an encoded recording is
+     * trusted, in-process Java data, but a caller-supplied string field (for example {@code
+     * safeMessage}) is not guaranteed to be safe to place in a log or error message any more than
+     * an untrusted decoded one is - see {@link RecordingFormatException}'s Javadoc for the same
+     * reasoning applied to decode.
+     */
+    private static void requireEncodableLength(String value) {
+        if (value.length() > MAX_STRING_LENGTH_CHARS) {
+            throw new IllegalArgumentException(
+                    "recording contains a string value exceeding the codec limit");
+        }
     }
 
     @Override
