@@ -65,12 +65,19 @@ public final class WorkflowConditions {
     /**
      * True when {@code variable}'s current value equals {@code expected}.
      *
+     * <p>{@code describe()}, called directly, renders {@code expected} immediately (crash-safe,
+     * deliberately unbounded - see {@link SafeRendering}). {@link WorkflowEngine} instead calls
+     * {@link IDeferredConditionDescription#describeFinal}, deferring that same rendering to
+     * finalization time so the unbounded text is never retained for the workflow's whole execution
+     * (see {@code WF-MEM-001}); both paths produce the identical final text for a well-behaved
+     * {@code expected}.
+     *
      * @throws WorkflowVariableMissingException at evaluation time if {@code variable} is missing
      */
     public static <T> IWorkflowCondition equals(WorkflowVariable<T> variable, T expected) {
         Objects.requireNonNull(variable, "variable");
         Objects.requireNonNull(expected, "expected");
-        return new IWorkflowCondition() {
+        return new IDeferredConditionDescription() {
             @Override
             public boolean evaluate(IWorkflowVariables variables) {
                 return Objects.equals(variables.require(variable), expected);
@@ -78,11 +85,19 @@ public final class WorkflowConditions {
 
             @Override
             public String describe() {
-                return "equals("
-                        + variable.name()
-                        + ", "
-                        + SafeRendering.render(variable, expected)
-                        + ")";
+                return describeEquals(variable, SafeRendering.render(variable, expected));
+            }
+
+            @Override
+            public String describeFinal(SecretRedactor finalRedactor) {
+                // Deliberately not bounded here - see IDeferredConditionDescription's Javadoc: the
+                // engine applies exactly one bound to the complete, possibly-composed description
+                // text, the same way it always has, rather than each leaf condition bounding only
+                // its own contribution (which would let a composite of many built-in conditions
+                // grow
+                // unbounded overall even though each individual leaf were bounded).
+                return describeEquals(
+                        variable, finalRedactor.redact(SafeRendering.render(variable, expected)));
             }
 
             @Override
@@ -92,20 +107,45 @@ public final class WorkflowConditions {
         };
     }
 
+    private static String describeEquals(WorkflowVariable<?> variable, String renderedExpected) {
+        return "equals(" + variable.name() + ", " + renderedExpected + ")";
+    }
+
     /**
-     * True when {@code variable}'s current value does not equal {@code expected}.
+     * True when {@code variable}'s current value does not equal {@code expected}. Shares {@link
+     * #equals}'s deferred-description behavior - see that method's Javadoc.
      *
      * @throws WorkflowVariableMissingException at evaluation time if {@code variable} is missing
      */
     public static <T> IWorkflowCondition notEquals(WorkflowVariable<T> variable, T expected) {
-        return not(
-                equals(variable, expected),
-                "notEquals("
-                        + variable.name()
-                        + ", "
-                        + SafeRendering.render(variable, expected)
-                        + ")",
-                Set.of(variable));
+        IWorkflowCondition equalsCondition = equals(variable, expected);
+        return new IDeferredConditionDescription() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return !equalsCondition.evaluate(variables);
+            }
+
+            @Override
+            public String describe() {
+                return describeNotEquals(variable, SafeRendering.render(variable, expected));
+            }
+
+            @Override
+            public String describeFinal(SecretRedactor finalRedactor) {
+                // See equals()'s describeFinal - deliberately not bounded here for the same reason.
+                return describeNotEquals(
+                        variable, finalRedactor.redact(SafeRendering.render(variable, expected)));
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of(variable);
+            }
+        };
+    }
+
+    private static String describeNotEquals(WorkflowVariable<?> variable, String renderedExpected) {
+        return "notEquals(" + variable.name() + ", " + renderedExpected + ")";
     }
 
     /**
@@ -138,6 +178,29 @@ public final class WorkflowConditions {
      */
     public static IWorkflowCondition not(IWorkflowCondition condition) {
         Objects.requireNonNull(condition, "condition");
+        if (condition instanceof IDeferredConditionDescription deferred) {
+            return new IDeferredConditionDescription() {
+                @Override
+                public boolean evaluate(IWorkflowVariables variables) {
+                    return !condition.evaluate(variables);
+                }
+
+                @Override
+                public String describe() {
+                    return describeNot(condition.describe());
+                }
+
+                @Override
+                public String describeFinal(SecretRedactor finalRedactor) {
+                    return describeNot(deferred.describeFinal(finalRedactor));
+                }
+
+                @Override
+                public Set<WorkflowVariable<?>> referencedVariables() {
+                    return condition.referencedVariables();
+                }
+            };
+        }
         return new IWorkflowCondition() {
             @Override
             public boolean evaluate(IWorkflowVariables variables) {
@@ -146,11 +209,7 @@ public final class WorkflowConditions {
 
             @Override
             public String describe() {
-                String childDescription = condition.describe();
-                if (childDescription == null) {
-                    return null;
-                }
-                return "not(" + childDescription + ")";
+                return describeNot(condition.describe());
             }
 
             @Override
@@ -160,24 +219,13 @@ public final class WorkflowConditions {
         };
     }
 
-    private static IWorkflowCondition not(
-            IWorkflowCondition condition, String description, Set<WorkflowVariable<?>> referenced) {
-        return new IWorkflowCondition() {
-            @Override
-            public boolean evaluate(IWorkflowVariables variables) {
-                return !condition.evaluate(variables);
-            }
-
-            @Override
-            public String describe() {
-                return description;
-            }
-
-            @Override
-            public Set<WorkflowVariable<?>> referencedVariables() {
-                return referenced;
-            }
-        };
+    /**
+     * Wraps a (possibly {@code null}) child description as {@code "not(" + childDescription + ")"},
+     * preserving a {@code null} child description as {@code null} rather than the literal text
+     * {@code "null"} - see {@link #not(IWorkflowCondition)}.
+     */
+    private static String describeNot(String childDescription) {
+        return childDescription == null ? null : "not(" + childDescription + ")";
     }
 
     /**
@@ -189,24 +237,38 @@ public final class WorkflowConditions {
         if (copy.isEmpty()) {
             throw new IllegalArgumentException("allOf requires at least one condition");
         }
+        if (allDeferred(copy)) {
+            return new IDeferredConditionDescription() {
+                @Override
+                public boolean evaluate(IWorkflowVariables variables) {
+                    return allTrue(copy, variables);
+                }
+
+                @Override
+                public String describe() {
+                    return describeComposite("allOf", describeAll(copy));
+                }
+
+                @Override
+                public String describeFinal(SecretRedactor finalRedactor) {
+                    return describeComposite("allOf", describeAllFinal(copy, finalRedactor));
+                }
+
+                @Override
+                public Set<WorkflowVariable<?>> referencedVariables() {
+                    return referencedByAll(copy);
+                }
+            };
+        }
         return new IWorkflowCondition() {
             @Override
             public boolean evaluate(IWorkflowVariables variables) {
-                for (IWorkflowCondition condition : copy) {
-                    if (!condition.evaluate(variables)) {
-                        return false;
-                    }
-                }
-                return true;
+                return allTrue(copy, variables);
             }
 
             @Override
             public String describe() {
-                String allDescriptions = describeAll(copy);
-                if (allDescriptions == null) {
-                    return null;
-                }
-                return "allOf(" + allDescriptions + ")";
+                return describeComposite("allOf", describeAll(copy));
             }
 
             @Override
@@ -225,24 +287,38 @@ public final class WorkflowConditions {
         if (copy.isEmpty()) {
             throw new IllegalArgumentException("anyOf requires at least one condition");
         }
+        if (allDeferred(copy)) {
+            return new IDeferredConditionDescription() {
+                @Override
+                public boolean evaluate(IWorkflowVariables variables) {
+                    return anyTrue(copy, variables);
+                }
+
+                @Override
+                public String describe() {
+                    return describeComposite("anyOf", describeAll(copy));
+                }
+
+                @Override
+                public String describeFinal(SecretRedactor finalRedactor) {
+                    return describeComposite("anyOf", describeAllFinal(copy, finalRedactor));
+                }
+
+                @Override
+                public Set<WorkflowVariable<?>> referencedVariables() {
+                    return referencedByAll(copy);
+                }
+            };
+        }
         return new IWorkflowCondition() {
             @Override
             public boolean evaluate(IWorkflowVariables variables) {
-                for (IWorkflowCondition condition : copy) {
-                    if (condition.evaluate(variables)) {
-                        return true;
-                    }
-                }
-                return false;
+                return anyTrue(copy, variables);
             }
 
             @Override
             public String describe() {
-                String allDescriptions = describeAll(copy);
-                if (allDescriptions == null) {
-                    return null;
-                }
-                return "anyOf(" + allDescriptions + ")";
+                return describeComposite("anyOf", describeAll(copy));
             }
 
             @Override
@@ -250,6 +326,50 @@ public final class WorkflowConditions {
                 return referencedByAll(copy);
             }
         };
+    }
+
+    private static boolean allTrue(
+            List<IWorkflowCondition> conditions, IWorkflowVariables variables) {
+        for (IWorkflowCondition condition : conditions) {
+            if (!condition.evaluate(variables)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean anyTrue(
+            List<IWorkflowCondition> conditions, IWorkflowVariables variables) {
+        for (IWorkflowCondition condition : conditions) {
+            if (condition.evaluate(variables)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True only when every one of {@code conditions} already implements {@link
+     * IDeferredConditionDescription} - the only case in which the composite built from them can
+     * itself safely defer its own description to finalization time (see {@link
+     * IDeferredConditionDescription}'s Javadoc on why only framework-owned description logic may do
+     * so).
+     */
+    private static boolean allDeferred(List<IWorkflowCondition> conditions) {
+        for (IWorkflowCondition condition : conditions) {
+            if (!(condition instanceof IDeferredConditionDescription)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Wraps a (possibly {@code null}) joined child description as {@code name + "(" + joined +
+     * ")"}, preserving {@code null} rather than the literal text {@code "null"}.
+     */
+    private static String describeComposite(String name, String joinedDescriptions) {
+        return joinedDescriptions == null ? null : name + "(" + joinedDescriptions + ")";
     }
 
     /**
@@ -263,6 +383,29 @@ public final class WorkflowConditions {
         StringBuilder text = new StringBuilder();
         for (int i = 0; i < conditions.size(); i++) {
             String description = conditions.get(i).describe();
+            if (description == null) {
+                return null;
+            }
+            if (i > 0) {
+                text.append(", ");
+            }
+            text.append(description);
+        }
+        return text.toString();
+    }
+
+    /**
+     * {@link #describeAll}'s finalization-time counterpart: only ever called when {@link
+     * #allDeferred} has already confirmed every element of {@code conditions} implements {@link
+     * IDeferredConditionDescription}, so the cast below is safe.
+     */
+    private static String describeAllFinal(
+            List<IWorkflowCondition> conditions, SecretRedactor finalRedactor) {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < conditions.size(); i++) {
+            IDeferredConditionDescription deferred =
+                    (IDeferredConditionDescription) conditions.get(i);
+            String description = deferred.describeFinal(finalRedactor);
             if (description == null) {
                 return null;
             }

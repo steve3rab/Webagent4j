@@ -74,6 +74,13 @@ not imply a published compatibility line.
   count) before the allocation each one protects, so a caller-supplied recording can no longer force
   unbounded parsing, tree construction, or collection allocation before being rejected. See
   [docs/recording.md](docs/recording.md#decoding-resource-bounds).
+- A built-in workflow condition (`WorkflowConditions#equals`/`notEquals`, and any `not`/`allOf`/
+  `anyOf` composed only from them) no longer renders its comparison literal eagerly at step-evaluation
+  time and retains the (potentially unbounded) rendered text for the rest of the execution; rendering
+  is now deferred to workflow finalization, when the complete secret set is already known, so the
+  text is created, redacted, and bounded in one step instead. The mandatory `render → redact → bound`
+  ordering, and behavior for a custom `IWorkflowCondition`, are unchanged. See
+  [docs/workflow.md](docs/workflow.md#resource-bounded-diagnostics).
 
 ## [1.0.0] - 2026-08-27
 
