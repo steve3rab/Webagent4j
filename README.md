@@ -1,6 +1,6 @@
 # WebAgent4J
 
-[![CI](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml/badge.svg)](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml)
+[![CI](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml)
 [![Java 21+](https://img.shields.io/badge/Java-21%2B-ED8B00.svg?logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
@@ -12,9 +12,11 @@ closed rather than guess.
 Playwright is the first browser backend.
 
 > [!IMPORTANT]
-> `1.0.x` is the current stable line; `develop` is now `1.1.0-SNAPSHOT`. Public Maven artifacts are
-> not yet published from this repository's release workflow. Until publication is enabled, build and
-> install the artifacts locally.
+> `1.1.x` is the current stable release line (latest: `1.1.1`, published from `main`); `develop` is
+> the active development line, currently `1.2.0-SNAPSHOT`. As of this state, `develop` has no
+> functional changes beyond the `1.1.1` release. Public Maven artifacts are not yet published from
+> this repository's release workflow. Until publication is enabled, build and install the artifacts
+> locally.
 
 ## Design goals
 
@@ -262,7 +264,7 @@ must not be inferred from Java serialization or Java object identity.
 
 ## Project status
 
-`1.0.0` is released and is the current stable line (`1.0.x`). Its functional scope is implemented:
+`1.1.1` is released and is the current stable line (`1.1.x`). Its functional scope is implemented:
 
 - browser lifecycle and semantic location;
 - bounded observation;
@@ -272,9 +274,13 @@ must not be inferred from Java serialization or Java object identity.
 - sequential workflows;
 - Recording JSON V1 and offline comparison;
 - explicit trusted locator plugins;
+- opt-in governed execution (`IActionPolicy`/`INetworkPolicy`) with decision provenance and
+  transport-bound address pinning for `HttpCrawler`;
 - adversarial hardening of cross-module contracts.
 
-`develop` is the active line for the next release, currently `1.1.0-SNAPSHOT`.
+`develop` is `1.2.0-SNAPSHOT`, the active line for the next release. As of this state, it contains
+no functional changes beyond the `1.1.1` release described above; `1.2.0` development has not yet
+started.
 
 ## Contributing
 
