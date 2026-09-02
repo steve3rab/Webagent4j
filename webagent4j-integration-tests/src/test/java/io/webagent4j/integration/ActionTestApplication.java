@@ -761,7 +761,7 @@ final class ActionTestApplication implements AutoCloseable {
                     document(
                             "Ambiguous actions",
                             "<button>Duplicate</button><button>Duplicate</button>");
-            case "/workflow/branch-ready" ->
+            case "/actions/workflow-branch-ready" ->
                     document(
                             "Workflow branch ready",
                             """
@@ -770,7 +770,7 @@ final class ActionTestApplication implements AutoCloseable {
                             <button id="cancel" aria-label="Cancel"
                               onclick="fetch('/count-click/cancel')">Cancel</button>
                             """);
-            case "/workflow/branch-target-changed" ->
+            case "/actions/workflow-branch-target-changed" ->
                     document(
                             "Workflow branch target changed",
                             """

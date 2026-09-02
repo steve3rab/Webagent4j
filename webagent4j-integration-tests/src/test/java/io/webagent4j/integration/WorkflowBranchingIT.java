@@ -68,7 +68,7 @@ class WorkflowBranchingIT {
             throws Exception {
         AtomicInteger evaluations = new AtomicInteger();
         try (var support = Phase4TestSupport.start();
-                var page = support.open("/workflow/branch-ready")) {
+                var page = support.open("/actions/workflow-branch-ready")) {
             Workflow workflow =
                     Workflow.builder("branch-true")
                             .requiredInput(PAGE)
@@ -95,7 +95,7 @@ class WorkflowBranchingIT {
             throws Exception {
         AtomicInteger evaluations = new AtomicInteger();
         try (var support = Phase4TestSupport.start();
-                var page = support.open("/workflow/branch-ready")) {
+                var page = support.open("/actions/workflow-branch-ready")) {
             Workflow workflow =
                     Workflow.builder("branch-false")
                             .requiredInput(PAGE)
@@ -131,7 +131,7 @@ class WorkflowBranchingIT {
             throws Exception {
         AtomicInteger evaluations = new AtomicInteger();
         try (var support = Phase4TestSupport.start();
-                var page = support.open("/workflow/branch-target-changed")) {
+                var page = support.open("/actions/workflow-branch-target-changed")) {
             Workflow workflow =
                     Workflow.builder("branch-target-changed")
                             .requiredInput(PAGE)
