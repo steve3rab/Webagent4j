@@ -25,10 +25,11 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * PT-001 through PT-010: proves that every {@link PlaywrightActionBackend} side-effecting method -
- * not merely {@code click}, which {@link PlaywrightAtomicIdentityBindingTest} already covers -
- * consumes an identity-verified target's exact bound {@link ElementHandle} rather than
- * independently re-resolving the underlying {@link Locator}.
+ * PT-001 through PT-010 (plus PT-003c/PT-003d for {@code typeSequentially}, added for Governed
+ * Actions V2): proves that every {@link PlaywrightActionBackend} side-effecting method - not merely
+ * {@code click}, which {@link PlaywrightAtomicIdentityBindingTest} already covers - consumes an
+ * identity-verified target's exact bound {@link ElementHandle} rather than independently
+ * re-resolving the underlying {@link Locator}.
  *
  * <p>The scenario every test here defends against: candidate T1 is selected, its identity captured,
  * and re-proven by {@link PlaywrightElement#verifiedForExecution()} - which atomically binds the
@@ -89,6 +90,30 @@ class PlaywrightVerifiedTargetActionMatrixTest {
 
         verify(handle, times(1)).fill("s3cr3t");
         verify(locator, never()).fill(anyString());
+    }
+
+    @Test
+    void pt003cTypeSequentiallyConsumesTheExactVerifiedHandleNeverTheLocator() {
+        ElementHandle handle = mock(ElementHandle.class);
+        Locator locator = verifiedLocator(handle);
+        IElement verified = verifiedElement(locator);
+
+        backend().typeSequentially(verified, "hello");
+
+        verify(handle, times(1)).type("hello");
+        verify(locator, never()).pressSequentially(anyString());
+    }
+
+    @Test
+    void pt003dTypeSequentiallySecretConsumesTheExactVerifiedHandleNeverTheLocator() {
+        ElementHandle handle = mock(ElementHandle.class);
+        Locator locator = verifiedLocator(handle);
+        IElement verified = verifiedElement(locator);
+
+        backend().typeSequentiallySecret(verified, Secret.of("s3cr3t"));
+
+        verify(handle, times(1)).type("s3cr3t");
+        verify(locator, never()).pressSequentially(anyString());
     }
 
     @Test

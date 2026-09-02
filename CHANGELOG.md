@@ -10,6 +10,19 @@ not imply a published compatibility line.
 
 ### Added
 
+- Governed Actions V2: extended atomic exact-target execution to every target-bound governed
+  action, not just `click` - `type`/`fill`, `select`, `check`, `uncheck`, `hover`, and `pressKey`
+  now share the same `IElement#verifiedForExecution()` atomic-handle binding `click` already had,
+  proven with new real-browser adversarial tests (physical replacement during policy evaluation,
+  and after the exact handle is already bound, both fail closed with zero backend invocations) and
+  a generic-pipeline test matrix covering all eight actions' policy-authorization, deadline, and
+  interruption boundaries. Also adds `typeSequentially`/`typeSequentiallySecret`
+  (`ActionType.TYPE_SEQUENCE`), a genuinely new action distinct from `type`/`fill`: it dispatches
+  one key event per character instead of instantly replacing the value, sharing the identical
+  governed-execution pipeline and exact-target guarantee. See
+  [Governed execution](docs/governed-execution.md#target-identity-binding) and
+  [Limitations](docs/limitations.md#governed-execution).
+
 - Governed execution: `IActionPolicy` authorizes an action before its backend side effect runs, and
   `INetworkPolicy` authorizes a `NAVIGATE` action's or crawler's network destination before a
   request is sent - both opt-in, built on a shared synchronous, fail-closed `IExecutionPolicy`

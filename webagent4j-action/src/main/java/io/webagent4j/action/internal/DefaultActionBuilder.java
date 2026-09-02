@@ -110,6 +110,50 @@ public final class DefaultActionBuilder implements IActionBuilder {
     }
 
     @Override
+    public IPreparedAction<Void> typeSequentially(IElement element, String value) {
+        Objects.requireNonNull(value, "value");
+        return this.<Void>target(
+                ActionType.TYPE_SEQUENCE,
+                fixed(element),
+                ActionIdempotency.IDEMPOTENT,
+                ActionSideEffect.LOCAL_PAGE_STATE,
+                (backend, target) -> {
+                    backend.typeSequentially(target, value);
+                    return null;
+                });
+    }
+
+    @Override
+    public IPreparedAction<Void> typeSequentially(
+            IElementReference<IElement> reference, String value) {
+        Objects.requireNonNull(value, "value");
+        return target(
+                ActionType.TYPE_SEQUENCE,
+                reference,
+                ActionIdempotency.IDEMPOTENT,
+                ActionSideEffect.LOCAL_PAGE_STATE,
+                (backend, target) -> {
+                    backend.typeSequentially(target, value);
+                    return null;
+                });
+    }
+
+    @Override
+    public IPreparedAction<Void> typeSequentiallySecret(IElement element, Secret value) {
+        Objects.requireNonNull(value, "value");
+        return this.<Void>target(
+                        ActionType.TYPE_SEQUENCE,
+                        fixed(element),
+                        ActionIdempotency.IDEMPOTENT,
+                        ActionSideEffect.LOCAL_PAGE_STATE,
+                        (backend, target) -> {
+                            backend.typeSequentiallySecret(target, value);
+                            return null;
+                        })
+                .sensitive();
+    }
+
+    @Override
     public IPreparedAction<Void> clear(IElement element) {
         return target(
                 ActionType.CLEAR,

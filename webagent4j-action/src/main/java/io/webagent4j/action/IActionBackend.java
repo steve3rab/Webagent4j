@@ -28,6 +28,22 @@ public interface IActionBackend {
         throw unsupported();
     }
 
+    /**
+     * Replaces the current editable value by dispatching one key event per character, distinct from
+     * {@link #fill(IElement, String)}, which sets the value with no per-character key events.
+     */
+    default void typeSequentially(IElement element, String value) {
+        throw unsupported();
+    }
+
+    /**
+     * Same as {@link #typeSequentially(IElement, String)} without exposing the secret to
+     * diagnostics.
+     */
+    default void typeSequentiallySecret(IElement element, Secret value) {
+        throw unsupported();
+    }
+
     /** Clears the current editable value. */
     default void clear(IElement element) {
         throw unsupported();

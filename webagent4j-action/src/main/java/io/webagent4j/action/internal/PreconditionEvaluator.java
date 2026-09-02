@@ -73,6 +73,7 @@ final class PreconditionEvaluator {
             case CLICK,
                     DOUBLE_CLICK,
                     TYPE,
+                    TYPE_SEQUENCE,
                     CLEAR,
                     SELECT,
                     CHECK,
@@ -94,6 +95,7 @@ final class PreconditionEvaluator {
             case CLICK,
                     DOUBLE_CLICK,
                     TYPE,
+                    TYPE_SEQUENCE,
                     CLEAR,
                     SELECT,
                     CHECK,
@@ -108,7 +110,9 @@ final class PreconditionEvaluator {
     }
 
     private static boolean requiresEditable(ActionType type) {
-        return type == ActionType.TYPE || type == ActionType.CLEAR;
+        return type == ActionType.TYPE
+                || type == ActionType.TYPE_SEQUENCE
+                || type == ActionType.CLEAR;
     }
 
     private static boolean requiresClickability(ActionType type) {
