@@ -23,7 +23,7 @@ The engine creates fresh per-execution session state. Reusing a workflow does no
 
 ## Definition validation
 
-Build-time validation rejects invalid IDs/duplicates, empty step lists, conflicting input/output variable declarations, and statically invalid condition variable references. A workflow therefore contains at least one step before execution can exist.
+Build-time validation rejects invalid IDs/duplicates, empty step lists, conflicting input/output variable declarations, and statically invalid condition variable references. A workflow therefore contains at least one step before execution can exist. Step ID uniqueness and variable-reference validation apply across the whole step tree, including inside every `ifElse`/`ifThen` branch at every nesting depth - not only among top-level steps.
 
 ## Variables
 
@@ -53,6 +53,31 @@ An action step receives current variables through an `IWorkflowActionFactory`, p
 
 Action result projection preserves the exact action status/execution/failure matrix defined in [contracts.md](contracts.md#action-outcome-matrix).
 
+## Branching
+
+`WorkflowSteps.ifElse(id, condition, thenSteps, elseSteps)` and `WorkflowSteps.ifThen(id, condition, thenSteps)` add one deterministic conditional step: a workflow condition is evaluated exactly once when its conditional step is reached, and the resulting branch decision is immutable for that execution:
+
+```text
+reach conditional step
+      |
+condition evaluated exactly once
+      |
+decision captured
+      |
+exactly one branch executes (thenSteps if true, elseSteps - or nothing, for ifThen - if false)
+      |
+continue with the step that structurally follows the conditional
+```
+
+- **Evaluate-once:** the condition is never re-evaluated after the decision is captured, regardless of what happens afterward - a mutated variable, a later action failure, or a target-identity change inside the selected branch never triggers re-evaluation or a switch to the other branch.
+- **Exactly one branch, never a fallback:** failure of the selected branch never causes the other branch to execute. `elseSteps` is not an error handler; it only ever runs because the condition evaluated to `false`.
+- **Zero side effects from the non-selected branch:** the branch not selected produces zero step executions, zero action-factory calls, and zero backend invocations. It is not run for validation, dry-run, or as a fallback.
+- **Fail-closed condition failure:** if the condition's own evaluation fails (throws, or its `describe()` is malformed), the conditional step fails with `CONDITION_EVALUATION_FAILED` and neither branch runs - a failed evaluation is never treated as a `false` decision.
+- **Interruption:** `WorkflowEngine` has no workflow-wide timeout or budget of its own (see "Deliberate exclusions" below) - every deadline in this codebase is enforced by the action/browser backend layer for the action it wraps. A conditional step's own two structural boundaries - before the condition is evaluated, and after the decision is captured but before the selected branch starts - are instead guarded by the executing thread's interrupt status, exactly like the action pipeline's own equivalent boundary checks: an interrupt observed at either point fails the conditional step closed with `CONDITIONAL_STEP_INTERRUPTED`, and the flag is left set, never silently cleared.
+- **Nested branching:** `thenSteps`/`elseSteps` may themselves contain `ifElse`/`ifThen` steps to any depth; each level follows the identical evaluate-once/exactly-one-branch contract independently. Step ID uniqueness is enforced across the whole tree (see "Definition validation" above).
+- **Result shape:** a conditional step's own `WorkflowStepResult` carries the branch decision in its `condition()` field (its outcome is never used to derive `SKIPPED` for this step type - only `ifElse`/`ifThen`'s own missing-else no-op path and `SUCCEEDED`/`FAILED` apply) and publishes no output variable or action summary of its own. `WorkflowResult.steps()` stays one flat, execution-ordered list: the conditional step's own result is immediately followed by whichever single branch's steps actually ran, in order - the branch that did not run contributes nothing to the list, at any nesting depth.
+- **Conditions stay pure:** a branch condition is the same `IWorkflowCondition` used for step guards elsewhere - deterministic and side-effect-free. This feature does not let a condition perform a side-effecting action.
+
 ## Fail-fast result shape
 
 A completed result contains only `SUCCEEDED`/`SKIPPED` steps. Runtime failure produces zero or more successful/skipped predecessors, exactly one failed step, and `NOT_RUN` successors. Overall failure and the failed step identify the same failure point.
@@ -81,4 +106,4 @@ Workflow definitions are immutable/reusable. Each execution has isolated session
 
 ## Deliberate exclusions
 
-No loops, recursion, parallel branches, DAG scheduler, transactions/sagas, persistence/checkpoints, timers/scheduling, external triggers, workflow-wide cancellation/timeout, YAML/JSON workflow DSL, or hidden retry.
+No loops, recursion (over data - nested `ifElse`/`ifThen` structure is not recursion), parallel branches, DAG scheduler, transactions/sagas, persistence/checkpoints, timers/scheduling, external triggers, workflow-wide cancellation/timeout, YAML/JSON workflow DSL, or hidden retry. Deterministic if/else branching (`ifElse`/`ifThen`) is supported; workflow variables, `switch`/`case`, loops, and condition-driven exception handling are not.

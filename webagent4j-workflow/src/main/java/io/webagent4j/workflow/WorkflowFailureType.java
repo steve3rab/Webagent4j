@@ -21,5 +21,11 @@ public enum WorkflowFailureType {
     /** A step's produced value did not match its declared output variable's type. */
     OUTPUT_TYPE_MISMATCH,
     /** A step declared an output variable but produced no value. */
-    NULL_OUTPUT
+    NULL_OUTPUT,
+    /**
+     * A {@link WorkflowStepType#CONDITIONAL} step observed the executing thread's interrupt flag
+     * set at one of its two evaluate/select boundaries - added in 1.2.0, see {@code
+     * docs/workflow.md#branching}.
+     */
+    CONDITIONAL_STEP_INTERRUPTED
 }

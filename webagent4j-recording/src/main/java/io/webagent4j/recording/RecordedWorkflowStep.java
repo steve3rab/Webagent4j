@@ -30,7 +30,9 @@ import java.util.Optional;
  * @param stepId the step's identifier
  * @param stepType the step's broad category
  * @param status the step's terminal status
- * @param condition the guard condition's recorded outcome, if the step had one and it was evaluated
+ * @param condition mirrors {@code WorkflowStepResult#condition}: a guard outcome for {@code
+ *     ACTION}/{@code ASSIGN} ({@code false} always implies {@code SKIPPED}), or a {@code
+ *     CONDITIONAL} step's mandatory branch decision ({@code false} never implies {@code SKIPPED})
  * @param outputVariableName the name of the variable this step published, if it produced one
  * @param failure the recorded failure, if {@code status} is {@link WorkflowStepStatus#FAILED}
  * @param action a safe recorded projection of the underlying action result, for an {@code ACTION}
@@ -107,11 +109,25 @@ public record RecordedWorkflowStep(
                 throw new IllegalArgumentException("a NOT_RUN step cannot carry an action");
             }
         }
-        if (condition.isPresent()
+        if (stepType != WorkflowStepType.CONDITIONAL
+                && condition.isPresent()
                 && !condition.get().outcome()
                 && status != WorkflowStepStatus.SKIPPED) {
             throw new IllegalArgumentException(
                     "a step with a false condition outcome must be SKIPPED");
+        }
+        if (stepType == WorkflowStepType.CONDITIONAL) {
+            if (outputVariableName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a CONDITIONAL step cannot carry a published output variable name");
+            }
+            if (action.isPresent()) {
+                throw new IllegalArgumentException("a CONDITIONAL step cannot carry an action");
+            }
+            if (status == WorkflowStepStatus.SKIPPED) {
+                throw new IllegalArgumentException(
+                        "a CONDITIONAL step's own branch decision is never SKIPPED");
+            }
         }
         if (stepType == WorkflowStepType.ASSIGN && action.isPresent()) {
             throw new IllegalArgumentException("an ASSIGN step cannot carry an action");
@@ -177,6 +193,13 @@ public record RecordedWorkflowStep(
             case NULL_OUTPUT, OUTPUT_TYPE_MISMATCH -> {
                 requireActionStepType(stepType, failureType);
                 requireActionSummaryWithSuccessStatus(action, failureType);
+            }
+            case CONDITIONAL_STEP_INTERRUPTED -> {
+                if (stepType != WorkflowStepType.CONDITIONAL) {
+                    throw new IllegalArgumentException(
+                            failureType + " can only occur on a CONDITIONAL step");
+                }
+                requireNoActionSummary(action, failureType);
             }
         }
     }

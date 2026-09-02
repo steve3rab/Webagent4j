@@ -164,19 +164,7 @@ public final class Workflow {
 
             Set<WorkflowStepId> seenStepIds = new HashSet<>();
             for (IWorkflowStep step : steps) {
-                if (!seenStepIds.add(step.id())) {
-                    throw new IllegalArgumentException("duplicate step ID '" + step.id() + "'");
-                }
-
-                step.condition()
-                        .ifPresent(condition -> validateCondition(step, condition, available));
-
-                // Safe: IWorkflowStep is sealed and permits only AWorkflowStep (see its Javadoc),
-                // so every instance reachable here is guaranteed to be one.
-                AWorkflowStep concreteStep = (AWorkflowStep) step;
-                concreteStep
-                        .outputVariable()
-                        .ifPresent(output -> registerStepOutput(byName, available, step, output));
+                validateStep(step, byName, available, seenStepIds);
             }
 
             return new Workflow(
@@ -184,6 +172,108 @@ public final class Workflow {
                     List.copyOf(requiredInputs),
                     List.copyOf(optionalInputs),
                     List.copyOf(steps));
+        }
+
+        /**
+         * Validates one step - recursively, for a {@link ConditionalWorkflowStep}, into both of its
+         * branches - and registers whatever it (or its branches) makes available for the steps that
+         * structurally follow it.
+         *
+         * <p>{@code available}/{@code byName} are mutated in place to add this step's own
+         * contribution, exactly like the pre-branching code did for a flat step list. A conditional
+         * step's two branches are each validated independently, starting from an identical snapshot
+         * of what is available before the conditional - one branch's own step outputs are never
+         * visible while validating the other, since at runtime at most one of them ever executes -
+         * and then each branch's resulting outputs are merged back into the shared {@code
+         * available}/{@code byName} for whatever comes after the conditional, exactly like a single
+         * guarded step's output is already treated as statically available today regardless of
+         * whether its guard turns out true at runtime (see {@code docs/workflow.md#conditions}).
+         * {@code seenStepIds} is shared, unmodified, across the whole recursive call tree, so every
+         * step ID - at any nesting depth, in either branch - must be globally unique.
+         */
+        private static void validateStep(
+                IWorkflowStep step,
+                Map<String, WorkflowVariable<?>> byName,
+                Set<WorkflowVariable<?>> available,
+                Set<WorkflowStepId> seenStepIds) {
+            if (!seenStepIds.add(step.id())) {
+                throw new IllegalArgumentException("duplicate step ID '" + step.id() + "'");
+            }
+
+            step.condition().ifPresent(condition -> validateCondition(step, condition, available));
+
+            // Safe: IWorkflowStep is sealed and permits only AWorkflowStep (see its Javadoc), so
+            // every instance reachable here is guaranteed to be one.
+            AWorkflowStep concreteStep = (AWorkflowStep) step;
+            if (concreteStep instanceof ConditionalWorkflowStep conditional) {
+                // Both branches must validate from an identical starting snapshot of what is
+                // available before the conditional - neither one's own outputs may leak into the
+                // other's validation, since at runtime at most one of them ever executes. Merging
+                // is deferred until after both have been independently validated in full; merging
+                // THEN's outputs before validating ELSE would make ELSE's own re-declaration of
+                // the very same output collide with itself.
+                Set<WorkflowVariable<?>> thenAvailable =
+                        validateBranch(conditional.thenSteps(), byName, available, seenStepIds);
+                Set<WorkflowVariable<?>> elseAvailable =
+                        validateBranch(
+                                conditional.elseSteps().orElse(List.of()),
+                                byName,
+                                available,
+                                seenStepIds);
+                mergeBranchOutputs(byName, available, thenAvailable);
+                mergeBranchOutputs(byName, available, elseAvailable);
+                return;
+            }
+            concreteStep
+                    .outputVariable()
+                    .ifPresent(output -> registerStepOutput(byName, available, step, output));
+        }
+
+        /**
+         * Validates one branch's steps in isolation, starting from a snapshot of {@code
+         * byName}/{@code available} as they stood before the conditional - never mutating either -
+         * and returns the branch's own resulting {@code available} set for the caller to merge back
+         * once both branches have been validated (see {@link #validateStep}).
+         */
+        private static Set<WorkflowVariable<?>> validateBranch(
+                List<IWorkflowStep> branchSteps,
+                Map<String, WorkflowVariable<?>> byName,
+                Set<WorkflowVariable<?>> available,
+                Set<WorkflowStepId> seenStepIds) {
+            Map<String, WorkflowVariable<?>> branchByName = new LinkedHashMap<>(byName);
+            Set<WorkflowVariable<?>> branchAvailable = new LinkedHashSet<>(available);
+            for (IWorkflowStep step : branchSteps) {
+                validateStep(step, branchByName, branchAvailable, seenStepIds);
+            }
+            return branchAvailable;
+        }
+
+        /**
+         * Folds a branch's newly-declared outputs (present in {@code branchAvailable} but not yet
+         * in {@code available}) into the shared, outer {@code byName}/{@code available}, using the
+         * exact same collision rule {@link #registerStepOutput} already applies to a single step's
+         * output: an identical redeclaration (same name, same {@link WorkflowVariable}) is fine -
+         * this runs for both branches in turn, and they may agree - but a same-named variable
+         * declared with a different type or secret status is rejected.
+         */
+        private static void mergeBranchOutputs(
+                Map<String, WorkflowVariable<?>> byName,
+                Set<WorkflowVariable<?>> available,
+                Set<WorkflowVariable<?>> branchAvailable) {
+            for (WorkflowVariable<?> candidate : branchAvailable) {
+                if (available.contains(candidate)) {
+                    continue;
+                }
+                WorkflowVariable<?> existing = byName.putIfAbsent(candidate.name(), candidate);
+                if (existing != null && !existing.equals(candidate)) {
+                    throw new IllegalArgumentException(
+                            "branch output '"
+                                    + candidate.name()
+                                    + "' conflicts with an existing input or output declared with"
+                                    + " a different type or secret status");
+                }
+                available.add(candidate);
+            }
         }
 
         private static void registerInputDeclarations(
