@@ -220,7 +220,12 @@ public record WorkflowStepResult(
                                 case NOT_EXECUTED ->
                                         failureType == ActionFailureType.TARGET_NOT_FOUND
                                                 || failureType == ActionFailureType.TARGET_AMBIGUOUS
-                                                || failureType == ActionFailureType.BACKEND_FAILURE;
+                                                || failureType == ActionFailureType.BACKEND_FAILURE
+                                                || failureType == ActionFailureType.TARGET_CHANGED
+                                                || failureType == ActionFailureType.POLICY_DENIED
+                                                || failureType
+                                                        == ActionFailureType
+                                                                .POLICY_EVALUATION_FAILED;
                                 case REAL ->
                                         failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
                                                 || failureType
@@ -228,8 +233,10 @@ public record WorkflowStepResult(
                                                                 .ACTION_NOT_SUPPORTED_BY_TARGET
                                                 || failureType == ActionFailureType.BACKEND_FAILURE
                                                 || failureType == ActionFailureType.UPLOAD_FAILURE
+                                                || failureType == ActionFailureType.DOWNLOAD_FAILURE
+                                                || failureType == ActionFailureType.POLICY_VIOLATION
                                                 || failureType
-                                                        == ActionFailureType.DOWNLOAD_FAILURE;
+                                                        == ActionFailureType.STABILIZATION_FAILED;
                                 case DRY_RUN -> false;
                             };
                     case VERIFICATION_FAILED ->
