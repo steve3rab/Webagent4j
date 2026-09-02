@@ -31,6 +31,49 @@ public interface IActionBuilder {
     /** Replaces an editable control value without exposing the sensitive text. */
     IPreparedAction<Void> typeSecret(IElement element, Secret value);
 
+    /**
+     * Types {@code value} into the target by dispatching one keyboard/input event per character,
+     * distinct from {@link #type(IElement, String)}, which replaces the value directly with no
+     * per-character key events. This is not a guaranteed full-value replacement: the observable
+     * result depends on the target's current value, selection, and caret position, and on any
+     * application JavaScript handling those events - so the prepared action's {@link
+     * IAction#idempotency()} is {@link ActionIdempotency#NON_IDEMPOTENT}: repeating this call is
+     * not safe to treat as reproducing the same end state.
+     *
+     * <p>Added in 1.2.0 as a {@code default} method (like {@link
+     * IPreparedAction#policy(io.webagent4j.action.policy.IActionPolicy)}) so adding it never breaks
+     * an existing {@link IActionBuilder} implementation: the default always throws {@link
+     * UnsupportedOperationException}; only an implementation that actually supports it overrides
+     * this method.
+     */
+    default IPreparedAction<Void> typeSequentially(IElement element, String value) {
+        throw new UnsupportedOperationException(
+                "typeSequentially(...) is not supported by this IActionBuilder implementation");
+    }
+
+    /**
+     * Types {@code value} into a dynamically resolved target by dispatching one keyboard/input
+     * event per character, distinct from {@link #type(IElementReference, String)}. See {@link
+     * #typeSequentially(IElement, String)} for the full contract, including why this is a {@code
+     * default} method and why it is {@link ActionIdempotency#NON_IDEMPOTENT}.
+     */
+    default IPreparedAction<Void> typeSequentially(
+            IElementReference<IElement> reference, String value) {
+        throw new UnsupportedOperationException(
+                "typeSequentially(...) is not supported by this IActionBuilder implementation");
+    }
+
+    /**
+     * Same as {@link #typeSequentially(IElement, String)} without exposing the sensitive text - see
+     * that method for the full contract, including why this is a {@code default} method and why it
+     * is {@link ActionIdempotency#NON_IDEMPOTENT}.
+     */
+    default IPreparedAction<Void> typeSequentiallySecret(IElement element, Secret value) {
+        throw new UnsupportedOperationException(
+                "typeSequentiallySecret(...) is not supported by this IActionBuilder"
+                        + " implementation");
+    }
+
     /** Clears an editable control. */
     IPreparedAction<Void> clear(IElement element);
 

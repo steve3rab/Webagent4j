@@ -28,6 +28,25 @@ public interface IActionBackend {
         throw unsupported();
     }
 
+    /**
+     * Types {@code value} into the target by dispatching one keyboard/input event per character,
+     * distinct from {@link #fill(IElement, String)}, which replaces the value directly with no
+     * per-character key events. This is not a guaranteed full-value replacement: the observable
+     * result depends on the target's current value, selection, and caret position, and on any
+     * application JavaScript handling those events - so repeating this call is not idempotent.
+     */
+    default void typeSequentially(IElement element, String value) {
+        throw unsupported();
+    }
+
+    /**
+     * Same as {@link #typeSequentially(IElement, String)} without exposing the secret to
+     * diagnostics.
+     */
+    default void typeSequentiallySecret(IElement element, Secret value) {
+        throw unsupported();
+    }
+
     /** Clears the current editable value. */
     default void clear(IElement element) {
         throw unsupported();

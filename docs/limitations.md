@@ -57,13 +57,14 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
   configures one. Direct `IPage`/`IBrowser` calls made outside a governed action or crawl bypass
   both entirely.
 - Atomic action-target identity verification (`IElement#verifiedForExecution()`, which binds
-  identity revalidation and the native backend call to the exact same physical handle) is currently
-  wired for the Playwright adapter's `click()` only. Every other Playwright action method (`fill`,
-  `check`, `uncheck`, `select`, `hover`, `focus`, `blur`, `press`, `upload`, `submit`, `scrollTo`,
-  `download`, `doubleClick`) still revalidates identity via the boolean-only
-  `isStillTheOriginallyResolvedTarget()` and then performs its native call through a second,
-  independently re-resolved `Locator` - the residual TOCTOU window this method exists to close
-  remains open for those methods.
+  identity revalidation and the native backend call to the exact same physical handle) is wired for
+  every target-bound Playwright action method: `click`, `doubleClick`, `type`/`fill` (including the
+  secret variant), `typeSequentially` (including the secret variant, added in 1.2.0's Governed
+  Actions V2), `clear`, `select`, `check`, `uncheck`, `focus`, `blur`, `hover`, `scrollTo`, `submit`,
+  `pressKey`, `upload`, and `download`. None of them fall back to a second, independently
+  re-resolved `Locator` for the actual native call; see
+  [Governed execution](governed-execution.md#target-identity-binding) and
+  `PlaywrightVerifiedTargetActionMatrixTest`/`ActionPolicyTargetIdentityIT` for the exact evidence.
 - `INetworkPolicy` is not a general SSRF firewall. `HttpCrawler` binds its actual transport
   connection to the exact addresses a policy verified - closing the DNS-rebinding gap between
   check and connect - only when the configured policy implements `INetworkAddressAuthority` (the
