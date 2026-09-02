@@ -29,8 +29,11 @@ public interface IActionBackend {
     }
 
     /**
-     * Replaces the current editable value by dispatching one key event per character, distinct from
-     * {@link #fill(IElement, String)}, which sets the value with no per-character key events.
+     * Types {@code value} into the target by dispatching one keyboard/input event per character,
+     * distinct from {@link #fill(IElement, String)}, which replaces the value directly with no
+     * per-character key events. This is not a guaranteed full-value replacement: the observable
+     * result depends on the target's current value, selection, and caret position, and on any
+     * application JavaScript handling those events - so repeating this call is not idempotent.
      */
     default void typeSequentially(IElement element, String value) {
         throw unsupported();

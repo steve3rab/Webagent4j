@@ -18,7 +18,9 @@ not imply a published compatibility line.
   a generic-pipeline test matrix covering all eight actions' policy-authorization, deadline, and
   interruption boundaries. Also adds `typeSequentially`/`typeSequentiallySecret`
   (`ActionType.TYPE_SEQUENCE`), a genuinely new action distinct from `type`/`fill`: it dispatches
-  one key event per character instead of instantly replacing the value, sharing the identical
+  one keyboard/input event per character rather than replacing the value directly, so the result
+  depends on the target's current value/selection/caret and any application JavaScript handling
+  those events - unlike `type`/`fill`, it is `NON_IDEMPOTENT`. Shares the identical
   governed-execution pipeline and exact-target guarantee. See
   [Governed execution](docs/governed-execution.md#target-identity-binding) and
   [Limitations](docs/limitations.md#governed-execution).

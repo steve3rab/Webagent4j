@@ -33,9 +33,13 @@ public enum ActionType {
     WAIT,
 
     /**
-     * Replaces an editable control's value by dispatching one key event per character, distinct
-     * from {@link #TYPE} (which instantly replaces the value with no per-character key events).
-     * Added in 1.2.0; see {@code docs/governed-execution.md}.
+     * Types characters sequentially into the target by dispatching one keyboard/input event per
+     * character, distinct from {@link #TYPE} (which replaces the value via fill semantics, with no
+     * per-character key events). This is not a guaranteed full-value replacement: the observable
+     * result depends on the target's current value, selection, and caret position, and on any
+     * application JavaScript handling those events - so repeating the same sequence is not
+     * idempotent and can further modify the target (for example, appending to it) rather than
+     * reproducing the same end state. Added in 1.2.0; see {@code docs/governed-execution.md}.
      */
     TYPE_SEQUENCE
 }

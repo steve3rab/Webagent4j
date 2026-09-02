@@ -115,7 +115,7 @@ public final class DefaultActionBuilder implements IActionBuilder {
         return this.<Void>target(
                 ActionType.TYPE_SEQUENCE,
                 fixed(element),
-                ActionIdempotency.IDEMPOTENT,
+                ActionIdempotency.NON_IDEMPOTENT,
                 ActionSideEffect.LOCAL_PAGE_STATE,
                 (backend, target) -> {
                     backend.typeSequentially(target, value);
@@ -130,7 +130,7 @@ public final class DefaultActionBuilder implements IActionBuilder {
         return target(
                 ActionType.TYPE_SEQUENCE,
                 reference,
-                ActionIdempotency.IDEMPOTENT,
+                ActionIdempotency.NON_IDEMPOTENT,
                 ActionSideEffect.LOCAL_PAGE_STATE,
                 (backend, target) -> {
                     backend.typeSequentially(target, value);
@@ -144,7 +144,7 @@ public final class DefaultActionBuilder implements IActionBuilder {
         return this.<Void>target(
                         ActionType.TYPE_SEQUENCE,
                         fixed(element),
-                        ActionIdempotency.IDEMPOTENT,
+                        ActionIdempotency.NON_IDEMPOTENT,
                         ActionSideEffect.LOCAL_PAGE_STATE,
                         (backend, target) -> {
                             backend.typeSequentiallySecret(target, value);
