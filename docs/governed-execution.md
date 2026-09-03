@@ -311,7 +311,8 @@ which limits length and character set but cannot verify semantic safety.
 
 ## Compatibility
 
-- The project version stays `1.1.0-SNAPSHOT`; the Revapi API-compatibility baseline stays `1.0.0`.
+- The project version was `1.1.0-SNAPSHOT` when this capability was added (now released as part of
+  the `1.1.x` line); the Revapi API-compatibility baseline stays `1.0.0`.
 - No policy is configured by default anywhere. An action or crawl that never calls
   `.policy(...)`/`.networkPolicy(...)`/`withNetworkPolicy(...)` behaves identically to 1.0.
 - No existing public record gained a new component. `ActionCommand` (an internal, package-private

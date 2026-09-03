@@ -13,9 +13,10 @@ Playwright is the first browser backend.
 
 > [!IMPORTANT]
 > `1.1.x` is the current stable release line (latest: `1.1.1`, published from `main`); `develop` is
-> the active development line, currently `1.2.0-SNAPSHOT`. As of this state, `develop` has no
-> functional changes beyond the `1.1.1` release. Public Maven artifacts are not yet published from
-> this repository's release workflow. Until publication is enabled, build and install the artifacts
+> the active development line, currently `1.2.0-SNAPSHOT`. `develop` currently contains unreleased
+> 1.2.0 work beyond the `1.1.1` release - see [Project status](#project-status) below for the current
+> scope. `1.2.0` itself has not been released. Public Maven artifacts are not yet published from this
+> repository's release workflow. Until publication is enabled, build and install the artifacts
 > locally.
 
 ## Design goals
@@ -166,7 +167,7 @@ explicitly transfers ownership.
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
 | HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
 | Browser crawler | `webagent4j-browser-crawler` | Single-lane crawling of JavaScript-rendered pages |
-| Workflows | `webagent4j-workflow` | Sequential fail-fast typed orchestration |
+| Workflows | `webagent4j-workflow` | Typed fail-fast workflows with deterministic branching, static planning, and validation reporting |
 | Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison |
 | Plugins | `webagent4j-plugin-api` | Explicit trusted custom locator strategies |
 | CLI | `webagent4j-cli` | Small command-line application |
@@ -278,9 +279,20 @@ must not be inferred from Java serialization or Java object identity.
   transport-bound address pinning for `HttpCrawler`;
 - adversarial hardening of cross-module contracts.
 
-`develop` is `1.2.0-SNAPSHOT`, the active line for the next release. As of this state, it contains
-no functional changes beyond the `1.1.1` release described above; `1.2.0` development has not yet
-started.
+`develop` is `1.2.0-SNAPSHOT`, the active development line for the next release; `1.2.0` itself has
+not been released. It currently contains, beyond the `1.1.1` scope described above:
+
+- Governed Actions V2 - atomic exact-target execution extended from `click` alone to every
+  target-bound governed action (`type`/`fill`, `select`, `check`, `uncheck`, `hover`, `pressKey`),
+  plus a new `typeSequentially`/`typeSequentiallySecret` action;
+- deterministic workflow branching (`WorkflowSteps.ifElse`/`ifThen`) with guard-aware,
+  path-sensitive definite assignment for branch outputs;
+- the Structured Workflow Execution Tree (`WorkflowEngine#executeWithTree`);
+- the Deterministic Workflow Execution Plan (`WorkflowPlanner.plan`);
+- the Structured Workflow Validation Report (`Workflow.Builder#validate`).
+
+See [`CHANGELOG.md`](CHANGELOG.md#unreleased) and [`docs/workflow.md`](docs/workflow.md) for the
+complete, current description of this unreleased work.
 
 ## Contributing
 
