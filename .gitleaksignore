@@ -24,3 +24,17 @@ c43e5d67d17664aebcdd75d2486982543b95ef6c:webagent4j-crawler/src/test/java/io/web
 db2351d0004d263118c8594431cddf9ad83c6980:webagent4j-workflow/src/test/java/io/webagent4j/workflow/WorkflowRenderingResourceBoundsTest.java:generic-api-key:167
 db2351d0004d263118c8594431cddf9ad83c6980:webagent4j-workflow/src/test/java/io/webagent4j/workflow/WorkflowRenderingResourceBoundsTest.java:generic-api-key:194
 db2351d0004d263118c8594431cddf9ad83c6980:webagent4j-workflow/src/test/java/io/webagent4j/workflow/WorkflowRenderingResourceBoundsTest.java:generic-api-key:415
+
+# One finding from commit d89304177b17860ac7ef31dcc00519ad4d827f5a, already published and not
+# rewritten in a later corrective pass on this same branch because history rewrites here were
+# likewise not authorized. It is the same PLAN-008 secret-output-classification test constant a
+# later commit on this branch (92fffcef416648b702a0e4cf7e86f589cb61f0d4) already renamed - the
+# generic-api-key rule fired on the local variable name ("secretSentinel") combined with the
+# marker's assigned string shape, not on any actual secret material. The live code at HEAD no
+# longer uses that variable name or string value (see WorkflowExecutionPlanTest, which now uses
+# "sentinel" / "WA4J_PLAN_SENTINEL_991733", matching the same convention WorkflowRenderingResource-
+# BoundsTest already established above), so this exact, already-reviewed historical fingerprint is
+# the only finding this entry can match. Because gitleaks-action scans a PR's entire commit range
+# (not only its latest commit), this finding remains flagged from d893041's own diff even though
+# the very next commit on this branch already fixed it forward.
+d89304177b17860ac7ef31dcc00519ad4d827f5a:webagent4j-workflow/src/test/java/io/webagent4j/workflow/WorkflowExecutionPlanTest.java:generic-api-key:243

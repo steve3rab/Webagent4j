@@ -111,6 +111,39 @@ This is a structural companion to `WorkflowResult.steps()`, not a replacement fo
 
 **Not a new recording format:** Recording V1 depends only on `WorkflowResult.steps()`, which is completely unaffected. The execution tree is runtime-only in this version - it is never serialized into a `WorkflowRecording`, and calling `executeWithTree` and recording the resulting `WorkflowResult` produces a byte-identical recording to calling `execute` directly.
 
+## Execution plan
+
+`WorkflowPlanner.plan(workflow)` builds a `WorkflowExecutionPlan` - a deterministic, backend-neutral description of what a `Workflow` is structurally capable of executing, entirely from its already-validated definition:
+
+```text
+Workflow
+├── step-1
+├── branch (CONDITIONAL)
+│   ├── THEN
+│   │   └── step-2
+│   └── ELSE
+│       └── step-3
+└── step-4
+```
+
+**Planning a workflow causes zero workflow side effects.** Building a plan never calls an `IWorkflowActionFactory`, never evaluates an `IWorkflowCondition`, never resolves or verifies a backend target, and never performs a click, fill, type, select, upload, submit, or download - it reads only static step metadata already present on the definition (step ID, `WorkflowStepType`, whether a step carries an optional guard, its declared output variable, and a conditional's `thenSteps`/`elseSteps` structure). `WorkflowPlanner` is a dedicated type, kept separate from `WorkflowEngine`, so planning and execution never share a code path.
+
+**Execution plan vs. execution tree:** these are deliberately two distinct types, never merged and never toggled between with a flag. `WorkflowExecutionPlan` describes every structurally possible path through a definition, before any execution exists - it never claims a runtime-dependent action, condition, policy, or target verification will succeed, since it cannot know that. `WorkflowExecutionTree` (see above) describes the one path a specific execution actually took. A plan can be built for a `Workflow` that has never been executed at all.
+
+**Branch completeness:** unlike the execution tree, where a conditional's non-selected branch contributes zero nodes, a plan represents *both* of a conditional's structurally possible branches - the condition is never evaluated to decide which one to show. An `ifElse` plan node always carries a `THEN` branch and an `ELSE` branch; an `ifThen` plan node always carries a `THEN` branch and a `NONE` branch (the structurally absent else - a false decision's potential no-op outcome, never invented content). `WorkflowBranchSelection` is reused for this branch label, but the plan never "selects" one - both are always present.
+
+**Guards are marked, never evaluated:** a step built with `.when(condition)` is marked `guarded = true` on its plan node - conditionally executable, never "will execute" - without ever calling the guard's `evaluate(...)`.
+
+**Typed output declarations:** a plan node exposes its step's declared output as a `WorkflowPlanOutput` (name, type name, and `PUBLIC`/`SECRET` classification) - metadata only, never a value. A `CONDITIONAL` node never declares an output.
+
+**No invented outcomes:** the plan never exposes a policy decision, a target-resolution result, or any other runtime-dependent verdict - there is no such field on `WorkflowPlanNode` at all, since planning cannot know what a real execution's policy evaluation or target verification would decide.
+
+**Resource bounds:** a plan's node count is proportional to the number of steps the definition declares - nested conditionals are represented as a tree, never expanded into every combination of branch outcomes as an independent list. Nesting is bounded by the same `Workflow.MAX_CONDITIONAL_NESTING_DEPTH` every `Workflow` is already bounded by, so building a plan for a definition at the maximum nesting depth never risks a `StackOverflowError`.
+
+**Determinism:** two plans built from the same `Workflow` are always logically equal - no random UUID, timestamp, or hash-order-dependent iteration is ever part of a plan's shape.
+
+**Not a new recording format:** Recording V1 is entirely unaffected; `WorkflowExecutionPlan` is never serialized into a `WorkflowRecording`. Planning is not a dry run, a replay, or an execution-plan preview of a specific future execution's outcome - it is a static structural description only.
+
 ## Fail-fast result shape
 
 A completed result contains only `SUCCEEDED`/`SKIPPED` steps. Runtime failure produces zero or more successful/skipped predecessors, exactly one failed step, and `NOT_RUN` successors. Overall failure and the failed step identify the same failure point.
