@@ -761,6 +761,35 @@ final class ActionTestApplication implements AutoCloseable {
                     document(
                             "Ambiguous actions",
                             "<button>Duplicate</button><button>Duplicate</button>");
+            case "/actions/workflow-branch-ready" ->
+                    document(
+                            "Workflow branch ready",
+                            """
+                            <button id="confirm" aria-label="Confirm"
+                              onclick="fetch('/count-click/confirm')">Confirm</button>
+                            <button id="cancel" aria-label="Cancel"
+                              onclick="fetch('/count-click/cancel')">Cancel</button>
+                            """);
+            case "/actions/workflow-branch-target-changed" ->
+                    document(
+                            "Workflow branch target changed",
+                            """
+                            <button id="confirm" aria-label="Confirm"
+                              onclick="fetch('/count-click/original')">Confirm</button>
+                            <button id="cancel" aria-label="Cancel"
+                              onclick="fetch('/count-click/cancel')">Cancel</button>
+                            <script>
+                              function replaceConfirmButtonWithFreshNodeSameLocator() {
+                                const old = document.getElementById('confirm');
+                                const fresh = document.createElement('button');
+                                fresh.id = 'confirm-replacement';
+                                fresh.setAttribute('aria-label', 'Confirm');
+                                fresh.textContent = 'Confirm';
+                                fresh.onclick = () => fetch('/count-click/replacement');
+                                old.replaceWith(fresh);
+                              }
+                            </script>
+                            """);
             case "/actions/click-timeout-oracle" ->
                     document(
                             "Click timeout oracle",

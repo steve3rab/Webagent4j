@@ -8,13 +8,13 @@ import java.util.Optional;
  * step - not public API, reached only through {@link WorkflowSteps}' factory methods.
  *
  * <p>This class is {@code sealed} and package-private together with {@link IWorkflowStep}: since
- * {@code IWorkflowStep permits AWorkflowStep} and only {@link ActionWorkflowStep} and {@link
- * AssignWorkflowStep} may extend it, {@link WorkflowEngine} can downcast any {@code IWorkflowStep}
- * it receives to {@code AWorkflowStep} with the guarantee - enforced by the compiler and the JVM,
- * not by convention - that the cast can never fail.
+ * {@code IWorkflowStep permits AWorkflowStep} and only {@link ActionWorkflowStep}, {@link
+ * AssignWorkflowStep}, and {@link ConditionalWorkflowStep} may extend it, {@link WorkflowEngine}
+ * can downcast any {@code IWorkflowStep} it receives to {@code AWorkflowStep} with the guarantee -
+ * enforced by the compiler and the JVM, not by convention - that the cast can never fail.
  */
 abstract sealed class AWorkflowStep implements IWorkflowStep
-        permits ActionWorkflowStep, AssignWorkflowStep {
+        permits ActionWorkflowStep, AssignWorkflowStep, ConditionalWorkflowStep {
 
     private final WorkflowStepId id;
     private final IWorkflowCondition condition;

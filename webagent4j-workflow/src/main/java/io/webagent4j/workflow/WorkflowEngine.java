@@ -113,6 +113,32 @@ public final class WorkflowEngine {
                 boolean outcome, Function<SecretRedactor, String> finalizeDescription) {}
 
         /**
+         * Outcome of {@link Session#evaluateConditionSafely}: either a captured decision (ready to
+         * become a {@link PendingConditionResult}) or a description of why the evaluation itself
+         * failed - never both, mirroring {@link RawDescription}.
+         */
+        private record ConditionEvaluationResult(
+                boolean outcome,
+                PendingConditionResult pending,
+                String failureMessage,
+                String underlyingTypeName) {
+            static ConditionEvaluationResult success(
+                    boolean outcome, PendingConditionResult pending) {
+                return new ConditionEvaluationResult(outcome, pending, null, null);
+            }
+
+            static ConditionEvaluationResult failed(
+                    String failureMessage, String underlyingTypeName) {
+                return new ConditionEvaluationResult(
+                        false, null, failureMessage, underlyingTypeName);
+            }
+
+            boolean failed() {
+                return pending == null;
+            }
+        }
+
+        /**
          * A step's outcome captured during execution, before the workflow's complete secret set is
          * known. Mirrors {@link WorkflowStepResult} exactly except {@link #condition}, which
          * carries unredacted, unbounded text a later step's secret may still need to mask. {@link
@@ -173,29 +199,15 @@ public final class WorkflowEngine {
             }
 
             List<PendingStepResult> pendingResults = new ArrayList<>();
-            boolean failed = false;
-            WorkflowFailure overallFailure = null;
-            for (IWorkflowStep step : workflow.steps()) {
-                PendingStepResult pending = executeStep(step);
-                pendingResults.add(pending);
-                if (pending.status() == WorkflowStepStatus.FAILED) {
-                    failed = true;
-                    overallFailure = pending.failure().orElseThrow();
-                    break;
-                }
-            }
+            Optional<WorkflowFailure> overallFailure = runSteps(workflow.steps(), pendingResults);
 
-            if (failed) {
-                List<IWorkflowStep> all = workflow.steps();
-                for (int i = pendingResults.size(); i < all.size(); i++) {
-                    pendingResults.add(notRun(all.get(i)));
-                }
+            if (overallFailure.isPresent()) {
                 return new WorkflowResult(
                         workflow.id(),
                         WorkflowStatus.FAILED,
                         finalizeStepResults(pendingResults),
                         outputs.build(activeSecrets),
-                        Optional.of(overallFailure));
+                        overallFailure);
             }
             return new WorkflowResult(
                     workflow.id(),
@@ -203,6 +215,141 @@ public final class WorkflowEngine {
                     finalizeStepResults(pendingResults),
                     outputs.build(activeSecrets),
                     Optional.empty());
+        }
+
+        /**
+         * Executes {@code steps} in order, appending each one's {@link PendingStepResult} to {@code
+         * accumulator} - and, for a {@link ConditionalWorkflowStep}, also the (possibly empty,
+         * already-flattened) results of whichever single branch it selected, recursively. Stops at
+         * the first failure encountered anywhere in {@code steps} - including one surfaced from
+         * inside a conditional step's selected branch - and marks every step remaining in {@code
+         * steps} from that point on {@link WorkflowStepStatus#NOT_RUN}, exactly like the top-level
+         * fail-fast/short-circuit behavior this engine has always had (see the class Javadoc);
+         * {@link #run()} calls this once for the workflow's own top-level steps, and a conditional
+         * step's branch is executed by recursing into this same method, so both levels share one
+         * fail-fast mechanism rather than two independently-maintained copies of it.
+         *
+         * <p>This recursion is not separately depth-bounded here: {@link Workflow.Builder#build()}
+         * is the only way to obtain a {@link Workflow}, and it already rejects a conditional nested
+         * deeper than {@link Workflow#MAX_CONDITIONAL_NESTING_DEPTH} before returning one (see that
+         * constant's Javadoc), so every {@code workflow} this method can ever be called with is
+         * already bounded - a second, independent runtime limit here would duplicate that single
+         * source of truth rather than add real protection.
+         */
+        private Optional<WorkflowFailure> runSteps(
+                List<IWorkflowStep> steps, List<PendingStepResult> accumulator) {
+            for (int i = 0; i < steps.size(); i++) {
+                Optional<WorkflowFailure> failure = executeStepInto(steps.get(i), accumulator);
+                if (failure.isPresent()) {
+                    for (int j = i + 1; j < steps.size(); j++) {
+                        accumulator.add(notRun(steps.get(j)));
+                    }
+                    return failure;
+                }
+            }
+            return Optional.empty();
+        }
+
+        /**
+         * Executes exactly one step, appending its own {@link PendingStepResult} (and, if it is a
+         * {@link ConditionalWorkflowStep}, its selected branch's results) to {@code accumulator}.
+         * Returns the failure that should stop the enclosing {@link #runSteps} call, if any.
+         */
+        private Optional<WorkflowFailure> executeStepInto(
+                IWorkflowStep step, List<PendingStepResult> accumulator) {
+            // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
+            AWorkflowStep concreteStep = (AWorkflowStep) step;
+            if (concreteStep instanceof ConditionalWorkflowStep conditional) {
+                return executeConditionalStepInto(conditional, accumulator);
+            }
+            PendingStepResult pending = executeStep(step);
+            accumulator.add(pending);
+            return pending.status() == WorkflowStepStatus.FAILED
+                    ? pending.failure()
+                    : Optional.empty();
+        }
+
+        /**
+         * Executes one {@link ConditionalWorkflowStep} following the fixed sequence this feature's
+         * whole contract rests on: an interruption boundary, then the branch condition evaluated
+         * <b>exactly once</b>, then a second interruption boundary, then exactly one of the two
+         * branches (recursively, via {@link #runSteps}) - never both, never neither, and the
+         * condition is never re-evaluated once a branch has started. Interruption is this engine's
+         * only cancellation primitive: {@code WorkflowEngine} has no workflow-wide timeout of its
+         * own (see the class Javadoc) and relies entirely on each contained action's own budget for
+         * time-based limits, so a deadline that expires between the decision and the selected
+         * branch's start is observed here the same way the action pipeline observes one at its own
+         * post-verification boundary - as the executing thread's interrupt flag, checked with
+         * {@link Thread#isInterrupted()} and left untouched either way, never cleared.
+         */
+        private Optional<WorkflowFailure> executeConditionalStepInto(
+                ConditionalWorkflowStep step, List<PendingStepResult> accumulator) {
+            if (Thread.currentThread().isInterrupted()) {
+                return addInterrupted(
+                        step,
+                        Optional.empty(),
+                        "the executing thread was interrupted before the branch condition could"
+                                + " be evaluated",
+                        accumulator);
+            }
+
+            ConditionEvaluationResult evaluation = evaluateConditionSafely(step.branchCondition());
+            if (evaluation.failed()) {
+                PendingStepResult pending =
+                        failedResult(
+                                step,
+                                WorkflowStepType.CONDITIONAL,
+                                Optional.empty(),
+                                WorkflowFailureType.CONDITION_EVALUATION_FAILED,
+                                evaluation.failureMessage(),
+                                evaluation.underlyingTypeName(),
+                                null,
+                                null);
+                accumulator.add(pending);
+                return pending.failure();
+            }
+            Optional<PendingConditionResult> conditionResult = Optional.of(evaluation.pending());
+
+            if (Thread.currentThread().isInterrupted()) {
+                return addInterrupted(
+                        step,
+                        conditionResult,
+                        "the executing thread was interrupted after the branch decision was"
+                                + " captured but before the selected branch could start",
+                        accumulator);
+            }
+
+            List<IWorkflowStep> selectedBranch =
+                    evaluation.outcome() ? step.thenSteps() : step.elseSteps().orElse(List.of());
+            accumulator.add(
+                    new PendingStepResult(
+                            step.id(),
+                            WorkflowStepType.CONDITIONAL,
+                            WorkflowStepStatus.SUCCEEDED,
+                            conditionResult,
+                            Optional.empty(),
+                            Optional.empty(),
+                            Optional.empty()));
+            return runSteps(selectedBranch, accumulator);
+        }
+
+        private Optional<WorkflowFailure> addInterrupted(
+                ConditionalWorkflowStep step,
+                Optional<PendingConditionResult> conditionResult,
+                String message,
+                List<PendingStepResult> accumulator) {
+            PendingStepResult pending =
+                    failedResult(
+                            step,
+                            WorkflowStepType.CONDITIONAL,
+                            conditionResult,
+                            WorkflowFailureType.CONDITIONAL_STEP_INTERRUPTED,
+                            message,
+                            null,
+                            null,
+                            null);
+            accumulator.add(pending);
+            return pending.failure();
         }
 
         /**
@@ -368,85 +515,83 @@ public final class WorkflowEngine {
             return RawDescription.of(raw);
         }
 
+        /**
+         * Evaluates {@code condition} defensively - the same contract {@link IWorkflowCondition}
+         * has always had here: a thrown {@link RuntimeException} or a malformed {@code describe()}
+         * never propagates, it is captured as a failure description instead. Shared by a step's own
+         * optional guard ({@link #executeStep}) and a {@link ConditionalWorkflowStep}'s mandatory
+         * branch selector ({@link #executeConditionalStepInto}), which handle a failed evaluation
+         * differently (guard: {@code CONDITION_EVALUATION_FAILED} on the guarded step; conditional:
+         * the same failure type, but on the conditional step itself, per {@code
+         * docs/workflow.md#branching}) but otherwise share this identical evaluate-once,
+         * defend-against-throw-or-null-describe machinery rather than duplicating it.
+         */
+        private ConditionEvaluationResult evaluateConditionSafely(IWorkflowCondition condition) {
+            boolean outcome;
+            try {
+                outcome = condition.evaluate(variablesView);
+            } catch (WorkflowVariableMissingException e) {
+                return ConditionEvaluationResult.failed(e.getMessage(), null);
+            } catch (RuntimeException e) {
+                RawDescription description = describeConditionRaw(condition);
+                String message =
+                        description.failed()
+                                ? "condition threw " + e.getClass().getSimpleName()
+                                : "condition '"
+                                        + description.text()
+                                        + "' threw "
+                                        + e.getClass().getSimpleName();
+                return ConditionEvaluationResult.failed(message, e.getClass().getName());
+            }
+
+            if (condition instanceof IDeferredConditionDescription deferred) {
+                // Structurally crash-safe (framework-owned rendering only - see
+                // IDeferredConditionDescription's Javadoc), so no describe()-failure check is
+                // needed here: unlike a custom condition, this can never throw or return null.
+                // SafeRendering.bounded is applied here, once, to whatever describeFinal produces
+                // - exactly like the custom-condition branch below - rather than inside
+                // describeFinal itself, so a composite of many built-in conditions is bounded as a
+                // whole and cannot grow unbounded even though each leaf is individually safe.
+                PendingConditionResult pending =
+                        new PendingConditionResult(
+                                outcome,
+                                redactor ->
+                                        SafeRendering.bounded(deferred.describeFinal(redactor)));
+                return ConditionEvaluationResult.success(outcome, pending);
+            }
+            RawDescription description = describeConditionRaw(condition);
+            if (description.failed()) {
+                return ConditionEvaluationResult.failed(
+                        description.failureMessage(), description.underlyingType());
+            }
+            PendingConditionResult pending =
+                    new PendingConditionResult(
+                            outcome,
+                            redactor -> SafeRendering.bounded(redactor.redact(description.text())));
+            return ConditionEvaluationResult.success(outcome, pending);
+        }
+
         private PendingStepResult executeStep(IWorkflowStep step) {
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
             AWorkflowStep concreteStep = (AWorkflowStep) step;
             Optional<PendingConditionResult> conditionResult = Optional.empty();
 
             if (step.condition().isPresent()) {
-                IWorkflowCondition condition = step.condition().get();
-                boolean outcome;
-                try {
-                    outcome = condition.evaluate(variablesView);
-                } catch (WorkflowVariableMissingException e) {
+                ConditionEvaluationResult evaluation =
+                        evaluateConditionSafely(step.condition().get());
+                if (evaluation.failed()) {
                     return failedResult(
                             step,
                             concreteStep.stepType(),
                             Optional.empty(),
                             WorkflowFailureType.CONDITION_EVALUATION_FAILED,
-                            e.getMessage(),
-                            null,
-                            null,
-                            null);
-                } catch (RuntimeException e) {
-                    RawDescription description = describeConditionRaw(condition);
-                    String message =
-                            description.failed()
-                                    ? "condition threw " + e.getClass().getSimpleName()
-                                    : "condition '"
-                                            + description.text()
-                                            + "' threw "
-                                            + e.getClass().getSimpleName();
-                    return failedResult(
-                            step,
-                            concreteStep.stepType(),
-                            Optional.empty(),
-                            WorkflowFailureType.CONDITION_EVALUATION_FAILED,
-                            message,
-                            e.getClass().getName(),
+                            evaluation.failureMessage(),
+                            evaluation.underlyingTypeName(),
                             null,
                             null);
                 }
-
-                if (condition instanceof IDeferredConditionDescription deferred) {
-                    // Structurally crash-safe (framework-owned rendering only - see
-                    // IDeferredConditionDescription's Javadoc), so no describe()-failure check is
-                    // needed here: unlike a custom condition, this can never throw or return null.
-                    // SafeRendering.bounded is applied here, once, to whatever describeFinal
-                    // produces - exactly like the custom-condition branch below - rather than
-                    // inside
-                    // describeFinal itself, so a composite of many built-in conditions is bounded
-                    // as
-                    // a whole and cannot grow unbounded even though each leaf is individually safe.
-                    conditionResult =
-                            Optional.of(
-                                    new PendingConditionResult(
-                                            outcome,
-                                            redactor ->
-                                                    SafeRendering.bounded(
-                                                            deferred.describeFinal(redactor))));
-                } else {
-                    RawDescription description = describeConditionRaw(condition);
-                    if (description.failed()) {
-                        return failedResult(
-                                step,
-                                concreteStep.stepType(),
-                                Optional.empty(),
-                                WorkflowFailureType.CONDITION_EVALUATION_FAILED,
-                                description.failureMessage(),
-                                description.underlyingType(),
-                                null,
-                                null);
-                    }
-                    conditionResult =
-                            Optional.of(
-                                    new PendingConditionResult(
-                                            outcome,
-                                            redactor ->
-                                                    SafeRendering.bounded(
-                                                            redactor.redact(description.text()))));
-                }
-                if (!outcome) {
+                conditionResult = Optional.of(evaluation.pending());
+                if (!evaluation.outcome()) {
                     return new PendingStepResult(
                             step.id(),
                             concreteStep.stepType(),

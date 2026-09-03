@@ -12,7 +12,11 @@ import java.util.Optional;
  * @param stepId the step's identifier
  * @param stepType the step's broad category
  * @param status the step's terminal status
- * @param condition the guard condition's outcome, if the step had one and it was evaluated
+ * @param condition for an {@code ACTION}/{@code ASSIGN} step, its optional guard condition's
+ *     outcome, if it had one and it was evaluated - {@code false} always implies {@code SKIPPED}.
+ *     For a {@code CONDITIONAL} step, its mandatory branch decision instead - always present unless
+ *     the step failed before a decision was captured, and a {@code false} outcome never implies
+ *     {@code SKIPPED} for this step type (see {@link WorkflowSteps#ifElse}).
  * @param outputVariableName the name of the variable this step published, if it produced one
  * @param failure the safe structured failure, if {@code status} is {@link
  *     WorkflowStepStatus#FAILED}
@@ -93,11 +97,27 @@ public record WorkflowStepResult(
                         "a NOT_RUN step result cannot carry an action summary");
             }
         }
-        if (condition.isPresent()
+        if (stepType != WorkflowStepType.CONDITIONAL
+                && condition.isPresent()
                 && !condition.get().outcome()
                 && status != WorkflowStepStatus.SKIPPED) {
             throw new IllegalArgumentException(
                     "a step result with a false condition outcome must be SKIPPED");
+        }
+        if (stepType == WorkflowStepType.CONDITIONAL) {
+            if (outputVariableName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a CONDITIONAL step cannot carry a published output variable name");
+            }
+            if (actionSummary.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a CONDITIONAL step cannot carry an action summary");
+            }
+            if (status == WorkflowStepStatus.SKIPPED) {
+                throw new IllegalArgumentException(
+                        "a CONDITIONAL step's own branch decision is never SKIPPED - see"
+                                + " WorkflowSteps#ifElse/ifThen");
+            }
         }
         if (stepType == WorkflowStepType.ASSIGN && actionSummary.isPresent()) {
             throw new IllegalArgumentException("an ASSIGN step cannot carry an action summary");
@@ -140,6 +160,13 @@ public record WorkflowStepResult(
             case NULL_OUTPUT, OUTPUT_TYPE_MISMATCH -> {
                 requireActionStepType(stepType, failureType);
                 requireActionSummaryWithSuccessStatus(actionSummary, failureType);
+            }
+            case CONDITIONAL_STEP_INTERRUPTED -> {
+                if (stepType != WorkflowStepType.CONDITIONAL) {
+                    throw new IllegalArgumentException(
+                            failureType + " can only occur on a CONDITIONAL step");
+                }
+                requireNoActionSummary(actionSummary, failureType);
             }
         }
     }
@@ -193,7 +220,12 @@ public record WorkflowStepResult(
                                 case NOT_EXECUTED ->
                                         failureType == ActionFailureType.TARGET_NOT_FOUND
                                                 || failureType == ActionFailureType.TARGET_AMBIGUOUS
-                                                || failureType == ActionFailureType.BACKEND_FAILURE;
+                                                || failureType == ActionFailureType.BACKEND_FAILURE
+                                                || failureType == ActionFailureType.TARGET_CHANGED
+                                                || failureType == ActionFailureType.POLICY_DENIED
+                                                || failureType
+                                                        == ActionFailureType
+                                                                .POLICY_EVALUATION_FAILED;
                                 case REAL ->
                                         failureType == ActionFailureType.TARGET_NOT_INTERACTABLE
                                                 || failureType
@@ -201,8 +233,10 @@ public record WorkflowStepResult(
                                                                 .ACTION_NOT_SUPPORTED_BY_TARGET
                                                 || failureType == ActionFailureType.BACKEND_FAILURE
                                                 || failureType == ActionFailureType.UPLOAD_FAILURE
+                                                || failureType == ActionFailureType.DOWNLOAD_FAILURE
+                                                || failureType == ActionFailureType.POLICY_VIOLATION
                                                 || failureType
-                                                        == ActionFailureType.DOWNLOAD_FAILURE;
+                                                        == ActionFailureType.STABILIZATION_FAILED;
                                 case DRY_RUN -> false;
                             };
                     case VERIFICATION_FAILED ->
