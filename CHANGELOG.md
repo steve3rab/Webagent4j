@@ -54,6 +54,31 @@ not imply a published compatibility line.
   runtime-only, never serialized into a recording. See
   [Workflows](docs/workflow.md#execution-tree) and [Limitations](docs/limitations.md#workflows).
 
+- Deterministic Workflow Execution Plan: `WorkflowPlanner.plan(workflow)` builds a new
+  `WorkflowExecutionPlan` - a deterministic, backend-neutral description of what a `Workflow` is
+  structurally capable of executing, built entirely from its already-validated definition, never by
+  running it. Planning never calls an `IWorkflowActionFactory`, never evaluates an
+  `IWorkflowCondition` (branch selector or `when(...)` guard alike), never resolves or verifies a
+  backend target, and never performs a click, fill, type, select, upload, submit, or download - a
+  dedicated `WorkflowPlanner`, kept separate from `WorkflowEngine`, reads only static step metadata
+  already present on the definition. New types `WorkflowExecutionPlan` (root: `workflowId` +
+  `nodes`), `WorkflowPlanNode` (step ID, `WorkflowStepType`, whether the step carries an optional
+  guard, its declared `WorkflowPlanOutput` if any, and - for a `CONDITIONAL` step - its branches),
+  `WorkflowPlanBranch` (reusing `WorkflowBranchSelection` as a structural label: `THEN`/`ELSE`, or
+  `NONE` for an `ifThen`'s structurally absent else), and `WorkflowPlanOutput` (output name, type
+  name, and `PUBLIC`/`SECRET` classification - never a value). Unlike the execution tree, where a
+  non-selected branch contributes zero nodes, a plan represents *both* of a conditional's
+  structurally possible branches, since no runtime decision exists yet to select between them - the
+  plan never claims a runtime-dependent action, condition, or policy decision will succeed. Node
+  count is proportional to the number of definition steps - nested conditionals stay a tree, never
+  expanding into every combination of branch outcomes - bounded by the same
+  `Workflow.MAX_CONDITIONAL_NESTING_DEPTH` every `Workflow` already is, so planning a
+  maximum-depth definition never risks a `StackOverflowError`. Two plans built from the same
+  `Workflow` are always logically equal. Entirely additive; `WorkflowResult`, `WorkflowEngine`, and
+  the execution tree are unchanged, and Recording V1 is unaffected - a plan is never serialized
+  into a recording. See [Workflows](docs/workflow.md#execution-plan) and
+  [Limitations](docs/limitations.md#workflows).
+
 - Governed Actions V2: extended atomic exact-target execution to every target-bound governed
   action, not just `click` - `type`/`fill`, `select`, `check`, `uncheck`, `hover`, and `pressKey`
   now share the same `IElement#verifiedForExecution()` atomic-handle binding `click` already had,
