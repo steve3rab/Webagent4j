@@ -30,7 +30,10 @@ import java.util.Set;
  * itself guarded by {@link IWorkflowStep#when} - see below), a condition referencing a variable
  * that is neither a declared input nor a definitely-published earlier output, and a conditional
  * step nested deeper than {@link #MAX_CONDITIONAL_NESTING_DEPTH}. See {@code
- * docs/workflow.md#workflow-definitions} for the complete contract.
+ * docs/workflow.md#workflow-definitions} for the complete contract. {@link Builder#validate()} is
+ * an additive, read-only companion that explains the exact same invariants as a structured {@link
+ * WorkflowValidationReport} instead of throwing on the first one - see its Javadoc and {@code
+ * docs/workflow.md#validation-report}.
  *
  * <p><b>Guard-aware definite assignment:</b> an output is only ever treated as definitely available
  * to a later step's condition (or a conditional step's own branch selector) when every reachable
@@ -63,7 +66,8 @@ public final class Workflow {
      * can ever become an executable {@code Workflow}, so {@link WorkflowEngine}'s own recursive
      * traversal of a conditional's branches never needs a second, independent depth check to stay
      * within a normal JVM stack: every {@code Workflow} it can possibly receive is already bounded
-     * by this same constant, checked once, here.
+     * by this same constant, checked once, here. {@link Builder#validate()} shares this exact same
+     * check (see {@link #analyze}), so it never recurses past this same bound either.
      *
      * <p>Mirrors the existing structural-nesting-bound precedent set by {@code
      * JsonWorkflowRecordingCodec#MAX_NESTING_DEPTH} elsewhere in this codebase: generous relative
@@ -72,6 +76,15 @@ public final class Workflow {
      * deep.
      */
     static final int MAX_CONDITIONAL_NESTING_DEPTH = 64;
+
+    /**
+     * Maximum number of diagnostics {@link Builder#validate()} accumulates before setting {@link
+     * WorkflowValidationReport#diagnosticsTruncated()} and discarding the rest - a
+     * caller-controlled definition could otherwise force unbounded retention of diagnostic text
+     * (see {@code docs/workflow.md#validation-report}). {@link Builder#build()} never accumulates
+     * more than one, since it throws on the first.
+     */
+    static final int MAX_VALIDATION_DIAGNOSTICS = 256;
 
     private final WorkflowId id;
     private final List<WorkflowVariable<?>> requiredInputs;
@@ -149,7 +162,8 @@ public final class Workflow {
      * Mutable builder for {@link Workflow}. {@link #build()} never performs a backend or
      * action-factory side effect; it does invoke an attached custom {@link IWorkflowCondition}'s
      * metadata methods for structural validation, which are required to be side-effect-free
-     * themselves (see {@code docs/workflow.md#conditions}).
+     * themselves (see {@code docs/workflow.md#conditions}). {@link #validate()} shares that exact
+     * same property and the exact same underlying analysis - see its own Javadoc.
      */
     public static final class Builder {
 
@@ -190,31 +204,189 @@ public final class Workflow {
          * @throws IllegalArgumentException if the definition is structurally invalid
          */
         public Workflow build() {
-            if (steps.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "workflow '" + id + "' must declare at least one step");
-            }
-
-            Map<String, WorkflowVariable<?>> byName = new LinkedHashMap<>();
-            Set<String> declaredInputNames = new HashSet<>();
-            registerInputDeclarations(byName, declaredInputNames, requiredInputs);
-            registerInputDeclarations(byName, declaredInputNames, optionalInputs);
-
-            Set<WorkflowVariable<?>> declared = new LinkedHashSet<>();
-            declared.addAll(requiredInputs);
-            declared.addAll(optionalInputs);
-            Set<WorkflowVariable<?>> definite = new LinkedHashSet<>(declared);
-
-            Set<WorkflowStepId> seenStepIds = new HashSet<>();
-            for (IWorkflowStep step : steps) {
-                validateStep(step, byName, declared, definite, seenStepIds, 0);
-            }
-
+            analyze(true);
             return new Workflow(
                     id,
                     List.copyOf(requiredInputs),
                     List.copyOf(optionalInputs),
                     List.copyOf(steps));
+        }
+
+        /**
+         * Explains this builder's <em>current</em> definition state as a structured {@link
+         * WorkflowValidationReport}, without ever throwing and without ever mutating this builder:
+         * calling {@code validate()} any number of times, in any order relative to {@link #step},
+         * {@link #requiredInput}, {@link #optionalInput}, or {@link #build()}, never changes this
+         * builder's own state or any subsequent call's result for the same state.
+         *
+         * <p><b>Single source of truth:</b> this method and {@link #build()} both delegate to the
+         * exact same internal analysis ({@link #analyze}) - the same recursive traversal, the same
+         * definite-assignment rules, the same nesting-depth bound - so a definition {@link
+         * #build()} accepts always produces {@link WorkflowValidationReport#valid()}, and one it
+         * rejects always produces at least one diagnostic here. There is no second, independently
+         * maintained validation algorithm that could drift out of sync with {@link #build()}'s own
+         * rules.
+         *
+         * <p><b>Zero side effects:</b> like {@link #build()}, this never calls an {@link
+         * IWorkflowActionFactory}, never evaluates an {@link IWorkflowCondition} ({@code
+         * evaluate()} is never invoked - only the side-effect-free {@code referencedVariables()}
+         * metadata method {@link #build()} already reads today), and never touches a backend,
+         * browser, or network resource.
+         *
+         * <p><b>Fail-fast vs. accumulate:</b> {@link #build()} throws on the very first invariant
+         * violation it encounters, exactly as before. This method instead continues analyzing every
+         * remaining structurally independent part of the definition it safely can, so a caller sees
+         * every diagnostic reachable from that continued walk in one report - but it never resumes
+         * analyzing a step (or a conditional's branches) whose own violation would make continuing
+         * to interpret its contribution unsafe: such a step is simply skipped, and the walk
+         * continues with whatever structurally follows it. See {@code
+         * docs/workflow.md#validation-report} for the exact per-invariant continuation rules.
+         */
+        public WorkflowValidationReport validate() {
+            Analysis analysis = analyze(false);
+            List<WorkflowValidationOutput> outputs = new ArrayList<>(analysis.producers.size());
+            for (Map.Entry<WorkflowVariable<?>, WorkflowStepId> entry :
+                    analysis.producers.entrySet()) {
+                WorkflowVariable<?> variable = entry.getKey();
+                outputs.add(
+                        new WorkflowValidationOutput(
+                                entry.getValue(), variable, analysis.definite.contains(variable)));
+            }
+            return new WorkflowValidationReport(
+                    id,
+                    analysis.diagnostics,
+                    analysis.truncated,
+                    List.copyOf(requiredInputs),
+                    List.copyOf(optionalInputs),
+                    outputs,
+                    analysis.stepCount,
+                    analysis.conditionalCount,
+                    analysis.maxObservedDepth);
+        }
+
+        /**
+         * Runs the single shared structural analysis this builder's current state undergoes for
+         * both {@link #build()} ({@code failFast=true}: throws {@link IllegalArgumentException} on
+         * the first violation, with the exact same message {@code build()} has always thrown) and
+         * {@link #validate()} ({@code failFast=false}: every violation becomes a {@link
+         * WorkflowValidationDiagnostic} instead, up to {@link #MAX_VALIDATION_DIAGNOSTICS}).
+         */
+        private Analysis analyze(boolean failFast) {
+            Analysis analysis = new Analysis(failFast);
+            if (steps.isEmpty()) {
+                analysis.report(
+                        WorkflowValidationCode.EMPTY_STEP_LIST,
+                        null,
+                        null,
+                        "workflow '" + id + "' must declare at least one step");
+            }
+
+            Map<String, WorkflowVariable<?>> byName = new LinkedHashMap<>();
+            Set<String> declaredInputNames = new HashSet<>();
+            registerInputDeclarations(byName, declaredInputNames, requiredInputs, analysis);
+            registerInputDeclarations(byName, declaredInputNames, optionalInputs, analysis);
+
+            analysis.declared.addAll(requiredInputs);
+            analysis.declared.addAll(optionalInputs);
+            analysis.definite.addAll(analysis.declared);
+
+            Set<WorkflowStepId> seenStepIds = new HashSet<>();
+            for (IWorkflowStep step : steps) {
+                validateStep(
+                        step,
+                        byName,
+                        analysis.declared,
+                        analysis.definite,
+                        seenStepIds,
+                        0,
+                        analysis);
+            }
+            return analysis;
+        }
+
+        /**
+         * Mutable accumulator threaded through one {@link #analyze} call: either throws immediately
+         * on the first reported violation ({@code failFast}), or records every one, bounded, for
+         * {@link #validate()} - see {@link #report}. {@code declared}/{@code definite} hold the
+         * final, top-level sets once analysis completes; {@code producers} correlates each
+         * successfully declared output back to the step that declares it, for {@link
+         * WorkflowValidationOutput#producerStepId()}.
+         */
+        private static final class Analysis {
+            private final boolean failFast;
+            private final List<WorkflowValidationDiagnostic> diagnostics = new ArrayList<>();
+            private final Map<WorkflowVariable<?>, WorkflowStepId> producers =
+                    new LinkedHashMap<>();
+            private final Set<WorkflowVariable<?>> declared = new LinkedHashSet<>();
+            private final Set<WorkflowVariable<?>> definite = new LinkedHashSet<>();
+            private boolean truncated;
+            private int stepCount;
+            private int conditionalCount;
+            private int maxObservedDepth;
+
+            private Analysis(boolean failFast) {
+                this.failFast = failFast;
+            }
+
+            /**
+             * Records one violation: throws immediately, exactly as {@link #build()} always has,
+             * when {@code failFast}; otherwise appends a diagnostic (dropping it, and setting
+             * {@code truncated}, once {@link #MAX_VALIDATION_DIAGNOSTICS} is reached) and returns
+             * normally so the caller can decide how to safely continue.
+             */
+            private void report(
+                    WorkflowValidationCode code,
+                    WorkflowStepId stepId,
+                    String variableName,
+                    String message) {
+                if (failFast) {
+                    throw new IllegalArgumentException(message);
+                }
+                addDiagnostic(code, stepId, variableName, message);
+            }
+
+            /**
+             * Same as {@link #report}, but preserves {@code cause} only for the thrown exception.
+             */
+            private void reportWithCause(
+                    WorkflowValidationCode code,
+                    WorkflowStepId stepId,
+                    String variableName,
+                    String message,
+                    RuntimeException cause) {
+                if (failFast) {
+                    throw new IllegalArgumentException(message, cause);
+                }
+                addDiagnostic(code, stepId, variableName, message);
+            }
+
+            private void addDiagnostic(
+                    WorkflowValidationCode code,
+                    WorkflowStepId stepId,
+                    String variableName,
+                    String message) {
+                if (diagnostics.size() >= MAX_VALIDATION_DIAGNOSTICS) {
+                    truncated = true;
+                    return;
+                }
+                diagnostics.add(
+                        new WorkflowValidationDiagnostic(
+                                code,
+                                WorkflowValidationSeverity.ERROR,
+                                Optional.ofNullable(stepId),
+                                Optional.ofNullable(variableName),
+                                message));
+            }
+
+            private void observeDepth(int depth) {
+                if (depth > maxObservedDepth) {
+                    maxObservedDepth = depth;
+                }
+            }
+
+            private void recordProducer(WorkflowVariable<?> output, WorkflowStepId stepId) {
+                producers.put(output, stepId);
+            }
         }
 
         /**
@@ -245,6 +417,13 @@ public final class Workflow {
          * its own {@code conditionalDepth + 1} before descending into either branch, passing that
          * same incremented depth as the starting point for both - never summed between them (see
          * {@link #MAX_CONDITIONAL_NESTING_DEPTH}'s Javadoc).
+         *
+         * <p>A duplicate step ID or an over-depth conditional is reported and this step's own
+         * contribution is skipped entirely - neither its condition, output, nor (for a conditional)
+         * its branches are analyzed further - since nothing about its contents can be trusted once
+         * either invariant is violated; the walk still continues with whatever structurally follows
+         * this step. Every other violation site below documents its own, narrower continuation
+         * rule.
          */
         private static void validateStep(
                 IWorkflowStep step,
@@ -252,26 +431,39 @@ public final class Workflow {
                 Set<WorkflowVariable<?>> declared,
                 Set<WorkflowVariable<?>> definite,
                 Set<WorkflowStepId> seenStepIds,
-                int conditionalDepth) {
+                int conditionalDepth,
+                Analysis analysis) {
             if (!seenStepIds.add(step.id())) {
-                throw new IllegalArgumentException("duplicate step ID '" + step.id() + "'");
+                analysis.report(
+                        WorkflowValidationCode.DUPLICATE_STEP_ID,
+                        step.id(),
+                        null,
+                        "duplicate step ID '" + step.id() + "'");
+                return;
             }
+            analysis.stepCount++;
 
             Optional<IWorkflowCondition> guard = step.condition();
-            guard.ifPresent(condition -> validateCondition(step, condition, definite));
+            guard.ifPresent(condition -> validateCondition(step, condition, definite, analysis));
 
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep (see its Javadoc), so
             // every instance reachable here is guaranteed to be one.
             AWorkflowStep concreteStep = (AWorkflowStep) step;
             if (concreteStep instanceof ConditionalWorkflowStep conditional) {
+                analysis.conditionalCount++;
                 int nestedDepth = conditionalDepth + 1;
+                analysis.observeDepth(nestedDepth);
                 if (nestedDepth > MAX_CONDITIONAL_NESTING_DEPTH) {
-                    throw new IllegalArgumentException(
+                    analysis.report(
+                            WorkflowValidationCode.CONDITIONAL_DEPTH_EXCEEDED,
+                            step.id(),
+                            null,
                             "step '"
                                     + step.id()
                                     + "' exceeds the maximum supported conditional nesting depth"
                                     + " of "
                                     + MAX_CONDITIONAL_NESTING_DEPTH);
+                    return;
                 }
                 // Both branches must validate from an identical starting snapshot of what is
                 // declared/definite before the conditional - neither one's own contribution may
@@ -286,7 +478,8 @@ public final class Workflow {
                                 declared,
                                 definite,
                                 seenStepIds,
-                                nestedDepth);
+                                nestedDepth,
+                                analysis);
                 BranchResult elseResult =
                         validateBranch(
                                 conditional.elseSteps().orElse(List.of()),
@@ -294,9 +487,10 @@ public final class Workflow {
                                 declared,
                                 definite,
                                 seenStepIds,
-                                nestedDepth);
+                                nestedDepth,
+                                analysis);
                 mergeBranchDeclarations(
-                        byName, declared, thenResult.declared(), elseResult.declared());
+                        byName, declared, thenResult.declared(), elseResult.declared(), analysis);
                 mergeBranchDefinite(definite, thenResult.definite(), elseResult.definite());
                 return;
             }
@@ -310,7 +504,8 @@ public final class Workflow {
                                             definite,
                                             step,
                                             output,
-                                            guard.isPresent()));
+                                            guard.isPresent(),
+                                            analysis));
         }
 
         /**
@@ -334,7 +529,8 @@ public final class Workflow {
                 Set<WorkflowVariable<?>> declared,
                 Set<WorkflowVariable<?>> definite,
                 Set<WorkflowStepId> seenStepIds,
-                int conditionalDepth) {
+                int conditionalDepth,
+                Analysis analysis) {
             Map<String, WorkflowVariable<?>> branchByName = new LinkedHashMap<>(byName);
             Set<WorkflowVariable<?>> branchDeclared = new LinkedHashSet<>(declared);
             Set<WorkflowVariable<?>> branchDefinite = new LinkedHashSet<>(definite);
@@ -345,7 +541,8 @@ public final class Workflow {
                         branchDeclared,
                         branchDefinite,
                         seenStepIds,
-                        conditionalDepth);
+                        conditionalDepth,
+                        analysis);
             }
             return new BranchResult(branchDeclared, branchDefinite);
         }
@@ -359,32 +556,41 @@ public final class Workflow {
          * declared with a different type or secret status is rejected. This is a union, by design,
          * unlike {@link #mergeBranchDefinite}: {@code declared} exists only to catch a structurally
          * conflicting or duplicate producer reachable from a single execution, regardless of any
-         * guard, never to decide what a later step may statically rely on being present.
+         * guard, never to decide what a later step may statically rely on being present. A
+         * conflicting candidate is skipped - never added to {@code declared} - and folding
+         * continues with the rest of the branch's own declarations, exactly mirroring {@link
+         * #registerStepOutput}'s own continuation rule.
          */
         private static void mergeBranchDeclarations(
                 Map<String, WorkflowVariable<?>> byName,
                 Set<WorkflowVariable<?>> declared,
                 Set<WorkflowVariable<?>> thenDeclared,
-                Set<WorkflowVariable<?>> elseDeclared) {
-            mergeOneBranchDeclaration(byName, declared, thenDeclared);
-            mergeOneBranchDeclaration(byName, declared, elseDeclared);
+                Set<WorkflowVariable<?>> elseDeclared,
+                Analysis analysis) {
+            mergeOneBranchDeclaration(byName, declared, thenDeclared, analysis);
+            mergeOneBranchDeclaration(byName, declared, elseDeclared, analysis);
         }
 
         private static void mergeOneBranchDeclaration(
                 Map<String, WorkflowVariable<?>> byName,
                 Set<WorkflowVariable<?>> declared,
-                Set<WorkflowVariable<?>> branchDeclared) {
+                Set<WorkflowVariable<?>> branchDeclared,
+                Analysis analysis) {
             for (WorkflowVariable<?> candidate : branchDeclared) {
                 if (declared.contains(candidate)) {
                     continue;
                 }
                 WorkflowVariable<?> existing = byName.putIfAbsent(candidate.name(), candidate);
                 if (existing != null && !existing.equals(candidate)) {
-                    throw new IllegalArgumentException(
+                    analysis.report(
+                            mismatchCode(existing, candidate),
+                            null,
+                            candidate.name(),
                             "branch output '"
                                     + candidate.name()
                                     + "' conflicts with an existing input or output declared with"
                                     + " a different type or secret status");
+                    continue;
                 }
                 declared.add(candidate);
             }
@@ -401,7 +607,9 @@ public final class Workflow {
          * guarded producer may still be skipped, so a later step could otherwise statically appear
          * valid while actually reading a variable nothing on the executed path ever published. This
          * is intentionally an intersection, not the union {@link #mergeBranchDeclarations} computes
-         * for {@code declared} - see {@code docs/workflow.md#branching}.
+         * for {@code declared} - see {@code docs/workflow.md#branching}. Never throws and never
+         * reports a diagnostic: purely a set computation over already-validated names, shared
+         * unchanged by {@link #build()} and {@link #validate()}.
          *
          * <p>{@code elseDefinite} is exactly {@code definite} (no new names) whenever the
          * conditional has no {@code elseSteps} ({@code ifThen}), so this naturally rejects every
@@ -440,14 +648,25 @@ public final class Workflow {
             return result;
         }
 
+        /**
+         * Registers each input's declaration, reporting a diagnostic for every name declared more
+         * than once (across {@code requiredInputs} and {@code optionalInputs} combined) and keeping
+         * only the first declaration of that name - never mutating {@code byName} for a duplicate -
+         * before continuing to register the rest, independently of any other duplicate found.
+         */
         private static void registerInputDeclarations(
                 Map<String, WorkflowVariable<?>> byName,
                 Set<String> declaredInputNames,
-                List<WorkflowVariable<?>> inputs) {
+                List<WorkflowVariable<?>> inputs,
+                Analysis analysis) {
             for (WorkflowVariable<?> variable : inputs) {
                 if (!declaredInputNames.add(variable.name())) {
-                    throw new IllegalArgumentException(
+                    analysis.report(
+                            WorkflowValidationCode.DUPLICATE_INPUT_DECLARATION,
+                            null,
+                            variable.name(),
                             "input '" + variable.name() + "' is declared more than once");
+                    continue;
                 }
                 byName.put(variable.name(), variable);
             }
@@ -459,39 +678,60 @@ public final class Workflow {
          * at this point: a declared input, or an earlier step's output that is guaranteed to have
          * been published (see {@link #validateStep}). {@code definite} deliberately excludes any
          * output a guarded producer only <em>might</em> have published, since a false guard skips
-         * that producer entirely (see {@code docs/workflow.md#conditions}).
+         * that producer entirely (see {@code docs/workflow.md#conditions}). A metadata violation (a
+         * thrown exception, a {@code null} set, or a {@code null} entry) is reported and the
+         * remaining reference check for this condition is skipped - nothing about {@code
+         * referencedVariables()}'s result can be trusted once it has violated its own contract -
+         * but this step's own output, and whatever structurally follows it, are still analyzed
+         * normally.
          */
         private static void validateCondition(
                 IWorkflowStep step,
                 IWorkflowCondition condition,
-                Set<WorkflowVariable<?>> definite) {
+                Set<WorkflowVariable<?>> definite,
+                Analysis analysis) {
             Set<WorkflowVariable<?>> referenced;
             try {
                 referenced = condition.referencedVariables();
             } catch (RuntimeException e) {
-                throw new IllegalArgumentException(
+                analysis.reportWithCause(
+                        WorkflowValidationCode.CONDITION_METADATA_INVALID,
+                        step.id(),
+                        null,
                         "step '"
                                 + step.id()
                                 + "' condition's referencedVariables() threw "
                                 + e.getClass().getSimpleName(),
                         e);
+                return;
             }
             if (referenced == null) {
-                throw new IllegalArgumentException(
+                analysis.report(
+                        WorkflowValidationCode.CONDITION_METADATA_INVALID,
+                        step.id(),
+                        null,
                         "step '"
                                 + step.id()
                                 + "' condition returned a null referencedVariables() set");
+                return;
             }
             for (WorkflowVariable<?> variable : referenced) {
                 if (variable == null) {
-                    throw new IllegalArgumentException(
+                    analysis.report(
+                            WorkflowValidationCode.CONDITION_METADATA_INVALID,
+                            step.id(),
+                            null,
                             "step '"
                                     + step.id()
                                     + "' condition's referencedVariables() contains a null"
                                     + " entry");
+                    continue;
                 }
                 if (!definite.contains(variable)) {
-                    throw new IllegalArgumentException(
+                    analysis.report(
+                            WorkflowValidationCode.OUTPUT_NOT_DEFINITELY_AVAILABLE,
+                            step.id(),
+                            variable.name(),
                             "step '"
                                     + step.id()
                                     + "' condition references variable '"
@@ -512,7 +752,9 @@ public final class Workflow {
          * and never publish anything, so its output can never be treated as definitely available to
          * whatever structurally follows it, even though the step itself remains perfectly valid and
          * still publishes normally whenever its guard does evaluate {@code true} (see {@code
-         * docs/workflow.md#conditions}).
+         * docs/workflow.md#conditions}). A conflicting or colliding output is reported and simply
+         * never registered - neither into {@code declared} nor {@code definite}, and never recorded
+         * as a producer - while the walk continues with whatever structurally follows this step.
          */
         private static void registerStepOutput(
                 Map<String, WorkflowVariable<?>> byName,
@@ -520,29 +762,53 @@ public final class Workflow {
                 Set<WorkflowVariable<?>> definite,
                 IWorkflowStep step,
                 WorkflowVariable<?> output,
-                boolean guarded) {
+                boolean guarded,
+                Analysis analysis) {
             WorkflowVariable<?> existing = byName.putIfAbsent(output.name(), output);
             if (existing != null && !existing.equals(output)) {
-                throw new IllegalArgumentException(
+                analysis.report(
+                        mismatchCode(existing, output),
+                        step.id(),
+                        output.name(),
                         "step '"
                                 + step.id()
                                 + "' output '"
                                 + output.name()
                                 + "' conflicts with an existing input or output declared with a"
                                 + " different type or secret status");
+                return;
             }
             if (!declared.add(output)) {
-                throw new IllegalArgumentException(
+                analysis.report(
+                        WorkflowValidationCode.OUTPUT_COLLISION,
+                        step.id(),
+                        output.name(),
                         "step '"
                                 + step.id()
                                 + "' output '"
                                 + output.name()
                                 + "' collides with an existing input or an earlier step's"
                                 + " output");
+                return;
             }
+            analysis.recordProducer(output, step.id());
             if (!guarded) {
                 definite.add(output);
             }
+        }
+
+        /**
+         * Classifies why {@code existing} and {@code candidate} - two declarations of the same
+         * output name - disagree: a differing {@link WorkflowVariable#secret()} classification is
+         * reported as such even when the runtime type also differs, since a secret/public mismatch
+         * is the more safety-relevant fact.
+         */
+        private static WorkflowValidationCode mismatchCode(
+                WorkflowVariable<?> existing, WorkflowVariable<?> candidate) {
+            if (existing.secret() != candidate.secret()) {
+                return WorkflowValidationCode.OUTPUT_SECRET_CLASSIFICATION_MISMATCH;
+            }
+            return WorkflowValidationCode.OUTPUT_TYPE_MISMATCH;
         }
     }
 }

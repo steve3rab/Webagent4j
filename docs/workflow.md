@@ -144,6 +144,38 @@ Workflow
 
 **Not a new recording format:** Recording V1 is entirely unaffected; `WorkflowExecutionPlan` is never serialized into a `WorkflowRecording`. Planning is not a dry run, a replay, or an execution-plan preview of a specific future execution's outcome - it is a static structural description only.
 
+## Validation report
+
+`Workflow.Builder#validate()` explains the builder's *current* definition state as a structured `WorkflowValidationReport`, without ever throwing and without mutating the builder - calling `validate()` any number of times, in any order relative to `step`/`requiredInput`/`optionalInput`/`build()`, never changes the builder's own state or a later call's result for the same state:
+
+```text
+WorkflowValidationReport
+├── valid()                                  // diagnostics().isEmpty()
+├── diagnostics: [WorkflowValidationDiagnostic...]
+├── requiredInputs / optionalInputs: [WorkflowVariable...]
+├── outputs: [WorkflowValidationOutput...]   // producer step, variable, definitelyAvailable
+├── stepCount / conditionalCount
+└── maximumObservedConditionalDepth
+```
+
+**Three related, deliberately separate concepts:** `WorkflowValidationReport` explains *whether and why a definition is valid, before any execution exists*. `WorkflowExecutionPlan` (see above) explains *what a valid definition can structurally execute*. `WorkflowExecutionTree` explains *what one specific execution actually did*. None of the three depends on either of the others, and none is ever merged into or toggled from another with a flag.
+
+**Single source of truth:** `validate()` and `build()` derive their conclusions from the exact same internal analysis (`Workflow.Builder#analyze`) - the same recursive step-tree traversal, the same guard-aware definite-assignment rules, the same `MAX_CONDITIONAL_NESTING_DEPTH` bound. There is no second, independently maintained validation algorithm that could drift out of sync with `build()`'s own rules: a definition `build()` accepts always produces `report.valid() == true`, and one it rejects always produces at least one diagnostic. `build()` remains fully fail-closed - it always rejects an invalid definition, whether or not a caller ever calls `validate()` first, and the report never makes an invalid definition executable.
+
+**Zero side effects:** like `build()`, producing a report never calls an `IWorkflowActionFactory`, never evaluates an `IWorkflowCondition` (`evaluate()` is never invoked - only the side-effect-free `referencedVariables()` metadata method `build()` already reads today is read), and never touches a backend, browser, or network resource.
+
+**Fail-fast vs. accumulate:** `build()` throws on the very first invariant violation it encounters, exactly as before. `validate()` instead continues analyzing every remaining structurally independent part of the definition it can safely reach, so a caller sees every diagnostic reachable from that continued walk in one report - but it never resumes interpreting a step (or a conditional's branches) whose own violation would make trusting its contribution unsafe: such a step's contents are simply skipped, and the walk continues with whatever structurally follows it. For example: a duplicate step ID or an over-depth conditional skips that step's own condition/output/branches entirely (nothing about its contents can be trusted); a malformed condition metadata result skips only that condition's own reference check, but the step's own output and everything that follows are still analyzed; a conflicting or colliding output declaration is simply never registered, and analysis continues with the next step.
+
+**Definite assignment, exactly as build-time:** the report distinguishes a *declared* output from one that is *definitely available* - guaranteed to have been published by the time execution reaches whatever structurally follows its producer. A guarded (`when(...)`) producer's output is declared but never definite. An `ifElse` output is definite only when both branches unconditionally guarantee it (an intersection, never a union); an `ifThen` output is never definite afterward, since its `thenSteps` may not have run at all. These are the identical rules [Definition validation](#definition-validation) and [Branching](#branching) already document - `validate()` does not reinterpret them.
+
+**Structured diagnostics:** each `WorkflowValidationDiagnostic` carries a stable `WorkflowValidationCode` (`EMPTY_STEP_LIST`, `DUPLICATE_INPUT_DECLARATION`, `DUPLICATE_STEP_ID`, `CONDITIONAL_DEPTH_EXCEEDED`, `CONDITION_METADATA_INVALID`, `OUTPUT_NOT_DEFINITELY_AVAILABLE`, `OUTPUT_COLLISION`, `OUTPUT_TYPE_MISMATCH`, `OUTPUT_SECRET_CLASSIFICATION_MISMATCH`), a `WorkflowValidationSeverity` (`ERROR` only in this version - every diagnostic corresponds to an invariant `build()` already enforces as fail-closed, so there is no separate warning/informational tier), the step ID and/or variable name it concerns when applicable, and a safe message. Diagnostic order is deterministic: definition-traversal order, never `HashMap`/`HashSet` iteration order.
+
+**Resource bounds:** diagnostics are capped at `MAX_VALIDATION_DIAGNOSTICS` (256); once reached, `WorkflowValidationReport#diagnosticsTruncated()` is set and further diagnostics are discarded rather than retained without bound. `build()` never accumulates more than one diagnostic, since it throws on the first.
+
+**Secret safety:** `requiredInputs`/`optionalInputs`/`outputs` expose only a variable's name, declared runtime type, and secret classification (`WorkflowVariable` itself) - never a value. No diagnostic message ever contains a raw value, a secret, or a `Throwable`.
+
+**Not a new recording format:** Recording V1 is entirely unaffected; `WorkflowValidationReport` is never serialized into a `WorkflowRecording`.
+
 ## Fail-fast result shape
 
 A completed result contains only `SUCCEEDED`/`SKIPPED` steps. Runtime failure produces zero or more successful/skipped predecessors, exactly one failed step, and `NOT_RUN` successors. Overall failure and the failed step identify the same failure point.

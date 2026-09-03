@@ -79,6 +79,31 @@ not imply a published compatibility line.
   into a recording. See [Workflows](docs/workflow.md#execution-plan) and
   [Limitations](docs/limitations.md#workflows).
 
+- Structured Workflow Validation Report: `Workflow.Builder#validate()` explains the builder's
+  current definition state as a new `WorkflowValidationReport`, without ever throwing and without
+  mutating the builder. It derives its conclusions from the exact same internal analysis
+  `build()` already uses - never a second, independently maintained validation algorithm that
+  could diverge - so a definition `build()` accepts always reports `valid() == true`, and one it
+  rejects always produces at least one diagnostic; `build()` itself remains fully fail-closed
+  regardless of whether `validate()` is ever called. Unlike `build()`, which throws on the first
+  violation, `validate()` continues analyzing every remaining structurally independent part of the
+  definition it can safely reach, skipping only the specific step (or conditional branch) whose own
+  violation makes trusting its contents unsafe. New types: `WorkflowValidationReport` (validity,
+  diagnostics, required/optional inputs, declared outputs with producer step and definite-assignment
+  status, step/conditional counts, and maximum observed conditional depth), `WorkflowValidationCode`
+  (`EMPTY_STEP_LIST`, `DUPLICATE_INPUT_DECLARATION`, `DUPLICATE_STEP_ID`,
+  `CONDITIONAL_DEPTH_EXCEEDED`, `CONDITION_METADATA_INVALID`, `OUTPUT_NOT_DEFINITELY_AVAILABLE`,
+  `OUTPUT_COLLISION`, `OUTPUT_TYPE_MISMATCH`, `OUTPUT_SECRET_CLASSIFICATION_MISMATCH`),
+  `WorkflowValidationSeverity` (`ERROR` only in this version), and `WorkflowValidationDiagnostic`
+  (code, severity, step ID/variable name when applicable, and a safe message). Diagnostics are
+  deterministic (definition-traversal order) and bounded (256, with `diagnosticsTruncated()` set
+  once exceeded). Producing a report never evaluates a condition, never invokes an
+  `IWorkflowActionFactory`, and never touches a backend, browser, or network resource. Entirely
+  additive; `WorkflowResult`, `WorkflowEngine`, the execution tree, and the execution plan are
+  unchanged, and Recording V1 is unaffected - a report is never serialized into a recording. See
+  [Workflows](docs/workflow.md#validation-report) and
+  [Limitations](docs/limitations.md#workflows).
+
 - Governed Actions V2: extended atomic exact-target execution to every target-bound governed
   action, not just `click` - `type`/`fill`, `select`, `check`, `uncheck`, `hover`, and `pressKey`
   now share the same `IElement#verifiedForExecution()` atomic-handle binding `click` already had,
