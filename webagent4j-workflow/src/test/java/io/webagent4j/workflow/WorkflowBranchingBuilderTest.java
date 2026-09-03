@@ -93,10 +93,11 @@ class WorkflowBranchingBuilderTest {
     }
 
     @Test
-    void eitherBranchsOutputIsAvailableToStepsAfterTheConditional() {
-        // Only one branch ever runs, but a later step may reference either branch's declared
-        // output - exactly like a single guarded step's output is already treated as available
-        // regardless of whether its guard turns out true at runtime.
+    void bothBranchesProducingTheSameCompatibleOutputIsDefinitelyAvailableAfterTheConditional() {
+        // Only one branch ever runs, but since BOTH branches guarantee a compatible declaration of
+        // PRODUCED, it is definitely available afterward regardless of which branch executed -
+        // this is definite assignment: an intersection of what both branches guarantee, never a
+        // union of what either branch merely might have produced (see VAR-006/VAR-007 below).
         Workflow workflow =
                 Workflow.builder("wf")
                         .requiredInput(FLAG)
@@ -118,6 +119,114 @@ class WorkflowBranchingBuilderTest {
                         .build();
 
         assertThat(workflow).isNotNull();
+    }
+
+    // --- VAR-006: only one branch (ifElse) producing an output is NOT definitely available -----
+
+    @Test
+    void onlyThenBranchProducingOutputIsNotAvailableAfterTheConditionalIfElse() {
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .requiredInput(FLAG)
+                        .step(
+                                WorkflowSteps.ifElse(
+                                        "branch",
+                                        WorkflowConditions.isTrue(FLAG),
+                                        List.of(WorkflowSteps.assign("then", PRODUCED, "then")),
+                                        List.of(
+                                                WorkflowSteps.assign(
+                                                        "else",
+                                                        WorkflowVariable.publicValue(
+                                                                "unrelated", String.class),
+                                                        "else"))))
+                        .step(
+                                WorkflowSteps.assign(
+                                                "after",
+                                                WorkflowVariable.publicValue(
+                                                        "marker", Boolean.class),
+                                                true)
+                                        .when(WorkflowConditions.exists(PRODUCED)));
+
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("produced");
+    }
+
+    // --- VAR-007: an ifThen's thenSteps-only output is never available afterward --------------
+
+    @Test
+    void ifThenOutputIsNotAvailableAfterTheConditional() {
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .requiredInput(FLAG)
+                        .step(
+                                WorkflowSteps.ifThen(
+                                        "branch",
+                                        WorkflowConditions.isTrue(FLAG),
+                                        List.of(WorkflowSteps.assign("then", PRODUCED, "then"))))
+                        .step(
+                                WorkflowSteps.assign(
+                                                "after",
+                                                WorkflowVariable.publicValue(
+                                                        "marker", Boolean.class),
+                                                true)
+                                        .when(WorkflowConditions.exists(PRODUCED)));
+
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("produced");
+    }
+
+    // --- VAR-008: same-named output declared with a different type between branches -----------
+
+    @Test
+    void branchOutputTypeMismatchBetweenThenAndElseRejected() {
+        WorkflowVariable<Integer> intProduced =
+                WorkflowVariable.publicValue("produced", Integer.class);
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .requiredInput(FLAG)
+                        .step(
+                                WorkflowSteps.ifElse(
+                                        "branch",
+                                        WorkflowConditions.isTrue(FLAG),
+                                        List.of(WorkflowSteps.assign("then", PRODUCED, "x")),
+                                        List.of(WorkflowSteps.assign("else", intProduced, 1))));
+
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("produced");
+    }
+
+    // --- VAR-009: same-named output declared with a different secret status between branches --
+
+    @Test
+    void branchOutputSecretMismatchBetweenThenAndElseRejected() {
+        WorkflowVariable<String> secretProduced = WorkflowVariable.secret("secretProduced");
+        WorkflowVariable<String> publicProduced =
+                WorkflowVariable.publicValue("secretProduced", String.class);
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .requiredInput(FLAG)
+                        .step(
+                                WorkflowSteps.ifElse(
+                                        "branch",
+                                        WorkflowConditions.isTrue(FLAG),
+                                        List.of(
+                                                WorkflowSteps.action(
+                                                        "then",
+                                                        v ->
+                                                                new FakePreparedAction<>(
+                                                                        ActionResults.success("s"),
+                                                                        new AtomicInteger()),
+                                                        secretProduced)),
+                                        List.of(
+                                                WorkflowSteps.assign(
+                                                        "else", publicProduced, "p"))));
+
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("secretProduced");
     }
 
     @Test

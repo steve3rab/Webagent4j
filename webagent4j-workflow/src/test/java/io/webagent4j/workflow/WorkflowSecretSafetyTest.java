@@ -148,6 +148,46 @@ class WorkflowSecretSafetyTest {
     }
 
     @Test
+    void secretOutputProducedThenALaterStepFailureNeverLeaksItAnywhere() {
+        // VAR-012: a secret typed output published by an earlier successful step must stay masked
+        // in every incidental rendering even after a *different*, later step fails - the failure
+        // path redacts against every secret known up to termination, not only the input secrets
+        // supplied up front.
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                WorkflowSteps.action(
+                                        "produce-secret",
+                                        variables ->
+                                                new FakePreparedAction<>(
+                                                        ActionResults.success(SECRET_SENTINEL),
+                                                        new AtomicInteger()),
+                                        SECRET_OUTPUT))
+                        .step(
+                                WorkflowSteps.action(
+                                        "fail-later",
+                                        variables -> {
+                                            throw new RuntimeException(
+                                                    "boom while holding "
+                                                            + variables.require(SECRET_OUTPUT));
+                                        }))
+                        .build();
+
+        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+
+        assertThat(result.completed()).isFalse();
+        WorkflowFailure failure = result.failure().orElseThrow();
+        assertThat(failure.safeMessage()).doesNotContain(SECRET_SENTINEL).contains("***");
+        assertThat(failure.toString()).doesNotContain(SECRET_SENTINEL);
+        assertThat(result.toString()).doesNotContain(SECRET_SENTINEL).contains("***");
+        assertThat(result.steps().get(0).toString()).doesNotContain(SECRET_SENTINEL);
+        assertThat(result.steps().get(1).toString()).doesNotContain(SECRET_SENTINEL);
+        // The secret output was genuinely published before the failure - confirming this isn't
+        // passing merely because publication never happened.
+        assertThat(result.output(SECRET_OUTPUT)).contains(SECRET_SENTINEL);
+    }
+
+    @Test
     void workflowFailureNeverExposesAnArbitraryRawThrowable() {
         for (RecordComponent component : WorkflowFailure.class.getRecordComponents()) {
             assertThat(Throwable.class.isAssignableFrom(component.getType())).isFalse();
