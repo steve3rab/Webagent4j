@@ -8,7 +8,10 @@ import io.webagent4j.policy.PolicyDecision;
 import io.webagent4j.workflow.IWorkflowCondition;
 import io.webagent4j.workflow.IWorkflowVariables;
 import io.webagent4j.workflow.Workflow;
+import io.webagent4j.workflow.WorkflowBranchSelection;
 import io.webagent4j.workflow.WorkflowEngine;
+import io.webagent4j.workflow.WorkflowExecution;
+import io.webagent4j.workflow.WorkflowExecutionNode;
 import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowInputs;
 import io.webagent4j.workflow.WorkflowResult;
@@ -162,6 +165,89 @@ class WorkflowBranchingIT {
             assertThat(support.clickCount("original")).isZero();
             assertThat(support.clickCount("replacement")).isZero();
             assertThat(support.clickCount("cancel")).isZero();
+        }
+    }
+
+    /**
+     * TREE-014/TREE-015 real-browser evidence: the same TARGET_CHANGED scenario above, read through
+     * {@link WorkflowEngine#executeWithTree}, proving the structured execution tree reflects the
+     * real action pipeline's own already-computed outcome - never a second click, never a fallback
+     * to ELSE, and the failed action appears as exactly one node inside the selected THEN branch.
+     */
+    @Test
+    void targetChangedInsideTheSelectedBranchAppearsAsExactlyOneFailedNodeInTheExecutionTree()
+            throws Exception {
+        AtomicInteger evaluations = new AtomicInteger();
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/workflow-branch-target-changed")) {
+            Workflow workflow =
+                    Workflow.builder("branch-target-changed-tree")
+                            .requiredInput(PAGE)
+                            .step(
+                                    WorkflowSteps.ifElse(
+                                            "branch",
+                                            new CountingCondition(true, evaluations),
+                                            List.of(confirmStepWithTargetReplacedByPolicy(page)),
+                                            List.of(cancelStep())))
+                            .build();
+
+            WorkflowExecution execution =
+                    engine.executeWithTree(
+                            workflow, WorkflowInputs.builder().put(PAGE, page).build());
+
+            assertThat(execution.result().completed()).isFalse();
+            WorkflowExecutionNode conditional = execution.tree().nodes().get(0);
+            assertThat(conditional.branchSelection()).contains(WorkflowBranchSelection.THEN);
+            assertThat(conditional.children()).hasSize(1);
+            WorkflowExecutionNode confirmNode = conditional.children().get(0);
+            assertThat(confirmNode.result().stepId().value()).isEqualTo("confirm");
+            assertThat(confirmNode.result().status()).isEqualTo(WorkflowStepStatus.FAILED);
+            assertThat(confirmNode.result().failure().orElseThrow().actionFailureType())
+                    .contains(ActionFailureType.TARGET_CHANGED);
+            assertThat(evaluations).hasValue(1);
+            // The tree contains no ELSE/cancel node at all - not merely a NOT_RUN placeholder.
+            assertThat(conditional.children().stream().map(n -> n.result().stepId().value()))
+                    .doesNotContain("cancel");
+            assertThat(support.clickCount("original")).isZero();
+            assertThat(support.clickCount("replacement")).isZero();
+            assertThat(support.clickCount("cancel")).isZero();
+        }
+    }
+
+    /**
+     * TREE-015: the selected branch's real governed click is invoked exactly once - the server's
+     * own click counter is the independent proof, not merely the workflow's internal bookkeeping -
+     * and the execution tree shows exactly one action node for it.
+     */
+    @Test
+    void selectedBranchActionInvokedExactlyOnceAppearsAsExactlyOneNode() throws Exception {
+        AtomicInteger evaluations = new AtomicInteger();
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/workflow-branch-ready")) {
+            Workflow workflow =
+                    Workflow.builder("branch-exactly-once")
+                            .requiredInput(PAGE)
+                            .step(
+                                    WorkflowSteps.ifElse(
+                                            "branch",
+                                            new CountingCondition(true, evaluations),
+                                            List.of(confirmStep()),
+                                            List.of(cancelStep())))
+                            .build();
+
+            WorkflowExecution execution =
+                    engine.executeWithTree(
+                            workflow, WorkflowInputs.builder().put(PAGE, page).build());
+
+            assertThat(execution.result().completed()).isTrue();
+            support.awaitClickCount("confirm", 1);
+            assertThat(support.clickCount("cancel")).isZero();
+            WorkflowExecutionNode conditional = execution.tree().nodes().get(0);
+            assertThat(conditional.children()).hasSize(1);
+            assertThat(conditional.children().get(0).result().stepId().value())
+                    .isEqualTo("confirm");
+            assertThat(conditional.children().get(0).result().status())
+                    .isEqualTo(WorkflowStepStatus.SUCCEEDED);
         }
     }
 

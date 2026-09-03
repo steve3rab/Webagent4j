@@ -36,6 +36,24 @@ not imply a published compatibility line.
   evaluate `true` at runtime. See [Workflows](docs/workflow.md#branching) and
   [Limitations](docs/limitations.md#workflows).
 
+- Structured Workflow Execution Tree: `WorkflowEngine#executeWithTree(workflow, inputs)` runs the
+  exact same single execution as `execute(workflow, inputs)`, additionally returning a
+  `WorkflowExecutionTree` - a hierarchical view (new `WorkflowExecutionNode`, one per executed or
+  explicitly `NOT_RUN` step, carrying the existing `WorkflowStepResult`, an
+  `Optional<WorkflowBranchSelection>` for a `CONDITIONAL` step's actual `THEN`/`ELSE`/`NONE`
+  decision, and its selected branch's own child nodes) of the control-flow path that actually
+  executed - built once, during the same recursive traversal that already produces
+  `WorkflowResult.steps()`, sharing the exact same `WorkflowStepResult` instances rather than
+  recomputing them. A conditional's non-selected branch contributes zero execution nodes, exactly
+  mirroring its existing zero-side-effect guarantee. `execute(workflow, inputs)` is unchanged and
+  still returns exactly `WorkflowResult`; the tree is exposed additively through the new
+  `WorkflowExecution` record (`result()` + `tree()`) rather than as a new component on
+  `WorkflowResult` itself, since that is a public record whose canonical constructor is public API.
+  Flattening the tree in execution order reproduces `WorkflowResult.steps()` exactly. Recording V1
+  is completely unaffected - it depends only on `WorkflowResult.steps()`, and the tree is
+  runtime-only, never serialized into a recording. See
+  [Workflows](docs/workflow.md#execution-tree) and [Limitations](docs/limitations.md#workflows).
+
 - Governed Actions V2: extended atomic exact-target execution to every target-bound governed
   action, not just `click` - `type`/`fill`, `select`, `check`, `uncheck`, `hover`, and `pressKey`
   now share the same `IElement#verifiedForExecution()` atomic-handle binding `click` already had,

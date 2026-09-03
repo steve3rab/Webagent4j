@@ -94,6 +94,7 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 - No workflow-wide timeout/cancellation abstraction. Actions keep their own timeout/interruption semantics; a conditional step's own two structural boundaries observe the executing thread's interrupt status, the same primitive the action pipeline already relies on for its own boundary checks - see [workflow.md#branching](workflow.md#branching).
 - No hidden workflow retry.
 - Secret masking is framework-rendering protection, not encryption or storage security.
+- `WorkflowEngine#executeWithTree` returns a structured `WorkflowExecutionTree` alongside the existing flat `WorkflowResult` - see [workflow.md#execution-tree](workflow.md#execution-tree). It is an observational, runtime-only hierarchical view of what actually executed, built once during the same execution pass; it has no timestamps, no duration/profiling data, no distributed-tracing span or exporter integration (no OpenTelemetry, Micrometer, Zipkin, or Jaeger), and never contains an execution-plan/dry-run projection of what *might* execute. A conditional's non-selected branch never contributes an execution node - there is no branch speculation.
 
 ## Recording
 
@@ -101,6 +102,7 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 - No automatic live replay, browser/action recreation, retry inference, storage backend, screenshot/DOM/HAR/video capture, or alternate serialization format.
 - Only JSON schema V1 is supported. Unknown versions fail explicitly.
 - Caller/action metadata identifiers are persisted verbatim and are not secret channels.
+- The Structured Execution Tree ([workflow.md#execution-tree](workflow.md#execution-tree)) is a separate, runtime-only feature, not part of Recording V1: it is never serialized into a recording, and there is no Recording V2, tree JSON schema, tree replay, tree persistence, or tree diff/import in this version.
 
 ## Plugins
 
