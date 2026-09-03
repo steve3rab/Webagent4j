@@ -228,6 +228,13 @@ public final class WorkflowEngine {
          * {@link #run()} calls this once for the workflow's own top-level steps, and a conditional
          * step's branch is executed by recursing into this same method, so both levels share one
          * fail-fast mechanism rather than two independently-maintained copies of it.
+         *
+         * <p>This recursion is not separately depth-bounded here: {@link Workflow.Builder#build()}
+         * is the only way to obtain a {@link Workflow}, and it already rejects a conditional nested
+         * deeper than {@link Workflow#MAX_CONDITIONAL_NESTING_DEPTH} before returning one (see that
+         * constant's Javadoc), so every {@code workflow} this method can ever be called with is
+         * already bounded - a second, independent runtime limit here would duplicate that single
+         * source of truth rather than add real protection.
          */
         private Optional<WorkflowFailure> runSteps(
                 List<IWorkflowStep> steps, List<PendingStepResult> accumulator) {

@@ -17,6 +17,13 @@ import java.util.Optional;
  * {@link IWorkflowStep#when} guard every other step supports - is not supported here: it would be
  * ambiguous whether a second condition attached that way guards the whole conditional or replaces
  * the branch selector, so it throws rather than silently picking one reading.
+ *
+ * <p>{@link #thenSteps()}/{@link #elseSteps()} may themselves contain further {@code
+ * ConditionalWorkflowStep}s, but only up to {@link Workflow#MAX_CONDITIONAL_NESTING_DEPTH} levels
+ * of nesting - {@link Workflow.Builder#build()} rejects a deeper definition before it can ever
+ * become an executable {@link Workflow}, which is also what keeps this type's own recursive
+ * validation and {@link WorkflowEngine}'s recursive execution bounded without either one needing a
+ * separate depth check of its own.
  */
 final class ConditionalWorkflowStep extends AWorkflowStep {
 

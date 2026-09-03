@@ -13,15 +13,17 @@ not imply a published compatibility line.
 - Deterministic Workflow Branching: `WorkflowSteps.ifElse(id, condition, thenSteps, elseSteps)` and
   `WorkflowSteps.ifThen(id, condition, thenSteps)` add a deterministic `if`/`else` control-flow step
   to `webagent4j-workflow` - a condition evaluated exactly once, selecting exactly one of two step
-  sequences (nestable to any depth), never both, never a retry, and never a fallback from a failed
-  branch to the other one. The branch not selected produces zero step executions, zero action
-  factory calls, and zero backend invocations. A failed condition evaluation fails the conditional
-  step closed (`CONDITION_EVALUATION_FAILED`) rather than being treated as `false`; an interrupt
-  observed at either of the step's two structural boundaries fails it closed with the new
-  `CONDITIONAL_STEP_INTERRUPTED` failure type. `WorkflowResult.steps()` stays one flat,
-  execution-ordered list - the conditional step's own decision immediately followed by whichever
-  single branch actually ran - so Recording V1 captures a branching execution with no format
-  change. See [Workflows](docs/workflow.md#branching) and
+  sequences, nested conditional branching supported up to a 64-level limit (each branch measured
+  independently, never summed), never both, never a retry, and never a fallback from a failed
+  branch to the other one. A definition nested deeper than that limit is rejected at build time
+  with a controlled error, never a `StackOverflowError`. The branch not selected produces zero step
+  executions, zero action factory calls, and zero backend invocations. A failed condition
+  evaluation fails the conditional step closed (`CONDITION_EVALUATION_FAILED`) rather than being
+  treated as `false`; an interrupt observed at either of the step's two structural boundaries fails
+  it closed with the new `CONDITIONAL_STEP_INTERRUPTED` failure type. `WorkflowResult.steps()`
+  stays one flat, execution-ordered list - the conditional step's own decision immediately followed
+  by whichever single branch actually ran - so Recording V1 captures a branching execution with no
+  format change. See [Workflows](docs/workflow.md#branching) and
   [Limitations](docs/limitations.md#workflows).
 
 - Governed Actions V2: extended atomic exact-target execution to every target-bound governed

@@ -25,11 +25,38 @@ import java.util.Set;
  * <p>{@link Builder#build()} rejects, before any execution: a blank ID, an empty step list, a
  * duplicate step ID, a variable name declared more than once among required and optional inputs
  * (even if the two declarations are identical), a step output colliding with an existing input or
- * an earlier step's output (even if identical), and a condition referencing a variable that is
- * neither a declared input nor produced by an earlier step. See {@code
- * docs/workflow.md#workflow-definitions} for the complete contract.
+ * an earlier step's output (even if identical), a condition referencing a variable that is neither
+ * a declared input nor produced by an earlier step, and a conditional step nested deeper than
+ * {@link #MAX_CONDITIONAL_NESTING_DEPTH}. See {@code docs/workflow.md#workflow-definitions} for the
+ * complete contract.
  */
 public final class Workflow {
+
+    /**
+     * Maximum accepted conditional nesting depth of a workflow definition. A top-level {@code
+     * ifElse}/{@code ifThen} step is depth 1; one nested inside either of its branches is depth 2;
+     * and so on. A non-conditional step never contributes to depth, and a conditional's {@code
+     * thenSteps}/{@code elseSteps} are each measured independently starting from the same depth -
+     * never summed - so two branches that each individually respect this limit are both accepted
+     * regardless of how deep the other one goes.
+     *
+     * <p>{@link Builder#build()} is the single place this invariant is enforced, and the only way
+     * to obtain a {@link Workflow} instance at all - its constructor is private and every step type
+     * is either sealed ({@link IWorkflowStep}) or package-private ({@link
+     * ConditionalWorkflowStep}), constructible only through {@link WorkflowSteps}. A definition
+     * exceeding this depth is therefore rejected with {@link IllegalArgumentException} before it
+     * can ever become an executable {@code Workflow}, so {@link WorkflowEngine}'s own recursive
+     * traversal of a conditional's branches never needs a second, independent depth check to stay
+     * within a normal JVM stack: every {@code Workflow} it can possibly receive is already bounded
+     * by this same constant, checked once, here.
+     *
+     * <p>Mirrors the existing structural-nesting-bound precedent set by {@code
+     * JsonWorkflowRecordingCodec#MAX_NESTING_DEPTH} elsewhere in this codebase: generous relative
+     * to any workflow a human or generator would author by hand, while keeping recursive validation
+     * and execution comfortably within stack limits for a definition shaped to be adversarially
+     * deep.
+     */
+    static final int MAX_CONDITIONAL_NESTING_DEPTH = 64;
 
     private final WorkflowId id;
     private final List<WorkflowVariable<?>> requiredInputs;
@@ -164,7 +191,7 @@ public final class Workflow {
 
             Set<WorkflowStepId> seenStepIds = new HashSet<>();
             for (IWorkflowStep step : steps) {
-                validateStep(step, byName, available, seenStepIds);
+                validateStep(step, byName, available, seenStepIds, 0);
             }
 
             return new Workflow(
@@ -189,13 +216,21 @@ public final class Workflow {
          * guarded step's output is already treated as statically available today regardless of
          * whether its guard turns out true at runtime (see {@code docs/workflow.md#conditions}).
          * {@code seenStepIds} is shared, unmodified, across the whole recursive call tree, so every
-         * step ID - at any nesting depth, in either branch - must be globally unique.
+         * step ID - at any nesting depth, in either branch - must be globally unique. {@code
+         * conditionalDepth} is this step's own conditional nesting depth (0 for every top-level
+         * step, whether or not it is itself conditional): a non-conditional step never changes it
+         * for whatever follows, and a {@link ConditionalWorkflowStep} enforces {@link
+         * #MAX_CONDITIONAL_NESTING_DEPTH} against its own {@code conditionalDepth + 1} before
+         * descending into either branch, passing that same incremented depth as the starting point
+         * for both - never summed between them (see {@link #MAX_CONDITIONAL_NESTING_DEPTH}'s
+         * Javadoc).
          */
         private static void validateStep(
                 IWorkflowStep step,
                 Map<String, WorkflowVariable<?>> byName,
                 Set<WorkflowVariable<?>> available,
-                Set<WorkflowStepId> seenStepIds) {
+                Set<WorkflowStepId> seenStepIds,
+                int conditionalDepth) {
             if (!seenStepIds.add(step.id())) {
                 throw new IllegalArgumentException("duplicate step ID '" + step.id() + "'");
             }
@@ -206,6 +241,15 @@ public final class Workflow {
             // every instance reachable here is guaranteed to be one.
             AWorkflowStep concreteStep = (AWorkflowStep) step;
             if (concreteStep instanceof ConditionalWorkflowStep conditional) {
+                int nestedDepth = conditionalDepth + 1;
+                if (nestedDepth > MAX_CONDITIONAL_NESTING_DEPTH) {
+                    throw new IllegalArgumentException(
+                            "step '"
+                                    + step.id()
+                                    + "' exceeds the maximum supported conditional nesting depth"
+                                    + " of "
+                                    + MAX_CONDITIONAL_NESTING_DEPTH);
+                }
                 // Both branches must validate from an identical starting snapshot of what is
                 // available before the conditional - neither one's own outputs may leak into the
                 // other's validation, since at runtime at most one of them ever executes. Merging
@@ -213,13 +257,19 @@ public final class Workflow {
                 // THEN's outputs before validating ELSE would make ELSE's own re-declaration of
                 // the very same output collide with itself.
                 Set<WorkflowVariable<?>> thenAvailable =
-                        validateBranch(conditional.thenSteps(), byName, available, seenStepIds);
+                        validateBranch(
+                                conditional.thenSteps(),
+                                byName,
+                                available,
+                                seenStepIds,
+                                nestedDepth);
                 Set<WorkflowVariable<?>> elseAvailable =
                         validateBranch(
                                 conditional.elseSteps().orElse(List.of()),
                                 byName,
                                 available,
-                                seenStepIds);
+                                seenStepIds,
+                                nestedDepth);
                 mergeBranchOutputs(byName, available, thenAvailable);
                 mergeBranchOutputs(byName, available, elseAvailable);
                 return;
@@ -233,17 +283,20 @@ public final class Workflow {
          * Validates one branch's steps in isolation, starting from a snapshot of {@code
          * byName}/{@code available} as they stood before the conditional - never mutating either -
          * and returns the branch's own resulting {@code available} set for the caller to merge back
-         * once both branches have been validated (see {@link #validateStep}).
+         * once both branches have been validated (see {@link #validateStep}). {@code
+         * conditionalDepth} is the depth every step directly in {@code branchSteps} starts at - see
+         * {@link #validateStep}.
          */
         private static Set<WorkflowVariable<?>> validateBranch(
                 List<IWorkflowStep> branchSteps,
                 Map<String, WorkflowVariable<?>> byName,
                 Set<WorkflowVariable<?>> available,
-                Set<WorkflowStepId> seenStepIds) {
+                Set<WorkflowStepId> seenStepIds,
+                int conditionalDepth) {
             Map<String, WorkflowVariable<?>> branchByName = new LinkedHashMap<>(byName);
             Set<WorkflowVariable<?>> branchAvailable = new LinkedHashSet<>(available);
             for (IWorkflowStep step : branchSteps) {
-                validateStep(step, branchByName, branchAvailable, seenStepIds);
+                validateStep(step, branchByName, branchAvailable, seenStepIds, conditionalDepth);
             }
             return branchAvailable;
         }

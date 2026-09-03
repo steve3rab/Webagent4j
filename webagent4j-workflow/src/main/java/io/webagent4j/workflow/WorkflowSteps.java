@@ -71,10 +71,14 @@ public final class WorkflowSteps {
      * is never treated as a {@code false} decision.
      *
      * <p>{@code thenSteps} and {@code elseSteps} may themselves contain {@code ifElse}/{@code
-     * ifThen} steps: nested branching works the same way at every depth. Every step ID across the
-     * whole workflow - including inside every branch, at every nesting depth - must still be
-     * unique; {@link Workflow.Builder#build()} rejects a collision anywhere in the tree, not only
-     * among top-level steps.
+     * ifThen} steps: nested branching works the same way at every depth, up to {@link
+     * Workflow#MAX_CONDITIONAL_NESTING_DEPTH} levels - a top-level conditional is depth 1, one
+     * nested inside either of its branches is depth 2, and so on, with {@code thenSteps} and {@code
+     * elseSteps} measured independently rather than summed. Every step ID across the whole workflow
+     * - including inside every branch, at every nesting depth - must still be unique. Neither of
+     * these is checked by this factory method itself, since it builds one step in isolation without
+     * knowing where it will sit in a larger definition: {@link Workflow.Builder#build()} rejects a
+     * duplicate ID or an excessive nesting depth once the whole tree is known.
      *
      * <p>Unlike {@link #action} and {@link #assign}, the returned step does not support {@link
      * IWorkflowStep#when} - see {@link ConditionalWorkflowStep}'s Javadoc for why.

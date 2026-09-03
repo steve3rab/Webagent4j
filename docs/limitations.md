@@ -89,7 +89,7 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 ## Workflows
 
 - Sequential and fail-fast only.
-- Deterministic `if`/`else` branching (`WorkflowSteps.ifElse`/`ifThen`) is supported - a condition evaluated exactly once selecting exactly one of two step sequences, nestable to any depth - see [workflow.md#branching](workflow.md#branching). It is a narrow control-flow primitive, not a general rules/expression DSL.
+- Deterministic `if`/`else` branching (`WorkflowSteps.ifElse`/`ifThen`) is supported - a condition evaluated exactly once selecting exactly one of two step sequences, nested conditional branching is supported up to the framework's 64-level conditional nesting limit (each branch measured independently, never summed) - see [workflow.md#branching](workflow.md#branching). A definition exceeding that limit is rejected at build time with a controlled error, never a `StackOverflowError`. It is a narrow control-flow primitive, not a general rules/expression DSL.
 - No loops, recursion over data, DAG scheduler, parallel branches, fork/join, `switch`/`case`, workflow variables reassignable across branches, transactions/sagas, persistence, checkpoint/resume, scheduling, cron, external event triggers, or YAML/JSON workflow language.
 - No workflow-wide timeout/cancellation abstraction. Actions keep their own timeout/interruption semantics; a conditional step's own two structural boundaries observe the executing thread's interrupt status, the same primitive the action pipeline already relies on for its own boundary checks - see [workflow.md#branching](workflow.md#branching).
 - No hidden workflow retry.
