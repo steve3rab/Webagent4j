@@ -7,6 +7,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -24,11 +25,25 @@ import java.util.Set;
  *
  * <p>{@link Builder#build()} rejects, before any execution: a blank ID, an empty step list, a
  * duplicate step ID, a variable name declared more than once among required and optional inputs
- * (even if the two declarations are identical), a step output colliding with an existing input or
- * an earlier step's output (even if identical), a condition referencing a variable that is neither
- * a declared input nor produced by an earlier step, and a conditional step nested deeper than
- * {@link #MAX_CONDITIONAL_NESTING_DEPTH}. See {@code docs/workflow.md#workflow-definitions} for the
- * complete contract.
+ * (even if the two declarations are identical), a step output structurally colliding with an
+ * existing input or an earlier step's output (even if identical, and even if either producer is
+ * itself guarded by {@link IWorkflowStep#when} - see below), a condition referencing a variable
+ * that is neither a declared input nor a definitely-published earlier output, and a conditional
+ * step nested deeper than {@link #MAX_CONDITIONAL_NESTING_DEPTH}. See {@code
+ * docs/workflow.md#workflow-definitions} for the complete contract.
+ *
+ * <p><b>Guard-aware definite assignment:</b> an output is only ever treated as definitely available
+ * to a later step's condition (or a conditional step's own branch selector) when every reachable
+ * path from the start of the workflow to that point is structurally guaranteed to publish it -
+ * never merely because some path <em>might</em>. A step guarded by {@link IWorkflowStep#when} may
+ * be {@code SKIPPED} at runtime instead of publishing its output, so its output is never definite,
+ * even though the step itself remains valid and does publish normally whenever its guard evaluates
+ * {@code true}; for a conditional step, an output is definite only when both branches
+ * unconditionally guarantee it (see {@code docs/workflow.md#branching}). This is deliberately a
+ * purely structural, guard-blind analysis - the builder never attempts to prove a particular
+ * condition instance is always {@code true} or {@code false} - and is independent of the separate,
+ * unconditional structural-collision check above: a guarded producer can never "free up" its output
+ * name for a second producer to reuse, since at runtime the guard may still evaluate {@code true}.
  */
 public final class Workflow {
 
@@ -185,13 +200,14 @@ public final class Workflow {
             registerInputDeclarations(byName, declaredInputNames, requiredInputs);
             registerInputDeclarations(byName, declaredInputNames, optionalInputs);
 
-            Set<WorkflowVariable<?>> available = new LinkedHashSet<>();
-            available.addAll(requiredInputs);
-            available.addAll(optionalInputs);
+            Set<WorkflowVariable<?>> declared = new LinkedHashSet<>();
+            declared.addAll(requiredInputs);
+            declared.addAll(optionalInputs);
+            Set<WorkflowVariable<?>> definite = new LinkedHashSet<>(declared);
 
             Set<WorkflowStepId> seenStepIds = new HashSet<>();
             for (IWorkflowStep step : steps) {
-                validateStep(step, byName, available, seenStepIds, 0);
+                validateStep(step, byName, declared, definite, seenStepIds, 0);
             }
 
             return new Workflow(
@@ -206,35 +222,43 @@ public final class Workflow {
          * branches - and registers whatever it (or its branches) makes available for the steps that
          * structurally follow it.
          *
-         * <p>{@code available}/{@code byName} are mutated in place to add this step's own
-         * contribution, exactly like the pre-branching code did for a flat step list. A conditional
-         * step's two branches are each validated independently, starting from an identical snapshot
-         * of what is available before the conditional - one branch's own step outputs are never
-         * visible while validating the other, since at runtime at most one of them ever executes -
-         * and then only the outputs both branches definitely, compatibly produce are merged back
-         * into the shared {@code available}/{@code byName} for whatever comes after the conditional
-         * (see {@link #mergeBranchOutputs} and {@code docs/workflow.md#branching}). {@code
-         * seenStepIds} is shared, unmodified, across the whole recursive call tree, so every step
-         * ID - at any nesting depth, in either branch - must be globally unique. {@code
-         * conditionalDepth} is this step's own conditional nesting depth (0 for every top-level
-         * step, whether or not it is itself conditional): a non-conditional step never changes it
-         * for whatever follows, and a {@link ConditionalWorkflowStep} enforces {@link
-         * #MAX_CONDITIONAL_NESTING_DEPTH} against its own {@code conditionalDepth + 1} before
-         * descending into either branch, passing that same incremented depth as the starting point
-         * for both - never summed between them (see {@link #MAX_CONDITIONAL_NESTING_DEPTH}'s
-         * Javadoc).
+         * <p>Two distinct sets are threaded through this whole recursion, both mutated in place to
+         * add this step's own contribution: {@code declared} is every output ever produced by any
+         * reachable step, guarded or not - used only to reject a structurally conflicting or
+         * duplicate producer (see {@link #registerStepOutput}) - while {@code definite} is the
+         * strictly smaller set a later step or condition may actually statically rely on being
+         * present. A step guarded by {@link IWorkflowStep#when} contributes its output to {@code
+         * declared} but never to {@code definite}: the guard may evaluate to {@code false} at
+         * runtime, in which case the step is {@code SKIPPED} and never publishes anything (see
+         * {@code docs/workflow.md#conditions}), so nothing downstream may treat that output as
+         * guaranteed. A conditional step's two branches are each validated independently, starting
+         * from an identical snapshot of both sets - one branch's own contribution is never visible
+         * while validating the other, since at runtime at most one of them ever executes - and then
+         * merged back: {@code declared} by union (see {@link #mergeBranchDeclarations}) and {@code
+         * definite} by intersection of what both branches unconditionally guarantee (see {@link
+         * #mergeBranchDefinite} and {@code docs/workflow.md#branching}). {@code seenStepIds} is
+         * shared, unmodified, across the whole recursive call tree, so every step ID - at any
+         * nesting depth, in either branch - must be globally unique. {@code conditionalDepth} is
+         * this step's own conditional nesting depth (0 for every top-level step, whether or not it
+         * is itself conditional): a non-conditional step never changes it for whatever follows, and
+         * a {@link ConditionalWorkflowStep} enforces {@link #MAX_CONDITIONAL_NESTING_DEPTH} against
+         * its own {@code conditionalDepth + 1} before descending into either branch, passing that
+         * same incremented depth as the starting point for both - never summed between them (see
+         * {@link #MAX_CONDITIONAL_NESTING_DEPTH}'s Javadoc).
          */
         private static void validateStep(
                 IWorkflowStep step,
                 Map<String, WorkflowVariable<?>> byName,
-                Set<WorkflowVariable<?>> available,
+                Set<WorkflowVariable<?>> declared,
+                Set<WorkflowVariable<?>> definite,
                 Set<WorkflowStepId> seenStepIds,
                 int conditionalDepth) {
             if (!seenStepIds.add(step.id())) {
                 throw new IllegalArgumentException("duplicate step ID '" + step.id() + "'");
             }
 
-            step.condition().ifPresent(condition -> validateCondition(step, condition, available));
+            Optional<IWorkflowCondition> guard = step.condition();
+            guard.ifPresent(condition -> validateCondition(step, condition, definite));
 
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep (see its Javadoc), so
             // every instance reachable here is guaranteed to be one.
@@ -250,119 +274,166 @@ public final class Workflow {
                                     + MAX_CONDITIONAL_NESTING_DEPTH);
                 }
                 // Both branches must validate from an identical starting snapshot of what is
-                // available before the conditional - neither one's own outputs may leak into the
-                // other's validation, since at runtime at most one of them ever executes. Merging
-                // is deferred until after both have been independently validated in full; merging
-                // THEN's outputs before validating ELSE would make ELSE's own re-declaration of
-                // the very same output collide with itself.
-                Set<WorkflowVariable<?>> thenAvailable =
+                // declared/definite before the conditional - neither one's own contribution may
+                // leak into the other's validation, since at runtime at most one of them ever
+                // executes. Merging is deferred until after both have been independently
+                // validated in full; merging THEN's outputs before validating ELSE would make
+                // ELSE's own re-declaration of the very same output collide with itself.
+                BranchResult thenResult =
                         validateBranch(
                                 conditional.thenSteps(),
                                 byName,
-                                available,
+                                declared,
+                                definite,
                                 seenStepIds,
                                 nestedDepth);
-                Set<WorkflowVariable<?>> elseAvailable =
+                BranchResult elseResult =
                         validateBranch(
                                 conditional.elseSteps().orElse(List.of()),
                                 byName,
-                                available,
+                                declared,
+                                definite,
                                 seenStepIds,
                                 nestedDepth);
-                mergeBranchOutputs(byName, available, thenAvailable, elseAvailable);
+                mergeBranchDeclarations(
+                        byName, declared, thenResult.declared(), elseResult.declared());
+                mergeBranchDefinite(definite, thenResult.definite(), elseResult.definite());
                 return;
             }
             concreteStep
                     .outputVariable()
-                    .ifPresent(output -> registerStepOutput(byName, available, step, output));
+                    .ifPresent(
+                            output ->
+                                    registerStepOutput(
+                                            byName,
+                                            declared,
+                                            definite,
+                                            step,
+                                            output,
+                                            guard.isPresent()));
         }
 
         /**
-         * Validates one branch's steps in isolation, starting from a snapshot of {@code
-         * byName}/{@code available} as they stood before the conditional - never mutating either -
-         * and returns the branch's own resulting {@code available} set for the caller to merge back
-         * once both branches have been validated (see {@link #validateStep}). {@code
-         * conditionalDepth} is the depth every step directly in {@code branchSteps} starts at - see
-         * {@link #validateStep}.
+         * One branch's own resulting {@code declared}/{@code definite} sets - see {@link
+         * #validateBranch}.
          */
-        private static Set<WorkflowVariable<?>> validateBranch(
+        private record BranchResult(
+                Set<WorkflowVariable<?>> declared, Set<WorkflowVariable<?>> definite) {}
+
+        /**
+         * Validates one branch's steps in isolation, starting from a snapshot of {@code
+         * byName}/{@code declared}/{@code definite} as they stood before the conditional - never
+         * mutating any of them - and returns the branch's own resulting {@code declared}/{@code
+         * definite} sets for the caller to merge back once both branches have been validated (see
+         * {@link #validateStep}). {@code conditionalDepth} is the depth every step directly in
+         * {@code branchSteps} starts at - see {@link #validateStep}.
+         */
+        private static BranchResult validateBranch(
                 List<IWorkflowStep> branchSteps,
                 Map<String, WorkflowVariable<?>> byName,
-                Set<WorkflowVariable<?>> available,
+                Set<WorkflowVariable<?>> declared,
+                Set<WorkflowVariable<?>> definite,
                 Set<WorkflowStepId> seenStepIds,
                 int conditionalDepth) {
             Map<String, WorkflowVariable<?>> branchByName = new LinkedHashMap<>(byName);
-            Set<WorkflowVariable<?>> branchAvailable = new LinkedHashSet<>(available);
+            Set<WorkflowVariable<?>> branchDeclared = new LinkedHashSet<>(declared);
+            Set<WorkflowVariable<?>> branchDefinite = new LinkedHashSet<>(definite);
             for (IWorkflowStep step : branchSteps) {
-                validateStep(step, branchByName, branchAvailable, seenStepIds, conditionalDepth);
+                validateStep(
+                        step,
+                        branchByName,
+                        branchDeclared,
+                        branchDefinite,
+                        seenStepIds,
+                        conditionalDepth);
             }
-            return branchAvailable;
+            return new BranchResult(branchDeclared, branchDefinite);
+        }
+
+        /**
+         * Folds a branch's newly-declared outputs (present in {@code branchDeclared} but not yet in
+         * {@code declared}) into the shared, outer {@code byName}/{@code declared}, using the exact
+         * same collision rule {@link #registerStepOutput} already applies to a single step's
+         * output: an identical redeclaration (same name, same {@link WorkflowVariable}) is fine -
+         * this runs for both branches in turn, and they may agree - but a same-named variable
+         * declared with a different type or secret status is rejected. This is a union, by design,
+         * unlike {@link #mergeBranchDefinite}: {@code declared} exists only to catch a structurally
+         * conflicting or duplicate producer reachable from a single execution, regardless of any
+         * guard, never to decide what a later step may statically rely on being present.
+         */
+        private static void mergeBranchDeclarations(
+                Map<String, WorkflowVariable<?>> byName,
+                Set<WorkflowVariable<?>> declared,
+                Set<WorkflowVariable<?>> thenDeclared,
+                Set<WorkflowVariable<?>> elseDeclared) {
+            mergeOneBranchDeclaration(byName, declared, thenDeclared);
+            mergeOneBranchDeclaration(byName, declared, elseDeclared);
+        }
+
+        private static void mergeOneBranchDeclaration(
+                Map<String, WorkflowVariable<?>> byName,
+                Set<WorkflowVariable<?>> declared,
+                Set<WorkflowVariable<?>> branchDeclared) {
+            for (WorkflowVariable<?> candidate : branchDeclared) {
+                if (declared.contains(candidate)) {
+                    continue;
+                }
+                WorkflowVariable<?> existing = byName.putIfAbsent(candidate.name(), candidate);
+                if (existing != null && !existing.equals(candidate)) {
+                    throw new IllegalArgumentException(
+                            "branch output '"
+                                    + candidate.name()
+                                    + "' conflicts with an existing input or output declared with"
+                                    + " a different type or secret status");
+                }
+                declared.add(candidate);
+            }
         }
 
         /**
          * Computes <b>definite assignment</b> for a conditional's two branches: a variable this
          * conditional makes available to whatever structurally follows it only when <em>both</em>
-         * {@code thenAvailable} and {@code elseAvailable} newly introduce it - relative to what was
-         * already available before the conditional - with an identical {@link WorkflowVariable}
-         * declaration (same type, same secret status). A variable produced by only one branch is
-         * never added: at runtime exactly one branch runs, so a later step could otherwise
-         * statically appear valid while actually reading a variable that never got published on the
-         * branch that happened to execute. This is intentionally an intersection, not the union of
-         * both branches' outputs - see {@code docs/workflow.md#branching}.
+         * {@code thenDefinite} and {@code elseDefinite} newly, unconditionally guarantee it -
+         * relative to what was already definite before the conditional - with an identical {@link
+         * WorkflowVariable} declaration. A variable only one branch unconditionally guarantees -
+         * including one produced by a step that is itself guarded, anywhere inside either branch -
+         * is never added: at runtime exactly one branch runs, and even inside the selected branch a
+         * guarded producer may still be skipped, so a later step could otherwise statically appear
+         * valid while actually reading a variable nothing on the executed path ever published. This
+         * is intentionally an intersection, not the union {@link #mergeBranchDeclarations} computes
+         * for {@code declared} - see {@code docs/workflow.md#branching}.
          *
-         * <p>{@code elseAvailable} is exactly {@code available} (no new names) whenever the
+         * <p>{@code elseDefinite} is exactly {@code definite} (no new names) whenever the
          * conditional has no {@code elseSteps} ({@code ifThen}), so this naturally rejects every
-         * {@code thenSteps}-only output as not definitely available - {@code ifThen}'s branch may
-         * not have run at all.
-         *
-         * <p>A name introduced by both branches with a conflicting declaration (different type or
-         * secret status) is rejected outright, exactly like {@link #registerStepOutput} already
-         * rejects that same conflict for a single step's output.
+         * {@code thenSteps}-only output as not definite - {@code ifThen}'s branch may not have run
+         * at all. Every name reachable here was already validated for a conflicting declaration by
+         * {@link #mergeBranchDeclarations} (definite is always a subset of declared), so this need
+         * not repeat that check.
          */
-        private static void mergeBranchOutputs(
-                Map<String, WorkflowVariable<?>> byName,
-                Set<WorkflowVariable<?>> available,
-                Set<WorkflowVariable<?>> thenAvailable,
-                Set<WorkflowVariable<?>> elseAvailable) {
-            Map<String, WorkflowVariable<?>> thenNew = newlyIntroduced(available, thenAvailable);
-            Map<String, WorkflowVariable<?>> elseNew = newlyIntroduced(available, elseAvailable);
+        private static void mergeBranchDefinite(
+                Set<WorkflowVariable<?>> definite,
+                Set<WorkflowVariable<?>> thenDefinite,
+                Set<WorkflowVariable<?>> elseDefinite) {
+            Map<String, WorkflowVariable<?>> thenNew = newlyIntroduced(definite, thenDefinite);
+            Map<String, WorkflowVariable<?>> elseNew = newlyIntroduced(definite, elseDefinite);
             for (Map.Entry<String, WorkflowVariable<?>> entry : thenNew.entrySet()) {
-                String name = entry.getKey();
                 WorkflowVariable<?> thenVariable = entry.getValue();
-                WorkflowVariable<?> elseVariable = elseNew.get(name);
-                if (elseVariable == null) {
-                    // Produced only by thenSteps - the else branch might run instead and never
-                    // produce it, so it is not definitely available after the conditional.
-                    continue;
+                WorkflowVariable<?> elseVariable = elseNew.get(entry.getKey());
+                if (elseVariable != null && thenVariable.equals(elseVariable)) {
+                    definite.add(thenVariable);
                 }
-                if (!thenVariable.equals(elseVariable)) {
-                    throw new IllegalArgumentException(
-                            "conditional step's branches declare output '"
-                                    + name
-                                    + "' with a different type or secret status between thenSteps"
-                                    + " and elseSteps");
-                }
-                WorkflowVariable<?> existing = byName.putIfAbsent(name, thenVariable);
-                if (existing != null && !existing.equals(thenVariable)) {
-                    throw new IllegalArgumentException(
-                            "branch output '"
-                                    + name
-                                    + "' conflicts with an existing input or output declared with"
-                                    + " a different type or secret status");
-                }
-                available.add(thenVariable);
             }
         }
 
         /**
-         * Returns {@code branchAvailable}'s own new outputs, keyed by name: every variable it
-         * contains that was not already present before the branch was validated.
+         * Returns {@code branchSet}'s own new entries, keyed by name: every variable it contains
+         * that was not already present in {@code baseline} before the branch was validated.
          */
         private static Map<String, WorkflowVariable<?>> newlyIntroduced(
-                Set<WorkflowVariable<?>> available, Set<WorkflowVariable<?>> branchAvailable) {
+                Set<WorkflowVariable<?>> baseline, Set<WorkflowVariable<?>> branchSet) {
             Map<String, WorkflowVariable<?>> result = new LinkedHashMap<>();
-            for (WorkflowVariable<?> candidate : branchAvailable) {
-                if (!available.contains(candidate)) {
+            for (WorkflowVariable<?> candidate : branchSet) {
+                if (!baseline.contains(candidate)) {
                     result.put(candidate.name(), candidate);
                 }
             }
@@ -382,10 +453,18 @@ public final class Workflow {
             }
         }
 
+        /**
+         * Validates that {@code condition} - a step's own optional guard, or a conditional step's
+         * mandatory branch selector - references only variables that are <b>definitely</b> present
+         * at this point: a declared input, or an earlier step's output that is guaranteed to have
+         * been published (see {@link #validateStep}). {@code definite} deliberately excludes any
+         * output a guarded producer only <em>might</em> have published, since a false guard skips
+         * that producer entirely (see {@code docs/workflow.md#conditions}).
+         */
         private static void validateCondition(
                 IWorkflowStep step,
                 IWorkflowCondition condition,
-                Set<WorkflowVariable<?>> available) {
+                Set<WorkflowVariable<?>> definite) {
             Set<WorkflowVariable<?>> referenced;
             try {
                 referenced = condition.referencedVariables();
@@ -411,23 +490,37 @@ public final class Workflow {
                                     + "' condition's referencedVariables() contains a null"
                                     + " entry");
                 }
-                if (!available.contains(variable)) {
+                if (!definite.contains(variable)) {
                     throw new IllegalArgumentException(
                             "step '"
                                     + step.id()
                                     + "' condition references variable '"
                                     + variable.name()
                                     + "', which is not a declared input or an earlier step's"
-                                    + " output");
+                                    + " definitely-published output (see"
+                                    + " docs/workflow.md#definition-validation for guard-aware"
+                                    + " definite assignment)");
                 }
             }
         }
 
+        /**
+         * Registers one non-conditional step's declared output: always into {@code declared} (the
+         * structural, guard-independent collision registry), but into {@code definite} - what a
+         * later step or condition may statically rely on - only when {@code guarded} is {@code
+         * false}. A step guarded by {@link IWorkflowStep#when} may be {@code SKIPPED} at runtime
+         * and never publish anything, so its output can never be treated as definitely available to
+         * whatever structurally follows it, even though the step itself remains perfectly valid and
+         * still publishes normally whenever its guard does evaluate {@code true} (see {@code
+         * docs/workflow.md#conditions}).
+         */
         private static void registerStepOutput(
                 Map<String, WorkflowVariable<?>> byName,
-                Set<WorkflowVariable<?>> available,
+                Set<WorkflowVariable<?>> declared,
+                Set<WorkflowVariable<?>> definite,
                 IWorkflowStep step,
-                WorkflowVariable<?> output) {
+                WorkflowVariable<?> output,
+                boolean guarded) {
             WorkflowVariable<?> existing = byName.putIfAbsent(output.name(), output);
             if (existing != null && !existing.equals(output)) {
                 throw new IllegalArgumentException(
@@ -438,7 +531,7 @@ public final class Workflow {
                                 + "' conflicts with an existing input or output declared with a"
                                 + " different type or secret status");
             }
-            if (!available.add(output)) {
+            if (!declared.add(output)) {
                 throw new IllegalArgumentException(
                         "step '"
                                 + step.id()
@@ -446,6 +539,9 @@ public final class Workflow {
                                 + output.name()
                                 + "' collides with an existing input or an earlier step's"
                                 + " output");
+            }
+            if (!guarded) {
+                definite.add(output);
             }
         }
     }
