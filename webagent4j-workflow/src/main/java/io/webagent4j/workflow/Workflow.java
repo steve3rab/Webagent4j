@@ -211,12 +211,11 @@ public final class Workflow {
          * step's two branches are each validated independently, starting from an identical snapshot
          * of what is available before the conditional - one branch's own step outputs are never
          * visible while validating the other, since at runtime at most one of them ever executes -
-         * and then each branch's resulting outputs are merged back into the shared {@code
-         * available}/{@code byName} for whatever comes after the conditional, exactly like a single
-         * guarded step's output is already treated as statically available today regardless of
-         * whether its guard turns out true at runtime (see {@code docs/workflow.md#conditions}).
-         * {@code seenStepIds} is shared, unmodified, across the whole recursive call tree, so every
-         * step ID - at any nesting depth, in either branch - must be globally unique. {@code
+         * and then only the outputs both branches definitely, compatibly produce are merged back
+         * into the shared {@code available}/{@code byName} for whatever comes after the conditional
+         * (see {@link #mergeBranchOutputs} and {@code docs/workflow.md#branching}). {@code
+         * seenStepIds} is shared, unmodified, across the whole recursive call tree, so every step
+         * ID - at any nesting depth, in either branch - must be globally unique. {@code
          * conditionalDepth} is this step's own conditional nesting depth (0 for every top-level
          * step, whether or not it is itself conditional): a non-conditional step never changes it
          * for whatever follows, and a {@link ConditionalWorkflowStep} enforces {@link
@@ -270,8 +269,7 @@ public final class Workflow {
                                 available,
                                 seenStepIds,
                                 nestedDepth);
-                mergeBranchOutputs(byName, available, thenAvailable);
-                mergeBranchOutputs(byName, available, elseAvailable);
+                mergeBranchOutputs(byName, available, thenAvailable, elseAvailable);
                 return;
             }
             concreteStep
@@ -302,31 +300,73 @@ public final class Workflow {
         }
 
         /**
-         * Folds a branch's newly-declared outputs (present in {@code branchAvailable} but not yet
-         * in {@code available}) into the shared, outer {@code byName}/{@code available}, using the
-         * exact same collision rule {@link #registerStepOutput} already applies to a single step's
-         * output: an identical redeclaration (same name, same {@link WorkflowVariable}) is fine -
-         * this runs for both branches in turn, and they may agree - but a same-named variable
-         * declared with a different type or secret status is rejected.
+         * Computes <b>definite assignment</b> for a conditional's two branches: a variable this
+         * conditional makes available to whatever structurally follows it only when <em>both</em>
+         * {@code thenAvailable} and {@code elseAvailable} newly introduce it - relative to what was
+         * already available before the conditional - with an identical {@link WorkflowVariable}
+         * declaration (same type, same secret status). A variable produced by only one branch is
+         * never added: at runtime exactly one branch runs, so a later step could otherwise
+         * statically appear valid while actually reading a variable that never got published on the
+         * branch that happened to execute. This is intentionally an intersection, not the union of
+         * both branches' outputs - see {@code docs/workflow.md#branching}.
+         *
+         * <p>{@code elseAvailable} is exactly {@code available} (no new names) whenever the
+         * conditional has no {@code elseSteps} ({@code ifThen}), so this naturally rejects every
+         * {@code thenSteps}-only output as not definitely available - {@code ifThen}'s branch may
+         * not have run at all.
+         *
+         * <p>A name introduced by both branches with a conflicting declaration (different type or
+         * secret status) is rejected outright, exactly like {@link #registerStepOutput} already
+         * rejects that same conflict for a single step's output.
          */
         private static void mergeBranchOutputs(
                 Map<String, WorkflowVariable<?>> byName,
                 Set<WorkflowVariable<?>> available,
-                Set<WorkflowVariable<?>> branchAvailable) {
-            for (WorkflowVariable<?> candidate : branchAvailable) {
-                if (available.contains(candidate)) {
+                Set<WorkflowVariable<?>> thenAvailable,
+                Set<WorkflowVariable<?>> elseAvailable) {
+            Map<String, WorkflowVariable<?>> thenNew = newlyIntroduced(available, thenAvailable);
+            Map<String, WorkflowVariable<?>> elseNew = newlyIntroduced(available, elseAvailable);
+            for (Map.Entry<String, WorkflowVariable<?>> entry : thenNew.entrySet()) {
+                String name = entry.getKey();
+                WorkflowVariable<?> thenVariable = entry.getValue();
+                WorkflowVariable<?> elseVariable = elseNew.get(name);
+                if (elseVariable == null) {
+                    // Produced only by thenSteps - the else branch might run instead and never
+                    // produce it, so it is not definitely available after the conditional.
                     continue;
                 }
-                WorkflowVariable<?> existing = byName.putIfAbsent(candidate.name(), candidate);
-                if (existing != null && !existing.equals(candidate)) {
+                if (!thenVariable.equals(elseVariable)) {
+                    throw new IllegalArgumentException(
+                            "conditional step's branches declare output '"
+                                    + name
+                                    + "' with a different type or secret status between thenSteps"
+                                    + " and elseSteps");
+                }
+                WorkflowVariable<?> existing = byName.putIfAbsent(name, thenVariable);
+                if (existing != null && !existing.equals(thenVariable)) {
                     throw new IllegalArgumentException(
                             "branch output '"
-                                    + candidate.name()
+                                    + name
                                     + "' conflicts with an existing input or output declared with"
                                     + " a different type or secret status");
                 }
-                available.add(candidate);
+                available.add(thenVariable);
             }
+        }
+
+        /**
+         * Returns {@code branchAvailable}'s own new outputs, keyed by name: every variable it
+         * contains that was not already present before the branch was validated.
+         */
+        private static Map<String, WorkflowVariable<?>> newlyIntroduced(
+                Set<WorkflowVariable<?>> available, Set<WorkflowVariable<?>> branchAvailable) {
+            Map<String, WorkflowVariable<?>> result = new LinkedHashMap<>();
+            for (WorkflowVariable<?> candidate : branchAvailable) {
+                if (!available.contains(candidate)) {
+                    result.put(candidate.name(), candidate);
+                }
+            }
+            return result;
         }
 
         private static void registerInputDeclarations(

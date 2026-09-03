@@ -23,7 +23,11 @@ not imply a published compatibility line.
   it closed with the new `CONDITIONAL_STEP_INTERRUPTED` failure type. `WorkflowResult.steps()`
   stays one flat, execution-ordered list - the conditional step's own decision immediately followed
   by whichever single branch actually ran - so Recording V1 captures a branching execution with no
-  format change. See [Workflows](docs/workflow.md#branching) and
+  format change. A step output declared inside a branch is available to whatever structurally
+  follows the conditional only when every reachable branch guarantees a compatible declaration of
+  it (definite assignment: an intersection of what both branches produce, never a union of what
+  either one might) - a later step or condition statically referencing an output only one branch
+  declares is rejected at build time. See [Workflows](docs/workflow.md#branching) and
   [Limitations](docs/limitations.md#workflows).
 
 - Governed Actions V2: extended atomic exact-target execution to every target-bound governed
