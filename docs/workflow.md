@@ -81,6 +81,36 @@ continue with the step that structurally follows the conditional
 - **Result shape:** a conditional step's own `WorkflowStepResult` carries the branch decision in its `condition()` field (its outcome is never used to derive `SKIPPED` for this step type - only `ifElse`/`ifThen`'s own missing-else no-op path and `SUCCEEDED`/`FAILED` apply) and publishes no output variable or action summary of its own. `WorkflowResult.steps()` stays one flat, execution-ordered list: the conditional step's own result is immediately followed by whichever single branch's steps actually ran, in order - the branch that did not run contributes nothing to the list, at any nesting depth.
 - **Conditions stay pure:** a branch condition is the same `IWorkflowCondition` used for step guards elsewhere - deterministic and side-effect-free. This feature does not let a condition perform a side-effecting action.
 
+## Execution tree
+
+`WorkflowEngine#executeWithTree(workflow, inputs)` runs the exact same single execution as `execute(workflow, inputs)`, additionally returning a `WorkflowExecutionTree` - a hierarchical view of the control-flow path that actually executed, alongside the existing flat `WorkflowResult` (bundled together as `WorkflowExecution`):
+
+```text
+Workflow
+├── step-1
+├── branch-A (WorkflowBranchSelection.THEN)
+│   ├── step-2
+│   └── branch-B (WorkflowBranchSelection.ELSE)
+│       └── step-3
+└── step-4
+```
+
+This is a structural companion to `WorkflowResult.steps()`, not a replacement for it: `execute(...)` is unchanged, still returns exactly `WorkflowResult`, and every consumer of the existing flat list keeps working exactly as before. `WorkflowResult` is a public record, and its canonical constructor is itself public API; adding the tree as a new record component there would change that constructor's signature and break existing callers, so it is exposed through the additive `executeWithTree`/`WorkflowExecution` pair instead.
+
+**Definition tree vs. execution tree:** a `Workflow`'s own step structure (`thenSteps`/`elseSteps` as declared) says what *could* execute. `WorkflowExecutionTree` says only what *did* execute, or was explicitly marked `NOT_RUN` on the path the engine actually reached - never a speculative or definition-derived entry. The two are related but distinct: a conditional step's non-selected branch is part of the definition tree but contributes zero nodes to the execution tree.
+
+**Single source of truth:** the tree is built once, during the same recursive traversal that already produces the flat step-result list - never by a second interpretation of that list afterward (which is not even possible in general, since the flat list alone cannot reconstruct which conditional a given entry's parent was). Building or reading the tree never evaluates a condition, invokes an action, or selects a branch a second time. Both views share the exact same `WorkflowStepResult` instances - a step's result is computed once, never independently recreated for the tree.
+
+**Node shape:** `WorkflowExecutionNode` carries the step's own already-safe `WorkflowStepResult` (secret-safe and bounded exactly as it already is on `WorkflowResult.steps()` - see "Secret variables and redaction" below), an `Optional<WorkflowBranchSelection>` (`THEN`, `ELSE`, or `NONE` for an `ifThen`'s no-op `false` decision - present only for a `CONDITIONAL` step whose decision was actually captured), and its `children` - the selected branch's own execution nodes, in execution order. A non-`CONDITIONAL` node always has empty children and no branch selection.
+
+**Non-selected branch = zero execution nodes:** exactly mirroring the zero-side-effect guarantee the non-selected branch already has at runtime (see "Branching" above), it contributes nothing to the tree - not a placeholder, not a `NOT_RUN` entry, nothing. A `NOT_RUN` node only ever appears for a step that was reachable on the executed path but never got there because an earlier step on that same path failed - a fundamentally different concept from "not selected by control flow," and the tree never conflates the two.
+
+**Interruption:** a conditional interrupted before its condition is ever evaluated has no branch selection and no children. One interrupted after the decision was captured but before the selected branch could start carries that decision as its `branchSelection` (the decision did happen) while still having zero children (the branch itself never started) - the tree can express this distinction precisely because the selection and the children are two separate fields.
+
+**Flat/tree equivalence:** flattening `WorkflowExecutionTree#nodes()` in execution order (each node, immediately followed by its own children recursively) yields exactly the same sequence of `WorkflowStepResult`s, by reference, that `WorkflowResult#steps()` already returns.
+
+**Not a new recording format:** Recording V1 depends only on `WorkflowResult.steps()`, which is completely unaffected. The execution tree is runtime-only in this version - it is never serialized into a `WorkflowRecording`, and calling `executeWithTree` and recording the resulting `WorkflowResult` produces a byte-identical recording to calling `execute` directly.
+
 ## Fail-fast result shape
 
 A completed result contains only `SUCCEEDED`/`SKIPPED` steps. Runtime failure produces zero or more successful/skipped predecessors, exactly one failed step, and `NOT_RUN` successors. Overall failure and the failed step identify the same failure point.

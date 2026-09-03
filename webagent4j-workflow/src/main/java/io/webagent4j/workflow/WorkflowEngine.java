@@ -2,6 +2,7 @@ package io.webagent4j.workflow;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +62,13 @@ import java.util.function.Function;
  * exactly like it already retroactively masks an earlier public output. A terminal {@link
  * WorkflowFailure}'s own message is redacted and bounded immediately when it is constructed, not
  * deferred: once a step fails, no later step runs, so no later secret can ever be discovered.
+ *
+ * <p><b>Structured execution tree:</b> every {@link Session#run()} call builds, in the same single
+ * pass that already produces {@link WorkflowResult#steps()}, a parallel hierarchical view - see
+ * {@link #executeWithTree(Workflow, WorkflowInputs)} and {@code docs/workflow.md#execution-tree}.
+ * Both views share the exact same {@link WorkflowStepResult} instances; the tree is never built by
+ * a second interpretation of the flat list, and building or reading it never evaluates a condition,
+ * invokes an action, or selects a branch again.
  */
 public final class WorkflowEngine {
 
@@ -72,6 +80,18 @@ public final class WorkflowEngine {
      * structured result rather than throwing for any expected failure.
      */
     public WorkflowResult execute(Workflow workflow, WorkflowInputs inputs) {
+        Objects.requireNonNull(workflow, "workflow");
+        Objects.requireNonNull(inputs, "inputs");
+        return new Session(workflow, inputs).run().result();
+    }
+
+    /**
+     * Same single execution as {@link #execute(Workflow, WorkflowInputs)}, additionally returning
+     * the structured {@link WorkflowExecutionTree} built from that identical pass - see the class
+     * Javadoc. {@link WorkflowExecution#result()} is exactly what {@link #execute(Workflow,
+     * WorkflowInputs)} returns for the same inputs.
+     */
+    public WorkflowExecution executeWithTree(Workflow workflow, WorkflowInputs inputs) {
         Objects.requireNonNull(workflow, "workflow");
         Objects.requireNonNull(inputs, "inputs");
         return new Session(workflow, inputs).run();
@@ -154,6 +174,26 @@ public final class WorkflowEngine {
                 Optional<WorkflowFailure> failure,
                 Optional<WorkflowActionSummary> actionSummary) {}
 
+        /**
+         * One execution-tree node captured during the same traversal that builds {@code
+         * PendingStepResult}s, referencing the exact {@code PendingStepResult} this node will share
+         * with the flat list once both are finalized together - see {@link #freezeNodes}.
+         */
+        private record PendingExecutionNode(
+                PendingStepResult result,
+                Optional<WorkflowBranchSelection> branchSelection,
+                List<PendingExecutionNode> children) {}
+
+        /**
+         * {@link #finalizeStepResults}'s output: the flat, finalized list exactly as before, plus
+         * the identity correlation from each {@code PendingStepResult} to its one finalized {@link
+         * WorkflowStepResult}, used by {@link #freezeNodes} so the tree's nodes reference the exact
+         * same instances the flat list does - never a second, independently finalized copy.
+         */
+        private record FinalizedSteps(
+                List<WorkflowStepResult> steps,
+                Map<PendingStepResult, WorkflowStepResult> byPending) {}
+
         private final Workflow workflow;
         private final WorkflowInputs inputs;
         private final Map<String, VariableEntry> variables = new LinkedHashMap<>();
@@ -192,29 +232,31 @@ public final class WorkflowEngine {
             this.inputs = inputs;
         }
 
-        WorkflowResult run() {
-            WorkflowResult inputFailure = validateAndSeedInputs();
+        WorkflowExecution run() {
+            WorkflowExecution inputFailure = validateAndSeedInputs();
             if (inputFailure != null) {
                 return inputFailure;
             }
 
             List<PendingStepResult> pendingResults = new ArrayList<>();
-            Optional<WorkflowFailure> overallFailure = runSteps(workflow.steps(), pendingResults);
+            List<PendingExecutionNode> pendingNodes = new ArrayList<>();
+            Optional<WorkflowFailure> overallFailure =
+                    runSteps(workflow.steps(), pendingResults, pendingNodes);
 
-            if (overallFailure.isPresent()) {
-                return new WorkflowResult(
-                        workflow.id(),
-                        WorkflowStatus.FAILED,
-                        finalizeStepResults(pendingResults),
-                        outputs.build(activeSecrets),
-                        overallFailure);
-            }
-            return new WorkflowResult(
-                    workflow.id(),
-                    WorkflowStatus.COMPLETED,
-                    finalizeStepResults(pendingResults),
-                    outputs.build(activeSecrets),
-                    Optional.empty());
+            WorkflowStatus status =
+                    overallFailure.isPresent() ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
+            FinalizedSteps finalized = finalizeStepResults(pendingResults);
+            WorkflowResult result =
+                    new WorkflowResult(
+                            workflow.id(),
+                            status,
+                            finalized.steps(),
+                            outputs.build(activeSecrets),
+                            overallFailure);
+            WorkflowExecutionTree tree =
+                    new WorkflowExecutionTree(
+                            workflow.id(), freezeNodes(pendingNodes, finalized.byPending()));
+            return new WorkflowExecution(result, tree);
         }
 
         /**
@@ -234,15 +276,24 @@ public final class WorkflowEngine {
          * deeper than {@link Workflow#MAX_CONDITIONAL_NESTING_DEPTH} before returning one (see that
          * constant's Javadoc), so every {@code workflow} this method can ever be called with is
          * already bounded - a second, independent runtime limit here would duplicate that single
-         * source of truth rather than add real protection.
+         * source of truth rather than add real protection. {@code nodeAccumulator} mirrors {@code
+         * accumulator} one-for-one - the same steps, same order, same NOT_RUN marking - so the
+         * execution tree and the flat list can never diverge; see {@link #freezeNodes}.
          */
         private Optional<WorkflowFailure> runSteps(
-                List<IWorkflowStep> steps, List<PendingStepResult> accumulator) {
+                List<IWorkflowStep> steps,
+                List<PendingStepResult> accumulator,
+                List<PendingExecutionNode> nodeAccumulator) {
             for (int i = 0; i < steps.size(); i++) {
-                Optional<WorkflowFailure> failure = executeStepInto(steps.get(i), accumulator);
+                Optional<WorkflowFailure> failure =
+                        executeStepInto(steps.get(i), accumulator, nodeAccumulator);
                 if (failure.isPresent()) {
                     for (int j = i + 1; j < steps.size(); j++) {
-                        accumulator.add(notRun(steps.get(j)));
+                        PendingStepResult notRunResult = notRun(steps.get(j));
+                        accumulator.add(notRunResult);
+                        nodeAccumulator.add(
+                                new PendingExecutionNode(
+                                        notRunResult, Optional.empty(), List.of()));
                     }
                     return failure;
                 }
@@ -252,18 +303,22 @@ public final class WorkflowEngine {
 
         /**
          * Executes exactly one step, appending its own {@link PendingStepResult} (and, if it is a
-         * {@link ConditionalWorkflowStep}, its selected branch's results) to {@code accumulator}.
-         * Returns the failure that should stop the enclosing {@link #runSteps} call, if any.
+         * {@link ConditionalWorkflowStep}, its selected branch's results) to {@code accumulator} -
+         * and its corresponding {@link PendingExecutionNode} to {@code nodeAccumulator}. Returns
+         * the failure that should stop the enclosing {@link #runSteps} call, if any.
          */
         private Optional<WorkflowFailure> executeStepInto(
-                IWorkflowStep step, List<PendingStepResult> accumulator) {
+                IWorkflowStep step,
+                List<PendingStepResult> accumulator,
+                List<PendingExecutionNode> nodeAccumulator) {
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
             AWorkflowStep concreteStep = (AWorkflowStep) step;
             if (concreteStep instanceof ConditionalWorkflowStep conditional) {
-                return executeConditionalStepInto(conditional, accumulator);
+                return executeConditionalStepInto(conditional, accumulator, nodeAccumulator);
             }
             PendingStepResult pending = executeStep(step);
             accumulator.add(pending);
+            nodeAccumulator.add(new PendingExecutionNode(pending, Optional.empty(), List.of()));
             return pending.status() == WorkflowStepStatus.FAILED
                     ? pending.failure()
                     : Optional.empty();
@@ -283,14 +338,18 @@ public final class WorkflowEngine {
          * {@link Thread#isInterrupted()} and left untouched either way, never cleared.
          */
         private Optional<WorkflowFailure> executeConditionalStepInto(
-                ConditionalWorkflowStep step, List<PendingStepResult> accumulator) {
+                ConditionalWorkflowStep step,
+                List<PendingStepResult> accumulator,
+                List<PendingExecutionNode> nodeAccumulator) {
             if (Thread.currentThread().isInterrupted()) {
                 return addInterrupted(
                         step,
                         Optional.empty(),
+                        Optional.empty(),
                         "the executing thread was interrupted before the branch condition could"
                                 + " be evaluated",
-                        accumulator);
+                        accumulator,
+                        nodeAccumulator);
             }
 
             ConditionEvaluationResult evaluation = evaluateConditionSafely(step.branchCondition());
@@ -306,22 +365,26 @@ public final class WorkflowEngine {
                                 null,
                                 null);
                 accumulator.add(pending);
+                nodeAccumulator.add(new PendingExecutionNode(pending, Optional.empty(), List.of()));
                 return pending.failure();
             }
             Optional<PendingConditionResult> conditionResult = Optional.of(evaluation.pending());
+            WorkflowBranchSelection selection = branchSelectionFor(step, evaluation.outcome());
 
             if (Thread.currentThread().isInterrupted()) {
                 return addInterrupted(
                         step,
                         conditionResult,
+                        Optional.of(selection),
                         "the executing thread was interrupted after the branch decision was"
                                 + " captured but before the selected branch could start",
-                        accumulator);
+                        accumulator,
+                        nodeAccumulator);
             }
 
             List<IWorkflowStep> selectedBranch =
                     evaluation.outcome() ? step.thenSteps() : step.elseSteps().orElse(List.of());
-            accumulator.add(
+            PendingStepResult conditionalResult =
                     new PendingStepResult(
                             step.id(),
                             WorkflowStepType.CONDITIONAL,
@@ -329,15 +392,43 @@ public final class WorkflowEngine {
                             conditionResult,
                             Optional.empty(),
                             Optional.empty(),
-                            Optional.empty()));
-            return runSteps(selectedBranch, accumulator);
+                            Optional.empty());
+            accumulator.add(conditionalResult);
+            List<PendingExecutionNode> branchChildren = new ArrayList<>();
+            Optional<WorkflowFailure> failure =
+                    runSteps(selectedBranch, accumulator, branchChildren);
+            nodeAccumulator.add(
+                    new PendingExecutionNode(
+                            conditionalResult,
+                            Optional.of(selection),
+                            List.copyOf(branchChildren)));
+            return failure;
+        }
+
+        /**
+         * Derives the backend-neutral {@link WorkflowBranchSelection} a captured decision implies:
+         * {@code true} always selects {@code THEN}; {@code false} selects {@code ELSE} when {@code
+         * elseSteps} was declared, or {@code NONE} for an {@code ifThen} step's no-op false
+         * decision - never conflated with {@code ELSE}, which does not exist for that step (see
+         * {@code docs/workflow.md#branching}).
+         */
+        private static WorkflowBranchSelection branchSelectionFor(
+                ConditionalWorkflowStep step, boolean outcome) {
+            if (outcome) {
+                return WorkflowBranchSelection.THEN;
+            }
+            return step.elseSteps().isPresent()
+                    ? WorkflowBranchSelection.ELSE
+                    : WorkflowBranchSelection.NONE;
         }
 
         private Optional<WorkflowFailure> addInterrupted(
                 ConditionalWorkflowStep step,
                 Optional<PendingConditionResult> conditionResult,
+                Optional<WorkflowBranchSelection> branchSelection,
                 String message,
-                List<PendingStepResult> accumulator) {
+                List<PendingStepResult> accumulator,
+                List<PendingExecutionNode> nodeAccumulator) {
             PendingStepResult pending =
                     failedResult(
                             step,
@@ -349,6 +440,7 @@ public final class WorkflowEngine {
                             null,
                             null);
             accumulator.add(pending);
+            nodeAccumulator.add(new PendingExecutionNode(pending, branchSelection, List.of()));
             return pending.failure();
         }
 
@@ -359,13 +451,43 @@ public final class WorkflowEngine {
          * bounding it. Invokes no caller-supplied code: {@code condition.describe()} was already
          * called, at most once, back when the step executed.
          */
-        private List<WorkflowStepResult> finalizeStepResults(List<PendingStepResult> pending) {
+        private FinalizedSteps finalizeStepResults(List<PendingStepResult> pending) {
             SecretRedactor finalRedactor = SecretRedactor.of(activeSecrets);
             List<WorkflowStepResult> results = new ArrayList<>(pending.size());
+            Map<PendingStepResult, WorkflowStepResult> byPending =
+                    new IdentityHashMap<>(pending.size());
             for (PendingStepResult one : pending) {
-                results.add(finalizeStepResult(one, finalRedactor));
+                WorkflowStepResult finalized = finalizeStepResult(one, finalRedactor);
+                results.add(finalized);
+                byPending.put(one, finalized);
             }
-            return results;
+            return new FinalizedSteps(List.copyOf(results), byPending);
+        }
+
+        /**
+         * Converts {@code pendingNodes} into the immutable, public {@link WorkflowExecutionNode}
+         * tree, replacing each {@link PendingStepResult} with the exact {@link WorkflowStepResult}
+         * instance {@link #finalizeStepResults} already produced for it - see {@code byPending} -
+         * rather than finalizing it a second time. Bounded by the same recursive structure {@link
+         * #runSteps} built it with, which is itself bounded by {@link
+         * Workflow#MAX_CONDITIONAL_NESTING_DEPTH} - no independent depth check is needed here for
+         * the same reason none is needed in {@link #runSteps} (see that method's Javadoc).
+         */
+        private static List<WorkflowExecutionNode> freezeNodes(
+                List<PendingExecutionNode> pendingNodes,
+                Map<PendingStepResult, WorkflowStepResult> byPending) {
+            List<WorkflowExecutionNode> frozen = new ArrayList<>(pendingNodes.size());
+            for (PendingExecutionNode node : pendingNodes) {
+                frozen.add(freezeNode(node, byPending));
+            }
+            return List.copyOf(frozen);
+        }
+
+        private static WorkflowExecutionNode freezeNode(
+                PendingExecutionNode node, Map<PendingStepResult, WorkflowStepResult> byPending) {
+            WorkflowStepResult result = byPending.get(node.result());
+            List<WorkflowExecutionNode> children = freezeNodes(node.children(), byPending);
+            return new WorkflowExecutionNode(result, node.branchSelection(), children);
         }
 
         private static WorkflowStepResult finalizeStepResult(
@@ -393,7 +515,7 @@ public final class WorkflowEngine {
          * all-steps-{@code NOT_RUN} failure result if validation fails, or {@code null} if
          * execution may proceed to step 0.
          */
-        private WorkflowResult validateAndSeedInputs() {
+        private WorkflowExecution validateAndSeedInputs() {
             for (WorkflowVariable<?> required : workflow.requiredInputs()) {
                 WorkflowInputs.Entry entry = inputs.entries().get(required.name());
                 if (entry == null) {
@@ -445,7 +567,7 @@ public final class WorkflowEngine {
             return null;
         }
 
-        private WorkflowResult failBeforeExecution(WorkflowFailureType type, String message) {
+        private WorkflowExecution failBeforeExecution(WorkflowFailureType type, String message) {
             WorkflowFailure failure =
                     new WorkflowFailure(
                             type,
@@ -454,13 +576,24 @@ public final class WorkflowEngine {
                             Optional.empty(),
                             Optional.empty());
             List<PendingStepResult> notRunSteps = new ArrayList<>();
-            workflow.steps().forEach(step -> notRunSteps.add(notRun(step)));
-            return new WorkflowResult(
-                    workflow.id(),
-                    WorkflowStatus.FAILED,
-                    finalizeStepResults(notRunSteps),
-                    WorkflowOutputs.empty(),
-                    Optional.of(failure));
+            List<PendingExecutionNode> notRunNodes = new ArrayList<>();
+            for (IWorkflowStep step : workflow.steps()) {
+                PendingStepResult pending = notRun(step);
+                notRunSteps.add(pending);
+                notRunNodes.add(new PendingExecutionNode(pending, Optional.empty(), List.of()));
+            }
+            FinalizedSteps finalized = finalizeStepResults(notRunSteps);
+            WorkflowResult result =
+                    new WorkflowResult(
+                            workflow.id(),
+                            WorkflowStatus.FAILED,
+                            finalized.steps(),
+                            WorkflowOutputs.empty(),
+                            Optional.of(failure));
+            WorkflowExecutionTree tree =
+                    new WorkflowExecutionTree(
+                            workflow.id(), freezeNodes(notRunNodes, finalized.byPending()));
+            return new WorkflowExecution(result, tree);
         }
 
         private static PendingStepResult notRun(IWorkflowStep step) {
