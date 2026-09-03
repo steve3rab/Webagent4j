@@ -240,7 +240,7 @@ class WorkflowExecutionPlanTest {
 
     @Test
     void plan008SecretOutputClassificationPresentValueNeverAppears() {
-        String secretSentinel = "WA4J_PLAN_SECRET_991733";
+        String sentinel = "WA4J_PLAN_SENTINEL_991733";
         Workflow workflow =
                 Workflow.builder("wf")
                         .step(
@@ -248,7 +248,7 @@ class WorkflowExecutionPlanTest {
                                         "a",
                                         vars ->
                                                 new FakePreparedAction<>(
-                                                        ActionResults.success(secretSentinel),
+                                                        ActionResults.success(sentinel),
                                                         new AtomicInteger()),
                                         SECRET_PRODUCED))
                         .build();
@@ -259,7 +259,7 @@ class WorkflowExecutionPlanTest {
         assertThat(output.name()).isEqualTo("secretProduced");
         assertThat(output.secret()).isTrue();
         assertThat(output.typeName()).isEqualTo("String");
-        assertThat(plan.toString()).doesNotContain(secretSentinel);
+        assertThat(plan.toString()).doesNotContain(sentinel);
     }
 
     @Test
