@@ -61,6 +61,18 @@ not add test retry as a release workaround.
 
 Verify GitHub CI, CodeQL, and Dependency Review all correspond to the **same exact candidate SHA**. A green check on an older PR head does not certify a newer commit.
 
+**Release-candidate Nightly checkpoint:** after the final release-readiness merge (the merge that
+produces the actual release candidate SHA), require a fresh `workflow_dispatch` run of
+`.github/workflows/nightly.yml` against that exact SHA - not a reused run from an earlier commit -
+covering, per the jobs that workflow currently defines:
+
+- the three-engine adversarial robustness corpus (Chromium, Firefox, WebKit) on Linux;
+- the standard `clean verify` reactor on Linux, Windows, and macOS;
+- the Docker headless-Chromium smoke build.
+
+An older Nightly run, even one that passed, does not qualify a new HEAD produced by a later merge -
+see [support-matrix.md](support-matrix.md#browser-and-robustness-qualification-by-operating-system).
+
 Immediately before GO, re-fetch the branch/tag head and compare the SHA again.
 
 ## 5. Artifact review
