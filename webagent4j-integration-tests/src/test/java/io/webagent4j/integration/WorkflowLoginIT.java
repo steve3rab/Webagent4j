@@ -147,7 +147,10 @@ class WorkflowLoginIT {
                 "read-dashboard-heading",
                 vars -> {
                     IPage page = vars.require(PAGE);
-                    IElement heading = page.find().heading().single();
+                    // Named explicitly: the dashboard also has an <h2>Notifications</h2> inside
+                    // its (initially closed) notifications dialog, so an unqualified heading()
+                    // query would be ambiguous between the two.
+                    IElement heading = page.find().heading().named("Welcome").single();
                     return new TextReadAction(heading);
                 },
                 DASHBOARD_HEADING);
