@@ -78,6 +78,17 @@ final class RecordingV2Fixtures {
                 Optional.empty());
     }
 
+    static RecordedWorkflowStepV2 notRunAssignStep(String stepId) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.ASSIGN,
+                WorkflowStepStatus.NOT_RUN,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
     static RecordedWorkflowStepV2 notRunConditionalStep(String stepId) {
         return new RecordedWorkflowStepV2(
                 new WorkflowStepId(stepId),
@@ -187,5 +198,111 @@ final class RecordingV2Fixtures {
                 WorkflowStatus.COMPLETED,
                 List.of(leaf(succeededAssignStep("step-1", out))),
                 Optional.empty());
+    }
+
+    /** A CONDITIONAL plan node ("cond-1") whose ELSE branch also carries a real step ("else-1"). */
+    static WorkflowExecutionPlan branchingPlanWithElseStep(String workflowId) {
+        WorkflowPlanNode thenStep = actionPlanNode("then-1");
+        WorkflowPlanNode elseStep = actionPlanNode("else-1");
+        return new WorkflowExecutionPlan(
+                new WorkflowId(workflowId),
+                List.of(
+                        new WorkflowPlanNode(
+                                new WorkflowStepId("cond-1"),
+                                WorkflowStepType.CONDITIONAL,
+                                false,
+                                Optional.empty(),
+                                List.of(
+                                        new WorkflowPlanBranch(
+                                                WorkflowBranchSelection.THEN, List.of(thenStep)),
+                                        new WorkflowPlanBranch(
+                                                WorkflowBranchSelection.ELSE,
+                                                List.of(elseStep))))));
+    }
+
+    /** A CONDITIONAL plan node ("cond-1") whose THEN branch carries two sequential steps. */
+    static WorkflowExecutionPlan twoStepThenBranchPlan(String workflowId) {
+        WorkflowPlanNode thenStep1 = actionPlanNode("then-1");
+        WorkflowPlanNode thenStep2 = actionPlanNode("then-2");
+        return new WorkflowExecutionPlan(
+                new WorkflowId(workflowId),
+                List.of(
+                        new WorkflowPlanNode(
+                                new WorkflowStepId("cond-1"),
+                                WorkflowStepType.CONDITIONAL,
+                                false,
+                                Optional.empty(),
+                                List.of(
+                                        new WorkflowPlanBranch(
+                                                WorkflowBranchSelection.THEN,
+                                                List.of(thenStep1, thenStep2)),
+                                        new WorkflowPlanBranch(
+                                                WorkflowBranchSelection.ELSE, List.of())))));
+    }
+
+    /** An {@code ifThen}-shaped CONDITIONAL plan node ("cond-1"): THEN plus a structural NONE. */
+    static WorkflowExecutionPlan ifThenPlan(String workflowId) {
+        WorkflowPlanNode thenStep = actionPlanNode("then-1");
+        return new WorkflowExecutionPlan(
+                new WorkflowId(workflowId),
+                List.of(
+                        new WorkflowPlanNode(
+                                new WorkflowStepId("cond-1"),
+                                WorkflowStepType.CONDITIONAL,
+                                false,
+                                Optional.empty(),
+                                List.of(
+                                        new WorkflowPlanBranch(
+                                                WorkflowBranchSelection.THEN, List.of(thenStep)),
+                                        new WorkflowPlanBranch(
+                                                WorkflowBranchSelection.NONE, List.of())))));
+    }
+
+    private static WorkflowPlanNode actionPlanNode(String stepId) {
+        return new WorkflowPlanNode(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.ACTION,
+                false,
+                Optional.empty(),
+                List.of());
+    }
+
+    /**
+     * A single top-level CONDITIONAL plan node nested {@code depth} levels deep via its own THEN
+     * branch - its ELSE branch is always structurally present but empty at every level, so only the
+     * THEN chain carries any depth.
+     */
+    static WorkflowExecutionPlan nestedConditionalPlan(String workflowId, int depth) {
+        return new WorkflowExecutionPlan(
+                new WorkflowId(workflowId), List.of(nestedConditionalPlanNode("c0", depth)));
+    }
+
+    static WorkflowPlanNode nestedConditionalPlanNode(String stepId, int depth) {
+        List<WorkflowPlanNode> thenNodes =
+                depth <= 1
+                        ? List.of()
+                        : List.of(nestedConditionalPlanNode(stepId + "c", depth - 1));
+        return new WorkflowPlanNode(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.CONDITIONAL,
+                false,
+                Optional.empty(),
+                List.of(
+                        new WorkflowPlanBranch(WorkflowBranchSelection.THEN, thenNodes),
+                        new WorkflowPlanBranch(WorkflowBranchSelection.ELSE, List.of())));
+    }
+
+    /**
+     * The execution-tree counterpart of {@link #nestedConditionalPlanNode}: a THEN selection at
+     * every level down to {@code depth}, positionally aligned (identical step IDs) with its plan
+     * counterpart.
+     */
+    static RecordedExecutionNodeV2 nestedConditionalExecutionNode(String stepId, int depth) {
+        List<RecordedExecutionNodeV2> children =
+                depth <= 1
+                        ? List.of()
+                        : List.of(nestedConditionalExecutionNode(stepId + "c", depth - 1));
+        return new RecordedExecutionNodeV2(
+                conditionalStep(stepId, true), Optional.of(WorkflowBranchSelection.THEN), children);
     }
 }

@@ -45,8 +45,7 @@ class JsonWorkflowRecordingV2CodecTest {
     void roundTripsABranchingRecordingWithNestedChildren() {
         RecordedWorkflowStepV2 conditional = RecordingV2Fixtures.conditionalStep("cond-1", true);
         RecordedWorkflowStepV2 thenStep =
-                RecordingV2Fixtures.succeededActionStep(
-                        "then-1", Optional.of(RecordingV2Fixtures.output("out", "String", false)));
+                RecordingV2Fixtures.succeededActionStep("then-1", Optional.empty());
         RecordedExecutionNodeV2 conditionalNode =
                 RecordingV2Fixtures.conditionalNode(
                         conditional,
@@ -74,7 +73,9 @@ class JsonWorkflowRecordingV2CodecTest {
                         "wf",
                         RecordingV2Fixtures.minimalPlan("wf"),
                         WorkflowStatus.FAILED,
-                        List.of(RecordingV2Fixtures.leaf(RecordingV2Fixtures.notRunStep("step-1"))),
+                        List.of(
+                                RecordingV2Fixtures.leaf(
+                                        RecordingV2Fixtures.notRunAssignStep("step-1"))),
                         Optional.of(
                                 RecordingFixtures.preflightFailure(
                                         WorkflowFailureType.MISSING_REQUIRED_INPUT)));

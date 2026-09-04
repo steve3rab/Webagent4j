@@ -17,14 +17,26 @@ import java.util.Optional;
  * IWorkflowActionFactory}, and never performs any side effect. It is pure and stateless: the same
  * two arguments always produce the same result, and calling it never mutates either argument.
  *
- * <p><b>Workflow identity/compatibility:</b> {@code recording.plan()} (captured once, at record
- * time) is compared for exact equality against {@code WorkflowPlanner.plan(workflow)} (recomputed
- * fresh, from {@code workflow}'s current definition). {@link WorkflowPlanner#plan} is deterministic
- * and reads only a workflow's static step structure, so this equality check is exactly "does {@code
- * workflow}'s current step structure - types, guards, declared outputs, and conditional branch
- * shapes - still match what was recorded," independent of whatever runtime input values a caller
- * might supply. A structural change to the workflow definition since capture (a step added,
- * removed, retyped, or reordered) always fails this check.
+ * <p><b>Replay eligibility rests on two independent guarantees, not one:</b> (1) {@code
+ * recording.nodes()} is itself a structurally authorized path through {@code recording.plan()} -
+ * the same step IDs, types, and declared outputs at the same positions, and every recorded branch
+ * selection corresponding exclusively to that plan node's matching branch - and (2) {@code
+ * recording.plan()} matches the live {@code workflow}'s current structure. The first is a
+ * precondition this class relies on rather than re-derives: {@link WorkflowRecordingV2}'s own
+ * compact constructor (see {@link io.webagent4j.recording.RecordingV2PlanTreeValidator}) already
+ * guarantees it for every possible construction path, so no {@code WorkflowRecordingV2} instance
+ * can exist whose tree is inconsistent with its own plan. {@link #validate} only checks the second:
+ * {@code recording.plan()} (captured once, at record time) compared for exact equality against
+ * {@code WorkflowPlanner.plan(workflow)} (recomputed fresh, from {@code workflow}'s current
+ * definition). {@link WorkflowPlanner#plan} is deterministic and reads only a workflow's static
+ * step structure, so this equality check is exactly "does {@code workflow}'s current step structure
+ * - types, guards, declared outputs, and conditional branch shapes - still match what was
+ * recorded," independent of whatever runtime input values a caller might supply. A structural
+ * change to the workflow definition since capture (a step added, removed, retyped, or reordered)
+ * always fails this check. Matching the recorded plan alone was never sufficient on its own - a
+ * plan match says nothing about whether the recorded tree paired with it is genuine - which is
+ * exactly why guarantee (1) exists as a separate, unconditionally-enforced precondition rather than
+ * being folded into this equality check.
  *
  * <p><b>Why only {@code COMPLETED} is supported:</b> replaying a {@code FAILED} recording's trace
  * is out of scope for this initial structural/decision-replay implementation - see {@link

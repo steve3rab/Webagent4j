@@ -294,7 +294,9 @@ class RecordingV2ModelInvariantsTest {
                         "wf",
                         RecordingV2Fixtures.minimalPlan("wf"),
                         WorkflowStatus.FAILED,
-                        List.of(RecordingV2Fixtures.leaf(RecordingV2Fixtures.notRunStep("step-1"))),
+                        List.of(
+                                RecordingV2Fixtures.leaf(
+                                        RecordingV2Fixtures.notRunAssignStep("step-1"))),
                         Optional.of(
                                 RecordingFixtures.preflightFailure(
                                         WorkflowFailureType.MISSING_REQUIRED_INPUT)));

@@ -32,16 +32,21 @@ import java.util.Optional;
  * {@code docs/recording.md} for the full architecture, the V1/V2 relationship, and the rationale
  * for what is and is not recorded.
  *
- * <p>This type's own invariants (see {@link RecordingV2Invariants}) validate only that {@link
- * #nodes()} could itself have resulted from one real, sequential, fail-fast execution - the same
- * scope {@link WorkflowRecording}'s invariants already have for V1's flat list - plus that {@link
- * #plan()} and {@link #workflowId()} agree with each other. They deliberately do not cross-check
- * {@link #nodes()} against {@link #plan()}'s own node structure: two recordings built from the same
- * real execution always carry a mutually consistent plan and node tree already, so that check adds
- * nothing for a genuine recording, and a hostile or corrupted one is still bound by every per-node
- * shape check here. Checking a recording's plan and node tree against each other, and both against
- * a live {@code Workflow}'s current structure, is Deterministic Replay's own
- * compatibility-validation responsibility, not this type's.
+ * <p>This type's own invariants validate {@link #nodes()} on two independent axes, both enforced
+ * unconditionally by this compact constructor - so no construction path (direct Java construction,
+ * {@code WorkflowRecorderV2}, or {@code JsonWorkflowRecordingV2Codec#decode}) can ever produce an
+ * instance that skips either one. {@link RecordingV2Invariants} validates that {@link #nodes()}
+ * could itself have resulted from one real, sequential, fail-fast execution - the same scope {@link
+ * WorkflowRecording}'s invariants already have for V1's flat list - plus that {@link #plan()} and
+ * {@link #workflowId()} agree with each other. {@link RecordingV2PlanTreeValidator} additionally
+ * proves {@link #nodes()} is itself a structurally authorized path through {@link #plan()}: the
+ * same step IDs and types at the same positions, any recorded output matching its plan declaration
+ * exactly, and every recorded branch selection and its children corresponding exclusively to that
+ * plan node's matching branch - and bounds both structures' conditional-nesting depth. A hostile or
+ * corrupted recording can no longer pair a plan that matches a live workflow exactly with a
+ * fabricated or mismatched execution tree; Deterministic Replay's {@code ReplayValidator} relies on
+ * this as an already-guaranteed precondition and only has to additionally check {@link #plan()}
+ * itself against the live {@code Workflow}'s current structure.
  *
  * <p>{@code recordingId} and {@code capturedAt} are always caller-supplied, exactly like {@code
  * WorkflowId}: neither is generated inside this module, so the same recording data always produces
@@ -92,5 +97,6 @@ public record WorkflowRecordingV2(
             throw new IllegalArgumentException("only a FAILED recording may carry a failure");
         }
         RecordingV2Invariants.validate(status, nodes, failure);
+        RecordingV2PlanTreeValidator.validate(nodes, plan.nodes());
     }
 }

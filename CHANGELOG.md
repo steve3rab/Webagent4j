@@ -20,8 +20,15 @@ not imply a published compatibility line.
   `JsonWorkflowRecordingCodec` established for V1, using a disjoint schema-version number space
   (`RecordingSchemaVersionV2`) so a V1-shaped payload can never be silently accepted as a V2 one or
   vice versa. There is no implicit or automatic V1-to-V2 conversion anywhere in this module.
+  `WorkflowRecordingV2`'s own construction unconditionally validates that its execution-node tree is
+  a structurally authorized path through its own plan - the same step IDs, types, and declared
+  outputs at the same positions, and every recorded branch selection corresponding exclusively to
+  that plan node's matching branch - on every construction path (direct construction,
+  `WorkflowRecorderV2`, and JSON decode alike), so a tree inconsistent with its own plan can never
+  exist.
   New `io.webagent4j.recording.replay` package: `ReplayValidator` checks a `WorkflowRecordingV2`
-  against a live `Workflow`'s current structural plan before any replay is attempted, and
+  against a live `Workflow`'s current structural plan before any replay is attempted - relying on
+  the recording's own already-guaranteed internal coherence as a precondition - and
   `WorkflowReplayer` reconstructs the recorded decision trace as a flattened `ReplayedWorkflow` -
   structural/decision replay only, in this initial implementation: it never evaluates a condition,
   never invokes an action factory, never resolves or verifies a backend target, and never performs
