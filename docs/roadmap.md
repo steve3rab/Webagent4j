@@ -54,8 +54,7 @@ too), and browser navigation has no equivalent transport-level seam at all - see
 
 ## 1.2: Deterministic branching, structured workflow explainability, and Governed Actions V2
 
-`1.2.0-SNAPSHOT` (`develop`) is the active development line; `1.2.0` has not been released. It
-currently adds:
+`1.2.0` is released and is the current stable line (`1.2.x`). It added:
 
 - **Governed Actions V2** - the atomic exact-target execution guarantee `1.1.x` wired for `click`
   alone now covers every target-bound governed action (`type`/`fill`, `select`, `check`, `uncheck`,
@@ -74,10 +73,8 @@ currently adds:
   current validity from the same internal analysis `build()` already uses, without throwing or
   mutating the builder. See [Workflows](workflow.md#validation-report).
 
-See [`CHANGELOG.md`](../CHANGELOG.md#unreleased) for the complete current description of this
-unreleased work. This section describes work already present on `develop`, not a release
-announcement or a compatibility promise; `1.2.0` publication follows the runbook in
-[release.md](release.md).
+See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this release.
+`1.1.x` (final release: `1.1.1`) is the previous stable line.
 
 ## Post-1.2 candidates
 
@@ -86,8 +83,8 @@ WebKit on operating systems beyond Linux, distributed crawling, additional obser
 capabilities, explicit persistence, and optional external decision-system/MCP adapters remain
 candidates.
 
-These are candidates only. None is implied by the 1.0 API contract or by any work currently on
-`develop`, none is a commitment to a `1.3.0` scope, and any optional decision/AI layer must consume
-the same fail-closed public contracts rather than bypassing them. In particular, live automatic
-recording replay, a Recording V2 schema, workflow loops, and workflow parallelism are not committed
-by this roadmap.
+These are candidates only. None is implied by the 1.0 API contract or by the `1.2.0` release, none
+is a commitment to a `1.3.0` scope, and any optional decision/AI layer must consume the same
+fail-closed public contracts rather than bypassing them. In particular, live automatic recording
+replay, a Recording V2 schema, workflow loops, and workflow parallelism are not committed by this
+roadmap.

@@ -8,6 +8,8 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-04
+
 ### Added
 
 - Deterministic Workflow Branching: `WorkflowSteps.ifElse(id, condition, thenSteps, elseSteps)` and
@@ -178,7 +180,7 @@ not imply a published compatibility line.
   Currently wired for the Playwright adapter's `click()`; see
   [docs/governed-execution.md](docs/governed-execution.md#target-identity-binding) and
   [Limitations](docs/limitations.md#governed-execution) for its current per-action-method scope. This
-  scope was later extended by Governed Actions V2 (see `[Unreleased]` above) to every target-bound
+  scope was later extended by Governed Actions V2 (see `[1.2.0]` above) to every target-bound
   governed action.
 - Transport-bound address pinning: when a configured `INetworkPolicy` implements
   `INetworkAddressAuthority` (the built-in `NetworkPolicies` policy does), `HttpCrawler` binds its

@@ -12,12 +12,9 @@ closed rather than guess.
 Playwright is the first browser backend.
 
 > [!IMPORTANT]
-> `1.1.x` is the current stable release line (latest: `1.1.1`, published from `main`); `develop` is
-> the active development line, currently `1.2.0-SNAPSHOT`. `develop` currently contains unreleased
-> 1.2.0 work beyond the `1.1.1` release - see [Project status](#project-status) below for the current
-> scope. `1.2.0` itself has not been released. Public Maven artifacts are not yet published from this
-> repository's release workflow. Until publication is enabled, build and install the artifacts
-> locally.
+> `1.2.x` is the current stable line (latest: `1.2.0`); `1.1.x` (latest: `1.1.1`) is the previous
+> stable line. Public Maven artifacts are not yet published from this repository's release workflow.
+> Until publication is enabled, build and install the artifacts locally.
 
 ## Design goals
 
@@ -162,18 +159,44 @@ explicitly transfers ownership.
 | Wait and stability | `webagent4j-wait` | Monotonic budgets, polling, stability windows |
 | Observation | `webagent4j-observation-api`, `webagent4j-observation` | Bounded detached semantic page snapshots |
 | Actions | `webagent4j-action` | Planning, dry-run, execution, stabilization, structured results |
-| Governed execution | `webagent4j-common`, `webagent4j-action` | Opt-in action/network authorization policies with decision provenance |
+| Governed execution | `webagent4j-common`, `webagent4j-action` | Opt-in action/network authorization with exact verified-target execution and decision provenance |
 | Verification | `webagent4j-verification` | Read-only deterministic conditions and postconditions |
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
 | HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
 | Browser crawler | `webagent4j-browser-crawler` | Single-lane crawling of JavaScript-rendered pages |
-| Workflows | `webagent4j-workflow` | Typed fail-fast workflows with deterministic branching, static planning, and validation reporting |
+| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, validation, static planning, and structured execution results |
 | Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison |
 | Plugins | `webagent4j-plugin-api` | Explicit trusted custom locator strategies |
 | CLI | `webagent4j-cli` | Small command-line application |
 
 Reserved or test-only reactor modules are not automatically supported consumer artifacts. See
 [`docs/modules.md`](docs/modules.md).
+
+## Workflows
+
+`webagent4j-workflow` orchestrates typed, deterministic sequences of actions and variable
+assignments:
+
+- **Typed data flow** — `WorkflowVariable<T>` inputs/outputs, write-once assignment, public/secret
+  classification, and guard-aware, path-sensitive definite assignment: a step output is available
+  downstream only when every reachable control-flow path guarantees it was published.
+- **Deterministic branching** — `WorkflowSteps.ifElse`/`ifThen` evaluate a condition exactly once
+  and run exactly one branch; the branch not selected produces zero step executions, zero action
+  calls, and zero backend invocations. There is no speculative or fallback branch execution.
+- **Three deliberately separate introspection views**, never merged or toggled between:
+
+  ```text
+  Validation Report  -> is this workflow definition valid, and why?
+  Execution Plan     -> what can it structurally execute?
+  Execution Tree     -> what did one execution actually do?
+  ```
+
+  `Workflow.Builder#validate()` never throws or mutates the builder. `WorkflowPlanner.plan(...)`
+  never evaluates a condition/guard or calls an action factory. `WorkflowEngine#executeWithTree(...)`
+  runs the workflow exactly once and returns the same result as `execute(...)`, plus a hierarchical
+  view of the path actually taken.
+
+See [`docs/workflow.md`](docs/workflow.md) for the complete model.
 
 ## Browser support
 
@@ -201,8 +224,10 @@ Important examples:
   as recording/action IDs remain a verbatim metadata boundary.
 - Browser side effects are not automatically retried by wait logic.
 - Optional governed execution (`IActionPolicy`/`INetworkPolicy`) lets a caller authorize an action
-  or network destination before it runs; a configured policy is untrusted, unsandboxed Java code
-  like any plugin, and network governance is not a general SSRF firewall. See
+  or network destination before it runs; every target-bound governed action atomically reproves its
+  exact physical target immediately before the backend call and fails closed instead of silently
+  retargeting. A configured policy is untrusted, unsandboxed Java code like any plugin, and network
+  governance is not a general SSRF firewall. See
   [`docs/governed-execution.md`](docs/governed-execution.md).
 
 See [`SECURITY.md`](SECURITY.md) and
@@ -265,34 +290,26 @@ must not be inferred from Java serialization or Java object identity.
 
 ## Project status
 
-`1.1.1` is released and is the current stable line (`1.1.x`). Its functional scope is implemented:
+`1.2.0` is released and is the current stable line (`1.2.x`). Its functional scope is implemented:
 
 - browser lifecycle and semantic location;
 - bounded observation;
 - verified actions and deterministic waits;
 - extraction;
 - HTTP and browser crawling;
-- sequential workflows;
+- deterministic workflows: typed inputs/outputs with guard-aware definite assignment, conditional
+  branching (`ifElse`/`ifThen`), and the Validation Report / Execution Plan / Execution Tree
+  introspection views (see [Workflows](#workflows) above);
 - Recording JSON V1 and offline comparison;
 - explicit trusted locator plugins;
-- opt-in governed execution (`IActionPolicy`/`INetworkPolicy`) with decision provenance and
+- governed execution (`IActionPolicy`/`INetworkPolicy`) with exact verified-target execution across
+  every target-bound governed action (including a dedicated `typeSequentially` action for
+  per-character input, distinct from replacement `type`/`fill` semantics), decision provenance, and
   transport-bound address pinning for `HttpCrawler`;
 - adversarial hardening of cross-module contracts.
 
-`develop` is `1.2.0-SNAPSHOT`, the active development line for the next release; `1.2.0` itself has
-not been released. It currently contains, beyond the `1.1.1` scope described above:
-
-- Governed Actions V2 - atomic exact-target execution extended from `click` alone to every
-  target-bound governed action (`type`/`fill`, `select`, `check`, `uncheck`, `hover`, `pressKey`),
-  plus a new `typeSequentially`/`typeSequentiallySecret` action;
-- deterministic workflow branching (`WorkflowSteps.ifElse`/`ifThen`) with guard-aware,
-  path-sensitive definite assignment for branch outputs;
-- the Structured Workflow Execution Tree (`WorkflowEngine#executeWithTree`);
-- the Deterministic Workflow Execution Plan (`WorkflowPlanner.plan`);
-- the Structured Workflow Validation Report (`Workflow.Builder#validate`).
-
-See [`CHANGELOG.md`](CHANGELOG.md#unreleased) and [`docs/workflow.md`](docs/workflow.md) for the
-complete, current description of this unreleased work.
+`1.1.x` (final release: `1.1.1`) is the previous stable line. Development for the next release
+continues on `develop`.
 
 ## Contributing
 
