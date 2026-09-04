@@ -23,7 +23,7 @@ Arrows below mean “depends on”. The default Maven reactor contains 27 module
 | `webagent4j-crawler` | Sequential HTTP crawler | Applications/extensions | Supported API/SPI; `.internal` unsupported |
 | `webagent4j-browser-crawler` | Single-lane rendered-page crawler | Applications | Supported API; `.internal` unsupported |
 | `webagent4j-workflow` | Sequential typed action orchestration | Applications/extensions | Supported API/SPI |
-| `webagent4j-recording` | Schema-V1 recording/offline comparison | Applications | Supported API |
+| `webagent4j-recording` | Schema V1/V2 recording, offline comparison, and Deterministic Replay | Applications | Supported API |
 | `webagent4j-plugin-api` | Explicit trusted locator-provider discovery | Applications/plugin authors | Supported API/SPI |
 | `webagent4j-http` | Empty reserved transport boundary | Nobody | Unsupported; not in BOM |
 | `webagent4j-storage` | Empty reserved persistence boundary | Nobody | Unsupported; not in BOM |

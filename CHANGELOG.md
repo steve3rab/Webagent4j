@@ -8,6 +8,30 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+### Added
+
+- Recording V2 and Deterministic Replay: `WorkflowRecordingV2` captures a tree-shaped workflow
+  execution - a `WorkflowExecutionPlan` plus a tree mirroring `WorkflowExecutionTree`, so a
+  branching execution's actual decision path is explicit - alongside a typed `WorkflowPlanOutput`
+  (name, type, secret classification) per published output instead of Recording V1's bare output
+  variable name. `WorkflowRecorderV2` captures a real `WorkflowExecution`
+  (`WorkflowEngine#executeWithTree`) into this format; `JsonWorkflowRecordingV2Codec` encodes and
+  decodes it with the same canonical-JSON, fail-closed, resource-bounded discipline
+  `JsonWorkflowRecordingCodec` established for V1, using a disjoint schema-version number space
+  (`RecordingSchemaVersionV2`) so a V1-shaped payload can never be silently accepted as a V2 one or
+  vice versa. There is no implicit or automatic V1-to-V2 conversion anywhere in this module.
+  New `io.webagent4j.recording.replay` package: `ReplayValidator` checks a `WorkflowRecordingV2`
+  against a live `Workflow`'s current structural plan before any replay is attempted, and
+  `WorkflowReplayer` reconstructs the recorded decision trace as a flattened `ReplayedWorkflow` -
+  structural/decision replay only, in this initial implementation: it never evaluates a condition,
+  never invokes an action factory, never resolves or verifies a backend target, and never performs
+  any side effect. The recorded branch decision is the one replayed - a condition is never
+  re-evaluated, and there is no hidden retry, second attempt, or fallback to a different branch or
+  target. Only a `COMPLETED` recording can be replayed; a `FAILED` trace and real governed-target
+  side-effect replay are out of scope for this initial implementation - a deliberate, documented
+  scope decision, not an oversight. See [Recording](docs/recording.md#recording-v2) and
+  [Limitations](docs/limitations.md#recording).
+
 ## [1.2.0] - 2026-09-04
 
 ### Added

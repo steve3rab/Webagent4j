@@ -78,9 +78,18 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this relea
 
 ## 1.3: active development
 
-`develop` is now `1.3.0-SNAPSHOT`, the active line for the next release; no `1.3.0` feature has been
-decided or implemented yet. `1.2.0` remains the current stable line (`1.2.x`) until a future release
-supersedes it.
+`develop` is `1.3.0-SNAPSHOT`, the active line for the next release. `1.2.0` remains the current
+stable line (`1.2.x`) until a future release supersedes it. In progress:
+
+- **Recording V2 and Deterministic Replay** - `WorkflowRecordingV2` captures a tree-shaped
+  workflow execution (a `WorkflowExecutionPlan` plus a tree mirroring `WorkflowExecutionTree`) with
+  typed, secret-classified published outputs, replacing V1's flat step list and bare output-variable
+  name; a new `io.webagent4j.recording.replay` package validates a recording's compatibility with a
+  live workflow and deterministically replays its recorded decision path. This initial
+  implementation is structural/decision replay only - it never evaluates a condition, never invokes
+  an action factory, never touches a backend, and never performs any side effect; a `FAILED`
+  recording and real governed-target side-effect replay are explicitly out of scope for now. See
+  [Recording](recording.md#recording-v2).
 
 ## Post-1.2 candidates
 
@@ -91,6 +100,8 @@ candidates.
 
 These are candidates only. None is implied by the 1.0 API contract or by the `1.2.0` release, none
 is a commitment to a `1.3.0` scope, and any optional decision/AI layer must consume the same
-fail-closed public contracts rather than bypassing them. In particular, live automatic recording
-replay, a Recording V2 schema, workflow loops, and workflow parallelism are not committed by this
-roadmap.
+fail-closed public contracts rather than bypassing them. Real governed-target side-effect replay
+(actually re-invoking a recorded action against a freshly re-verified target), workflow loops, and
+workflow parallelism remain undecided and are not committed by this roadmap - see
+[Recording](recording.md#deterministic-replay) for the side-effect-replay scope decision already
+made for 1.3.

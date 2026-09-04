@@ -86,7 +86,7 @@ Workflow secret masking protects framework-owned incidental renderings. Explicit
 
 ### Recording
 
-Recording structurally excludes raw workflow inputs, raw output values, `ActionResult.value()`, observations/diagnostics, and raw `Throwable` data. It does **not** heuristically sanitize arbitrary identifiers. `RecordingId`, `ActionId`, workflow/step IDs, output-variable names, and similar metadata retained by the schema must be non-sensitive.
+Recording (both schema V1 and V2) structurally excludes raw workflow inputs, raw output values, `ActionResult.value()`, observations/diagnostics, and raw `Throwable` data. It does **not** heuristically sanitize arbitrary identifiers. `RecordingId`, `ActionId`, workflow/step IDs, output-variable names (or, in V2, a published output's typed `WorkflowPlanOutput` name/type/secret-classification metadata - never a value), and similar metadata retained by the schema must be non-sensitive. Deterministic Replay (V2 only) validates and reconstructs a recorded decision trace without ever resolving a backend target or performing a side effect, so it introduces no new secret-handling surface beyond the recording it reads.
 
 ## Safe diagnostics and logging
 
