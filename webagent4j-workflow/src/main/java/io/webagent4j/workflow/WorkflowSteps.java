@@ -1,14 +1,16 @@
 package io.webagent4j.workflow;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
- * Factory for the two built-in {@link IWorkflowStep} kinds Phase 0.8 supports.
+ * Factory for the built-in {@link IWorkflowStep} kinds this module supports.
  *
  * <p>There is no generic {@code Runnable}/{@code Consumer<Map<String,Object>>} step here - every
- * step is either backed by the real action pipeline ({@link #action}) or a single deterministic
- * literal assignment ({@link #assign}), preserving type safety, structural validation, and secret
- * provenance (see {@code docs/workflow.md#steps}).
+ * step is either backed by the real action pipeline ({@link #action}), a single deterministic
+ * literal assignment ({@link #assign}), or a deterministic if/else branch ({@link #ifElse}, {@link
+ * #ifThen}) over more steps of these same kinds - preserving type safety, structural validation,
+ * and secret provenance (see {@code docs/workflow.md#steps}).
  */
 public final class WorkflowSteps {
 
@@ -53,5 +55,68 @@ public final class WorkflowSteps {
         }
         variable.requireValid(value);
         return new AssignWorkflowStep<>(new WorkflowStepId(stepId), variable, value);
+    }
+
+    /**
+     * A deterministic if/else step: {@link WorkflowEngine} evaluates {@code condition} exactly once
+     * when this step is reached and then executes exactly one of {@code thenSteps} (if it evaluated
+     * to {@code true}) or {@code elseSteps} (if {@code false}) - never both, never neither, and
+     * never re-evaluates {@code condition} while running the selected branch. The branch that is
+     * not selected produces zero step executions and zero backend side effects: it is never run for
+     * validation, dry-run, or as a fallback (see {@code docs/workflow.md#branching}).
+     *
+     * <p>If {@code condition}'s evaluation itself fails (throws, or its {@code describe()} is
+     * malformed), this step fails closed with {@link
+     * WorkflowFailureType#CONDITION_EVALUATION_FAILED}: neither branch runs - a failed evaluation
+     * is never treated as a {@code false} decision.
+     *
+     * <p>{@code thenSteps} and {@code elseSteps} may themselves contain {@code ifElse}/{@code
+     * ifThen} steps: nested branching works the same way at every depth, up to {@link
+     * Workflow#MAX_CONDITIONAL_NESTING_DEPTH} levels - a top-level conditional is depth 1, one
+     * nested inside either of its branches is depth 2, and so on, with {@code thenSteps} and {@code
+     * elseSteps} measured independently rather than summed. Every step ID across the whole workflow
+     * - including inside every branch, at every nesting depth - must still be unique. Neither of
+     * these is checked by this factory method itself, since it builds one step in isolation without
+     * knowing where it will sit in a larger definition: {@link Workflow.Builder#build()} rejects a
+     * duplicate ID or an excessive nesting depth once the whole tree is known.
+     *
+     * <p>Unlike {@link #action} and {@link #assign}, the returned step does not support {@link
+     * IWorkflowStep#when} - see {@link ConditionalWorkflowStep}'s Javadoc for why.
+     *
+     * @throws IllegalArgumentException if {@code thenSteps} or {@code elseSteps} is empty
+     */
+    public static IWorkflowStep ifElse(
+            String stepId,
+            IWorkflowCondition condition,
+            List<IWorkflowStep> thenSteps,
+            List<IWorkflowStep> elseSteps) {
+        Objects.requireNonNull(condition, "condition");
+        requireNonEmptyBranch(thenSteps, "thenSteps");
+        requireNonEmptyBranch(elseSteps, "elseSteps");
+        return new ConditionalWorkflowStep(
+                new WorkflowStepId(stepId), condition, thenSteps, elseSteps);
+    }
+
+    /**
+     * Same as {@link #ifElse} without an else branch: a {@code false} decision is a no-op success
+     * for this step - {@code thenSteps} never runs, and this step still counts as {@link
+     * WorkflowStepStatus#SUCCEEDED}, not {@link WorkflowStepStatus#SKIPPED} (which is reserved for
+     * a step's own optional {@link IWorkflowStep#when} guard evaluating false, a different
+     * mechanism this step does not support - see {@link #ifElse}).
+     *
+     * @throws IllegalArgumentException if {@code thenSteps} is empty
+     */
+    public static IWorkflowStep ifThen(
+            String stepId, IWorkflowCondition condition, List<IWorkflowStep> thenSteps) {
+        Objects.requireNonNull(condition, "condition");
+        requireNonEmptyBranch(thenSteps, "thenSteps");
+        return new ConditionalWorkflowStep(new WorkflowStepId(stepId), condition, thenSteps, null);
+    }
+
+    private static void requireNonEmptyBranch(List<IWorkflowStep> steps, String paramName) {
+        Objects.requireNonNull(steps, paramName);
+        if (steps.isEmpty()) {
+            throw new IllegalArgumentException(paramName + " must contain at least one step");
+        }
     }
 }

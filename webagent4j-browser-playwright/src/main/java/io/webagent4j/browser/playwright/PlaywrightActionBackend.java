@@ -76,6 +76,24 @@ final class PlaywrightActionBackend implements IActionBackend {
     }
 
     @Override
+    public void typeSequentially(IElement element, String value) {
+        bindToVerifiedTarget(
+                element, handle -> handle.type(value), locator -> locator.pressSequentially(value));
+    }
+
+    @Override
+    public void typeSequentiallySecret(IElement element, Secret value) {
+        value.use(
+                secret -> {
+                    bindToVerifiedTarget(
+                            element,
+                            handle -> handle.type(secret),
+                            locator -> locator.pressSequentially(secret));
+                    return null;
+                });
+    }
+
+    @Override
     public void clear(IElement element) {
         // ElementHandle has no dedicated clear() operation, only Locator does - but Locator#clear
         // is itself implemented as a fill with an empty string at the protocol level, exactly what

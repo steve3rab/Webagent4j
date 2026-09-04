@@ -122,8 +122,12 @@ residual window by verifying identity and handing back a view bound to the exact
 handle in one atomic operation; the backend then acts through that returned view, never through a
 second, independent resolution. The Playwright adapter implements this by capturing the live
 `ElementHandle` during identity verification and consuming that exact handle for the native
-operation (currently `click()`; every other Playwright action method still takes the older,
-non-atomic path - see [Limitations](limitations.md)). `Optional.empty()` here - detachment,
+operation. As of Governed Actions V2 (1.2.0), this atomic binding covers every target-bound action
+the framework exposes - `click`, `doubleClick`, `type`/`fill` (including the secret variant),
+`typeSequentially` (including the secret variant), `clear`, `select`, `check`, `uncheck`, `focus`,
+`blur`, `hover`, `scrollTo`, `submit`, `pressKey`, `upload`, and `download` - through the shared
+`PlaywrightActionBackend#bindToVerifiedTarget` mechanism; none of them fall back to a second,
+independently re-resolved `Locator` for the actual native call. `Optional.empty()` here - detachment,
 replacement, ambiguity, or an inspection failure - is treated uniformly as "not proven," never as
 "still the same." Failure to prove identity fails closed exactly like a policy `DENY`: zero backend
 invocations, `ActionExecutionMode.NOT_EXECUTED`, classified as the additive
@@ -307,7 +311,8 @@ which limits length and character set but cannot verify semantic safety.
 
 ## Compatibility
 
-- The project version stays `1.1.0-SNAPSHOT`; the Revapi API-compatibility baseline stays `1.0.0`.
+- The project version was `1.1.0-SNAPSHOT` when this capability was added (now released as part of
+  the `1.1.x` line); the Revapi API-compatibility baseline stays `1.0.0`.
 - No policy is configured by default anywhere. An action or crawl that never calls
   `.policy(...)`/`.networkPolicy(...)`/`withNetworkPolicy(...)` behaves identically to 1.0.
 - No existing public record gained a new component. `ActionCommand` (an internal, package-private

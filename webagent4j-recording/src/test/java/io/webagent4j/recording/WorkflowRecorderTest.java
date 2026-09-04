@@ -12,6 +12,7 @@ import io.webagent4j.workflow.IWorkflowVariables;
 import io.webagent4j.workflow.Workflow;
 import io.webagent4j.workflow.WorkflowConditions;
 import io.webagent4j.workflow.WorkflowEngine;
+import io.webagent4j.workflow.WorkflowExecution;
 import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowInputs;
 import io.webagent4j.workflow.WorkflowResult;
@@ -22,6 +23,7 @@ import io.webagent4j.workflow.WorkflowStepType;
 import io.webagent4j.workflow.WorkflowSteps;
 import io.webagent4j.workflow.WorkflowVariable;
 import java.time.Instant;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -81,6 +83,53 @@ class WorkflowRecorderTest {
         assertThat(step2.stepType()).isEqualTo(WorkflowStepType.ASSIGN);
         assertThat(step2.action()).isEmpty();
         assertThat(step2.outputVariableName()).contains("assignOut");
+    }
+
+    /**
+     * The Structured Execution Tree feature is runtime-only: {@link WorkflowEngine#executeWithTree}
+     * returns exactly the same {@link WorkflowResult} instance-for-instance as {@link
+     * WorkflowEngine#execute} would for the same inputs, so recording it produces a byte-identical
+     * {@link WorkflowRecording} - Recording V1's own format and behavior are completely unaffected
+     * by the new tree.
+     */
+    @Test
+    void recTree001ExecuteWithTreeProducesAnIdenticalRecordingToExecute() {
+        WorkflowVariable<Boolean> flag = WorkflowVariable.publicValue("flag", Boolean.class);
+        Workflow workflow =
+                Workflow.builder("wf-tree-equivalence")
+                        .requiredInput(flag)
+                        .step(
+                                WorkflowSteps.ifElse(
+                                        "branch",
+                                        WorkflowConditions.isTrue(flag),
+                                        List.of(
+                                                WorkflowSteps.assign(
+                                                        "then",
+                                                        WorkflowVariable.publicValue(
+                                                                "out", String.class),
+                                                        "then-value")),
+                                        List.of(
+                                                WorkflowSteps.assign(
+                                                        "else",
+                                                        WorkflowVariable.publicValue(
+                                                                "out", String.class),
+                                                        "else-value"))))
+                        .build();
+        WorkflowInputs inputs = WorkflowInputs.builder().put(flag, true).build();
+
+        WorkflowResult viaExecute = engine.execute(workflow, inputs);
+        WorkflowExecution viaExecuteWithTree = engine.executeWithTree(workflow, inputs);
+        Instant capturedAt = Instant.parse("2026-01-01T00:00:00Z");
+
+        WorkflowRecording recordingFromExecute =
+                recorder.record(new RecordingId("rec-tree-1"), capturedAt, viaExecute);
+        WorkflowRecording recordingFromExecuteWithTree =
+                recorder.record(
+                        new RecordingId("rec-tree-1"), capturedAt, viaExecuteWithTree.result());
+
+        assertThat(recordingFromExecute).isEqualTo(recordingFromExecuteWithTree);
+        assertThat(codec.encode(recordingFromExecute))
+                .isEqualTo(codec.encode(recordingFromExecuteWithTree));
     }
 
     /** REC-002: a failed execution preserves SUCCEEDED, FAILED, and NOT_RUN step statuses. */

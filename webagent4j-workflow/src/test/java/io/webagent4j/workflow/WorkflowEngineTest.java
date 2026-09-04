@@ -261,7 +261,39 @@ class WorkflowEngineTest {
     }
 
     @Test
-    void wfUnit013bSkippedProducerGuardedConsumerSkipsSafely() {
+    void wfUnit013bAGuardedProducersOutputCannotBeStaticallyReferencedByALaterCondition() {
+        // A guarded producer's output is never definitely available, since its guard may skip it
+        // at runtime - so a later step's own condition statically referencing it (even one built
+        // to tolerate absence, like exists()) is rejected at build time, not merely handled safely
+        // at runtime as it was before this invariant existed. See docs/workflow.md#conditions.
+        Workflow.Builder builder =
+                Workflow.builder("wf")
+                        .requiredInput(FLAG)
+                        .step(
+                                actionStep(
+                                                "producer",
+                                                new AtomicInteger(),
+                                                () -> ActionResults.success("produced-value"),
+                                                PRODUCED)
+                                        .when(WorkflowConditions.isTrue(FLAG)))
+                        .step(
+                                actionStep(
+                                                "consumer",
+                                                new AtomicInteger(),
+                                                () -> ActionResults.success("ignored"))
+                                        .when(WorkflowConditions.exists(PRODUCED)));
+
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("produced");
+    }
+
+    @Test
+    void wfUnit013bSkippedProducerConsumerSafelyProbesAbsenceAtRuntime() {
+        // The same intent the old build-time-accepted pattern above demonstrated - a consumer
+        // safely reacting to a guarded producer's output possibly being absent - remains fully
+        // supported at runtime through explicit IWorkflowVariables#exists(), which is never
+        // statically checked (only a step's own declarative when(...) condition is).
         AtomicInteger producerCalls = new AtomicInteger();
         AtomicInteger consumerCalls = new AtomicInteger();
         Workflow workflow =
@@ -275,11 +307,14 @@ class WorkflowEngineTest {
                                                 PRODUCED)
                                         .when(WorkflowConditions.isTrue(FLAG)))
                         .step(
-                                actionStep(
-                                                "consumer",
-                                                consumerCalls,
-                                                () -> ActionResults.success("ignored"))
-                                        .when(WorkflowConditions.exists(PRODUCED)))
+                                WorkflowSteps.action(
+                                        "consumer",
+                                        variables -> {
+                                            assertThat(variables.exists(PRODUCED)).isFalse();
+                                            return new FakePreparedAction<>(
+                                                    ActionResults.success("ignored"),
+                                                    consumerCalls);
+                                        }))
                         .build();
         WorkflowInputs inputs = WorkflowInputs.builder().put(FLAG, false).build();
 
@@ -287,9 +322,9 @@ class WorkflowEngineTest {
 
         assertThat(result.completed()).isTrue();
         assertThat(producerCalls).hasValue(0);
-        assertThat(consumerCalls).hasValue(0);
-        assertThat(result.steps())
-                .allSatisfy(r -> assertThat(r.status()).isEqualTo(WorkflowStepStatus.SKIPPED));
+        assertThat(consumerCalls).hasValue(1);
+        assertThat(result.steps().get(0).status()).isEqualTo(WorkflowStepStatus.SKIPPED);
+        assertThat(result.steps().get(1).status()).isEqualTo(WorkflowStepStatus.SUCCEEDED);
     }
 
     @Test

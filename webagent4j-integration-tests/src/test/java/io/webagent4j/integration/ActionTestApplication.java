@@ -312,6 +312,162 @@ final class ActionTestApplication implements AutoCloseable {
                               }
                             </script>
                             """);
+            case "/actions/policy-toctou-select" ->
+                    document(
+                            "Policy TOCTOU select",
+                            """
+                            <select id="first" aria-label="Confirm"
+                              onchange="window.firstSelectEvents++; fetch('/count-click/first')">
+                              <option value="one">One</option>
+                              <option value="two">Two</option>
+                            </select>
+                            <script>
+                              window.firstSelectEvents = 0;
+                              window.replacementSelectEvents = 0;
+                              function replaceFirstSelectWithReplacementSameLocator() {
+                                const old = document.getElementById('first');
+                                const replacement = document.createElement('select');
+                                replacement.id = 'replacement';
+                                replacement.setAttribute('aria-label', 'Confirm');
+                                for (const value of ['one', 'two']) {
+                                  const option = document.createElement('option');
+                                  option.value = value;
+                                  option.textContent = value;
+                                  replacement.appendChild(option);
+                                }
+                                replacement.onchange = () => {
+                                  window.replacementSelectEvents++;
+                                  fetch('/count-click/replacement');
+                                };
+                                old.replaceWith(replacement);
+                              }
+                            </script>
+                            """);
+            case "/actions/policy-toctou-check" ->
+                    document(
+                            "Policy TOCTOU check",
+                            """
+                            <input id="first" type="checkbox" aria-label="Confirm"
+                              onchange="window.firstCheckEvents++; fetch('/count-click/first')">
+                            <script>
+                              window.firstCheckEvents = 0;
+                              window.replacementCheckEvents = 0;
+                              function replaceFirstCheckboxWithReplacementSameLocator() {
+                                const old = document.getElementById('first');
+                                const replacement = document.createElement('input');
+                                replacement.id = 'replacement';
+                                replacement.type = 'checkbox';
+                                replacement.setAttribute('aria-label', 'Confirm');
+                                replacement.onchange = () => {
+                                  window.replacementCheckEvents++;
+                                  fetch('/count-click/replacement');
+                                };
+                                old.replaceWith(replacement);
+                              }
+                            </script>
+                            """);
+            case "/actions/policy-toctou-uncheck" ->
+                    document(
+                            "Policy TOCTOU uncheck",
+                            """
+                            <input id="first" type="checkbox" checked aria-label="Confirm"
+                              onchange="window.firstUncheckEvents++; fetch('/count-click/first')">
+                            <script>
+                              window.firstUncheckEvents = 0;
+                              window.replacementUncheckEvents = 0;
+                              function replaceFirstCheckedCheckboxWithReplacementSameLocator() {
+                                const old = document.getElementById('first');
+                                const replacement = document.createElement('input');
+                                replacement.id = 'replacement';
+                                replacement.type = 'checkbox';
+                                replacement.checked = true;
+                                replacement.setAttribute('aria-label', 'Confirm');
+                                replacement.onchange = () => {
+                                  window.replacementUncheckEvents++;
+                                  fetch('/count-click/replacement');
+                                };
+                                old.replaceWith(replacement);
+                              }
+                            </script>
+                            """);
+            case "/actions/policy-toctou-hover" ->
+                    document(
+                            "Policy TOCTOU hover",
+                            """
+                            <button id="first" onmouseenter="firstHovered()">Confirm</button>
+                            <script>
+                              window.firstHoverEvents = 0;
+                              window.replacementHoverEvents = 0;
+                              function firstHovered() {
+                                window.firstHoverEvents++;
+                                fetch('/count-click/first');
+                              }
+                              function replaceFirstHoverTargetWithReplacementSameLocator() {
+                                const old = document.getElementById('first');
+                                const replacement = document.createElement('button');
+                                replacement.id = 'replacement';
+                                replacement.textContent = 'Confirm';
+                                replacement.onmouseenter = () => {
+                                  window.replacementHoverEvents++;
+                                  fetch('/count-click/replacement');
+                                };
+                                old.replaceWith(replacement);
+                              }
+                            </script>
+                            """);
+            case "/actions/policy-toctou-press" ->
+                    document(
+                            "Policy TOCTOU press",
+                            """
+                            <input id="first" type="text" aria-label="Confirm" onkeydown="firstKeyDown(event)">
+                            <script>
+                              window.firstPressEvents = 0;
+                              window.replacementPressEvents = 0;
+                              function firstKeyDown(event) {
+                                if (event.key === 'Enter') {
+                                  window.firstPressEvents++;
+                                  fetch('/count-click/first');
+                                }
+                              }
+                              function replaceFirstPressTargetWithReplacementSameLocator() {
+                                const old = document.getElementById('first');
+                                const replacement = document.createElement('input');
+                                replacement.id = 'replacement';
+                                replacement.type = 'text';
+                                replacement.setAttribute('aria-label', 'Confirm');
+                                replacement.onkeydown = (event) => {
+                                  if (event.key === 'Enter') {
+                                    window.replacementPressEvents++;
+                                    fetch('/count-click/replacement');
+                                  }
+                                };
+                                old.replaceWith(replacement);
+                              }
+                            </script>
+                            """);
+            case "/actions/policy-toctou-typesequence" ->
+                    document(
+                            "Policy TOCTOU typeSequentially",
+                            """
+                            <input id="first" type="text" aria-label="Confirm"
+                              oninput="window.firstTypeSeqEvents++; fetch('/count-click/first')">
+                            <script>
+                              window.firstTypeSeqEvents = 0;
+                              window.replacementTypeSeqEvents = 0;
+                              function replaceFirstTypeSeqInputWithReplacementSameLocator() {
+                                const old = document.getElementById('first');
+                                const replacement = document.createElement('input');
+                                replacement.id = 'replacement';
+                                replacement.type = 'text';
+                                replacement.setAttribute('aria-label', 'Confirm');
+                                replacement.oninput = () => {
+                                  window.replacementTypeSeqEvents++;
+                                  fetch('/count-click/replacement');
+                                };
+                                old.replaceWith(replacement);
+                              }
+                            </script>
+                            """);
             case "/actions/plan-precondition-invalidates" ->
                     document(
                             "Plan precondition invalidates",
@@ -605,6 +761,35 @@ final class ActionTestApplication implements AutoCloseable {
                     document(
                             "Ambiguous actions",
                             "<button>Duplicate</button><button>Duplicate</button>");
+            case "/actions/workflow-branch-ready" ->
+                    document(
+                            "Workflow branch ready",
+                            """
+                            <button id="confirm" aria-label="Confirm"
+                              onclick="fetch('/count-click/confirm')">Confirm</button>
+                            <button id="cancel" aria-label="Cancel"
+                              onclick="fetch('/count-click/cancel')">Cancel</button>
+                            """);
+            case "/actions/workflow-branch-target-changed" ->
+                    document(
+                            "Workflow branch target changed",
+                            """
+                            <button id="confirm" aria-label="Confirm"
+                              onclick="fetch('/count-click/original')">Confirm</button>
+                            <button id="cancel" aria-label="Cancel"
+                              onclick="fetch('/count-click/cancel')">Cancel</button>
+                            <script>
+                              function replaceConfirmButtonWithFreshNodeSameLocator() {
+                                const old = document.getElementById('confirm');
+                                const fresh = document.createElement('button');
+                                fresh.id = 'confirm-replacement';
+                                fresh.setAttribute('aria-label', 'Confirm');
+                                fresh.textContent = 'Confirm';
+                                fresh.onclick = () => fetch('/count-click/replacement');
+                                old.replaceWith(fresh);
+                              }
+                            </script>
+                            """);
             case "/actions/click-timeout-oracle" ->
                     document(
                             "Click timeout oracle",

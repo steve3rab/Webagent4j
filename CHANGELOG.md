@@ -8,6 +8,119 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-04
+
+### Added
+
+- Deterministic Workflow Branching: `WorkflowSteps.ifElse(id, condition, thenSteps, elseSteps)` and
+  `WorkflowSteps.ifThen(id, condition, thenSteps)` add a deterministic `if`/`else` control-flow step
+  to `webagent4j-workflow` - a condition evaluated exactly once, selecting exactly one of two step
+  sequences, nested conditional branching supported up to a 64-level limit (each branch measured
+  independently, never summed), never both, never a retry, and never a fallback from a failed
+  branch to the other one. A definition nested deeper than that limit is rejected at build time
+  with a controlled error, never a `StackOverflowError`. The branch not selected produces zero step
+  executions, zero action factory calls, and zero backend invocations. A failed condition
+  evaluation fails the conditional step closed (`CONDITION_EVALUATION_FAILED`) rather than being
+  treated as `false`; an interrupt observed at either of the step's two structural boundaries fails
+  it closed with the new `CONDITIONAL_STEP_INTERRUPTED` failure type. `WorkflowResult.steps()`
+  stays one flat, execution-ordered list - the conditional step's own decision immediately followed
+  by whichever single branch actually ran - so Recording V1 captures a branching execution with no
+  format change. A step output declared inside a branch is available to whatever structurally
+  follows the conditional only when every reachable branch guarantees a compatible declaration of
+  it (definite assignment: an intersection of what both branches produce, never a union of what
+  either one might) - a later step or condition statically referencing an output only one branch
+  declares is rejected at build time. Definite assignment is also guard-aware for ordinary steps:
+  an output produced by a step guarded with `when(...)` is never definitely available afterward
+  either, since the guard may skip the producer at runtime - this composes recursively through
+  nested `ifElse`/`ifThen`, so a guarded producer anywhere on a branch's reachable path makes that
+  whole branch unable to guarantee the output. A guarded producer's output name can also never be
+  reused by a second, unconditional producer of the same variable, since the guard may still
+  evaluate `true` at runtime. See [Workflows](docs/workflow.md#branching) and
+  [Limitations](docs/limitations.md#workflows).
+
+- Structured Workflow Execution Tree: `WorkflowEngine#executeWithTree(workflow, inputs)` runs the
+  exact same single execution as `execute(workflow, inputs)`, additionally returning a
+  `WorkflowExecutionTree` - a hierarchical view (new `WorkflowExecutionNode`, one per executed or
+  explicitly `NOT_RUN` step, carrying the existing `WorkflowStepResult`, an
+  `Optional<WorkflowBranchSelection>` for a `CONDITIONAL` step's actual `THEN`/`ELSE`/`NONE`
+  decision, and its selected branch's own child nodes) of the control-flow path that actually
+  executed - built once, during the same recursive traversal that already produces
+  `WorkflowResult.steps()`, sharing the exact same `WorkflowStepResult` instances rather than
+  recomputing them. A conditional's non-selected branch contributes zero execution nodes, exactly
+  mirroring its existing zero-side-effect guarantee. `execute(workflow, inputs)` is unchanged and
+  still returns exactly `WorkflowResult`; the tree is exposed additively through the new
+  `WorkflowExecution` record (`result()` + `tree()`) rather than as a new component on
+  `WorkflowResult` itself, since that is a public record whose canonical constructor is public API.
+  Flattening the tree in execution order reproduces `WorkflowResult.steps()` exactly. Recording V1
+  is completely unaffected - it depends only on `WorkflowResult.steps()`, and the tree is
+  runtime-only, never serialized into a recording. See
+  [Workflows](docs/workflow.md#execution-tree) and [Limitations](docs/limitations.md#workflows).
+
+- Deterministic Workflow Execution Plan: `WorkflowPlanner.plan(workflow)` builds a new
+  `WorkflowExecutionPlan` - a deterministic, backend-neutral description of what a `Workflow` is
+  structurally capable of executing, built entirely from its already-validated definition, never by
+  running it. Planning never calls an `IWorkflowActionFactory`, never evaluates an
+  `IWorkflowCondition` (branch selector or `when(...)` guard alike), never resolves or verifies a
+  backend target, and never performs a click, fill, type, select, upload, submit, or download - a
+  dedicated `WorkflowPlanner`, kept separate from `WorkflowEngine`, reads only static step metadata
+  already present on the definition. New types `WorkflowExecutionPlan` (root: `workflowId` +
+  `nodes`), `WorkflowPlanNode` (step ID, `WorkflowStepType`, whether the step carries an optional
+  guard, its declared `WorkflowPlanOutput` if any, and - for a `CONDITIONAL` step - its branches),
+  `WorkflowPlanBranch` (reusing `WorkflowBranchSelection` as a structural label: `THEN`/`ELSE`, or
+  `NONE` for an `ifThen`'s structurally absent else), and `WorkflowPlanOutput` (output name, type
+  name, and `PUBLIC`/`SECRET` classification - never a value). Unlike the execution tree, where a
+  non-selected branch contributes zero nodes, a plan represents *both* of a conditional's
+  structurally possible branches, since no runtime decision exists yet to select between them - the
+  plan never claims a runtime-dependent action, condition, or policy decision will succeed. Node
+  count is proportional to the number of definition steps - nested conditionals stay a tree, never
+  expanding into every combination of branch outcomes - bounded by the same
+  `Workflow.MAX_CONDITIONAL_NESTING_DEPTH` every `Workflow` already is, so planning a
+  maximum-depth definition never risks a `StackOverflowError`. Two plans built from the same
+  `Workflow` are always logically equal. Entirely additive; `WorkflowResult`, `WorkflowEngine`, and
+  the execution tree are unchanged, and Recording V1 is unaffected - a plan is never serialized
+  into a recording. See [Workflows](docs/workflow.md#execution-plan) and
+  [Limitations](docs/limitations.md#workflows).
+
+- Structured Workflow Validation Report: `Workflow.Builder#validate()` explains the builder's
+  current definition state as a new `WorkflowValidationReport`, without ever throwing and without
+  mutating the builder. It derives its conclusions from the exact same internal analysis
+  `build()` already uses - never a second, independently maintained validation algorithm that
+  could diverge - so a definition `build()` accepts always reports `valid() == true`, and one it
+  rejects always produces at least one diagnostic; `build()` itself remains fully fail-closed
+  regardless of whether `validate()` is ever called. Unlike `build()`, which throws on the first
+  violation, `validate()` continues analyzing every remaining structurally independent part of the
+  definition it can safely reach, skipping only the specific step (or conditional branch) whose own
+  violation makes trusting its contents unsafe. New types: `WorkflowValidationReport` (validity,
+  diagnostics, required/optional inputs, declared outputs with producer step and definite-assignment
+  status, step/conditional counts, and maximum observed conditional depth), `WorkflowValidationCode`
+  (`EMPTY_STEP_LIST`, `DUPLICATE_INPUT_DECLARATION`, `DUPLICATE_STEP_ID`,
+  `CONDITIONAL_DEPTH_EXCEEDED`, `CONDITION_METADATA_INVALID`, `OUTPUT_NOT_DEFINITELY_AVAILABLE`,
+  `OUTPUT_COLLISION`, `OUTPUT_TYPE_MISMATCH`, `OUTPUT_SECRET_CLASSIFICATION_MISMATCH`),
+  `WorkflowValidationSeverity` (`ERROR` only in this version), and `WorkflowValidationDiagnostic`
+  (code, severity, step ID/variable name when applicable, and a safe message). Diagnostics are
+  deterministic (definition-traversal order) and bounded (256, with `diagnosticsTruncated()` set
+  once exceeded). Producing a report never evaluates a condition, never invokes an
+  `IWorkflowActionFactory`, and never touches a backend, browser, or network resource. Entirely
+  additive; `WorkflowResult`, `WorkflowEngine`, the execution tree, and the execution plan are
+  unchanged, and Recording V1 is unaffected - a report is never serialized into a recording. See
+  [Workflows](docs/workflow.md#validation-report) and
+  [Limitations](docs/limitations.md#workflows).
+
+- Governed Actions V2: extended atomic exact-target execution to every target-bound governed
+  action, not just `click` - `type`/`fill`, `select`, `check`, `uncheck`, `hover`, and `pressKey`
+  now share the same `IElement#verifiedForExecution()` atomic-handle binding `click` already had,
+  proven with new real-browser adversarial tests (physical replacement during policy evaluation,
+  and after the exact handle is already bound, both fail closed with zero backend invocations) and
+  a generic-pipeline test matrix covering all eight actions' policy-authorization, deadline, and
+  interruption boundaries. Also adds `typeSequentially`/`typeSequentiallySecret`
+  (`ActionType.TYPE_SEQUENCE`), a genuinely new action distinct from `type`/`fill`: it dispatches
+  one keyboard/input event per character rather than replacing the value directly, so the result
+  depends on the target's current value/selection/caret and any application JavaScript handling
+  those events - unlike `type`/`fill`, it is `NON_IDEMPOTENT`. Shares the identical
+  governed-execution pipeline and exact-target guarantee. See
+  [Governed execution](docs/governed-execution.md#target-identity-binding) and
+  [Limitations](docs/limitations.md#governed-execution).
+
 ## [1.1.1] - 2026-08-30
 
 ### Fixed
@@ -66,7 +179,9 @@ not imply a published compatibility line.
   invocations) rather than falling back to a re-resolved element when identity cannot be reproven.
   Currently wired for the Playwright adapter's `click()`; see
   [docs/governed-execution.md](docs/governed-execution.md#target-identity-binding) and
-  [Limitations](docs/limitations.md#governed-execution) for its current per-action-method scope.
+  [Limitations](docs/limitations.md#governed-execution) for its current per-action-method scope. This
+  scope was later extended by Governed Actions V2 (see `[1.2.0]` above) to every target-bound
+  governed action.
 - Transport-bound address pinning: when a configured `INetworkPolicy` implements
   `INetworkAddressAuthority` (the built-in `NetworkPolicies` policy does), `HttpCrawler` binds its
   actual HTTP(S) connection to the exact, freshly re-verified address set the policy offers for that
@@ -100,7 +215,6 @@ not imply a published compatibility line.
 - Documented that a governed `NAVIGATE` action or `BrowserCrawler` visit can only detect, never
   prevent, a browser-internal redirect landing somewhere a network policy would have denied, unlike
   `HttpCrawler`, which controls its own redirect loop.
-
 
 ## [1.0.0] - 2026-08-27
 

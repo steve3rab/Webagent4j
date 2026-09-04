@@ -57,13 +57,14 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
   configures one. Direct `IPage`/`IBrowser` calls made outside a governed action or crawl bypass
   both entirely.
 - Atomic action-target identity verification (`IElement#verifiedForExecution()`, which binds
-  identity revalidation and the native backend call to the exact same physical handle) is currently
-  wired for the Playwright adapter's `click()` only. Every other Playwright action method (`fill`,
-  `check`, `uncheck`, `select`, `hover`, `focus`, `blur`, `press`, `upload`, `submit`, `scrollTo`,
-  `download`, `doubleClick`) still revalidates identity via the boolean-only
-  `isStillTheOriginallyResolvedTarget()` and then performs its native call through a second,
-  independently re-resolved `Locator` - the residual TOCTOU window this method exists to close
-  remains open for those methods.
+  identity revalidation and the native backend call to the exact same physical handle) is wired for
+  every target-bound Playwright action method: `click`, `doubleClick`, `type`/`fill` (including the
+  secret variant), `typeSequentially` (including the secret variant, added in 1.2.0's Governed
+  Actions V2), `clear`, `select`, `check`, `uncheck`, `focus`, `blur`, `hover`, `scrollTo`, `submit`,
+  `pressKey`, `upload`, and `download`. None of them fall back to a second, independently
+  re-resolved `Locator` for the actual native call; see
+  [Governed execution](governed-execution.md#target-identity-binding) and
+  `PlaywrightVerifiedTargetActionMatrixTest`/`ActionPolicyTargetIdentityIT` for the exact evidence.
 - `INetworkPolicy` is not a general SSRF firewall. `HttpCrawler` binds its actual transport
   connection to the exact addresses a policy verified - closing the DNS-rebinding gap between
   check and connect - only when the configured policy implements `INetworkAddressAuthority` (the
@@ -88,10 +89,14 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 ## Workflows
 
 - Sequential and fail-fast only.
-- No loops, recursion, DAG scheduler, parallel branches, fork/join, general `if/else` step DSL, transactions/sagas, persistence, checkpoint/resume, scheduling, cron, external event triggers, or YAML/JSON workflow language.
-- No workflow-wide timeout/cancellation abstraction. Actions keep their own timeout/interruption semantics.
+- Deterministic `if`/`else` branching (`WorkflowSteps.ifElse`/`ifThen`) is supported - a condition evaluated exactly once selecting exactly one of two step sequences, nested conditional branching is supported up to the framework's 64-level conditional nesting limit (each branch measured independently, never summed) - see [workflow.md#branching](workflow.md#branching). A definition exceeding that limit is rejected at build time with a controlled error, never a `StackOverflowError`. It is a narrow control-flow primitive, not a general rules/expression DSL.
+- No loops, recursion over data, DAG scheduler, parallel branches, fork/join, `switch`/`case`, workflow variables reassignable across branches, transactions/sagas, persistence, checkpoint/resume, scheduling, cron, external event triggers, or YAML/JSON workflow language.
+- No workflow-wide timeout/cancellation abstraction. Actions keep their own timeout/interruption semantics; a conditional step's own two structural boundaries observe the executing thread's interrupt status, the same primitive the action pipeline already relies on for its own boundary checks - see [workflow.md#branching](workflow.md#branching).
 - No hidden workflow retry.
 - Secret masking is framework-rendering protection, not encryption or storage security.
+- `WorkflowEngine#executeWithTree` returns a structured `WorkflowExecutionTree` alongside the existing flat `WorkflowResult` - see [workflow.md#execution-tree](workflow.md#execution-tree). It is an observational, runtime-only hierarchical view of what actually executed, built once during the same execution pass; it has no timestamps, no duration/profiling data, no distributed-tracing span or exporter integration (no OpenTelemetry, Micrometer, Zipkin, or Jaeger). A conditional's non-selected branch never contributes an execution node - there is no branch speculation.
+- `WorkflowPlanner.plan(workflow)` returns a `WorkflowExecutionPlan` - see [workflow.md#execution-plan](workflow.md#execution-plan). It is a static, structural description built entirely from the definition; it never executes a step, never evaluates a condition or guard, never resolves or verifies a backend target, and never invokes an `IWorkflowActionFactory`. It is not a dry run, not a replay, not a simulation, and never predicts whether a runtime-dependent action, condition, or policy decision will succeed. It represents every structurally possible branch of a conditional, not the one a runtime decision would select - the opposite of the execution tree's non-selected-branch-zero-nodes guarantee, and the two types are never merged or interchangeable.
+- `Workflow.Builder#validate()` returns a structured `WorkflowValidationReport` - see [workflow.md#validation-report](workflow.md#validation-report). It explains the exact same structural invariants `build()` enforces, derived from the same internal analysis; there is no independent second validation algorithm. It never evaluates a condition or guard, never invokes an `IWorkflowActionFactory`, and never touches a backend, browser, or network resource. `build()` remains fully fail-closed regardless of whether `validate()` is ever called: the report never makes an invalid definition executable, and it is not an auto-fix, a style linter, a constant-condition optimizer, or an execution simulator. Diagnostics are bounded (`diagnosticsTruncated()`) rather than accumulated without limit.
 
 ## Recording
 
@@ -99,6 +104,7 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 - No automatic live replay, browser/action recreation, retry inference, storage backend, screenshot/DOM/HAR/video capture, or alternate serialization format.
 - Only JSON schema V1 is supported. Unknown versions fail explicitly.
 - Caller/action metadata identifiers are persisted verbatim and are not secret channels.
+- The Structured Execution Tree ([workflow.md#execution-tree](workflow.md#execution-tree)) is a separate, runtime-only feature, not part of Recording V1: it is never serialized into a recording, and there is no Recording V2, tree JSON schema, tree replay, tree persistence, or tree diff/import in this version.
 
 ## Plugins
 

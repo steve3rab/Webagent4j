@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.webagent4j.action.ActionExecutionMode;
 import io.webagent4j.action.ActionFailureType;
 import io.webagent4j.action.ActionResult;
+import io.webagent4j.action.KeyPress;
+import io.webagent4j.action.PortableKey;
 import io.webagent4j.dom.IElement;
 import io.webagent4j.policy.PolicyDecision;
 import org.junit.jupiter.api.Test;
@@ -27,12 +29,15 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Three distinct boundaries are covered: a replacement happening before final exact-target
  * verification even runs (proven by mutating inside policy evaluation itself, which runs strictly
- * before verification, across a click, a fill, and a form submit); a replacement happening after an
- * exact physical handle has already been verified and bound, in {@link
- * #verifiedHandleBoundBeforeReplacementNeverActsOnTheReplacementAfterward}, proving the backend
- * never falls back to a second, independently re-resolved lookup for the actual native call; and an
- * unchanged target still running the backend exactly once, proving none of this costs an ordinary
- * governed action anything.
+ * before verification, across click, fill, submit, select, check, uncheck, hover, press, and
+ * typeSequentially - Governed Actions V2's complete target-bound action set); a replacement
+ * happening after an exact physical handle has already been verified and bound, in {@link
+ * #verifiedHandleBoundBeforeReplacementNeverActsOnTheReplacementAfterward} (click) and {@link
+ * #verifiedCheckHandleBoundBeforeReplacementNeverActsOnTheReplacementAfterwardEitherProvingTheSharedMechanism}
+ * (check, a second action proving the mechanism is genuinely shared rather than click-specific),
+ * proving the backend never falls back to a second, independently re-resolved lookup for the actual
+ * native call; and an unchanged target still running the backend exactly once, proving none of this
+ * costs an ordinary governed action anything.
  */
 class ActionPolicyTargetIdentityIT {
 
@@ -153,6 +158,300 @@ class ActionPolicyTargetIdentityIT {
                     .isEqualTo(ActionFailureType.TARGET_CHANGED);
             assertThat(intField(page, "firstSubmitEvents")).isZero();
             assertThat(intField(page, "replacementSubmitEvents")).isZero();
+        }
+    }
+
+    @Test
+    void allowForASelectTargetThatIsReplacedDuringPolicyEvaluationNeverTransfersToTheReplacement()
+            throws Exception {
+        // Governed Actions V2: the same TOCTOU boundary, proven for select().
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-select")) {
+            IElement target = page.find().select().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .selectByValue(target, "two")
+                            .policy(
+                                    ctx -> {
+                                        page.evaluate(
+                                                "replaceFirstSelectWithReplacementSameLocator()");
+                                        return PolicyDecision.allow("test.toctou.select.allowed");
+                                    })
+                            .execute();
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+            assertThat(result.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.TARGET_CHANGED);
+            assertThat(intField(page, "firstSelectEvents")).isZero();
+            assertThat(intField(page, "replacementSelectEvents")).isZero();
+        }
+    }
+
+    @Test
+    void allowForASelectTargetThatIsUnchangedStillRunsTheBackendExactlyOnce() throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-select")) {
+            IElement target = page.find().select().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .selectByValue(target, "two")
+                            .policy(ctx -> PolicyDecision.allow("test.toctou.select.unchanged"))
+                            .execute();
+
+            assertThat(result.success()).isTrue();
+            assertThat(intField(page, "firstSelectEvents")).isEqualTo(1);
+            assertThat(intField(page, "replacementSelectEvents")).isZero();
+        }
+    }
+
+    @Test
+    void allowForACheckTargetThatIsReplacedDuringPolicyEvaluationNeverTransfersToTheReplacement()
+            throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-check")) {
+            IElement target = page.find().checkbox().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .check(target)
+                            .policy(
+                                    ctx -> {
+                                        page.evaluate(
+                                                "replaceFirstCheckboxWithReplacementSameLocator()");
+                                        return PolicyDecision.allow("test.toctou.check.allowed");
+                                    })
+                            .execute();
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+            assertThat(result.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.TARGET_CHANGED);
+            assertThat(intField(page, "firstCheckEvents")).isZero();
+            assertThat(intField(page, "replacementCheckEvents")).isZero();
+        }
+    }
+
+    @Test
+    void allowForACheckTargetThatIsUnchangedStillRunsTheBackendExactlyOnce() throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-check")) {
+            IElement target = page.find().checkbox().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .check(target)
+                            .policy(ctx -> PolicyDecision.allow("test.toctou.check.unchanged"))
+                            .execute();
+
+            assertThat(result.success()).isTrue();
+            assertThat(intField(page, "firstCheckEvents")).isEqualTo(1);
+            assertThat(intField(page, "replacementCheckEvents")).isZero();
+        }
+    }
+
+    @Test
+    void allowForAnUncheckTargetThatIsReplacedDuringPolicyEvaluationNeverTransfersToTheReplacement()
+            throws Exception {
+        // Physical replacement with an identical checked state (Governed Actions V2 spec section
+        // 28): identity, never state equivalence, is the authoritative signal.
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-uncheck")) {
+            IElement target = page.find().checkbox().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .uncheck(target)
+                            .policy(
+                                    ctx -> {
+                                        page.evaluate(
+                                                "replaceFirstCheckedCheckboxWithReplacementSameLocator()");
+                                        return PolicyDecision.allow("test.toctou.uncheck.allowed");
+                                    })
+                            .execute();
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+            assertThat(result.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.TARGET_CHANGED);
+            assertThat(intField(page, "firstUncheckEvents")).isZero();
+            assertThat(intField(page, "replacementUncheckEvents")).isZero();
+        }
+    }
+
+    @Test
+    void allowForAHoverTargetThatIsReplacedDuringPolicyEvaluationNeverTransfersToTheReplacement()
+            throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-hover")) {
+            IElement target = page.find().button().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .hover(target)
+                            .policy(
+                                    ctx -> {
+                                        page.evaluate(
+                                                "replaceFirstHoverTargetWithReplacementSameLocator()");
+                                        return PolicyDecision.allow("test.toctou.hover.allowed");
+                                    })
+                            .execute();
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+            assertThat(result.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.TARGET_CHANGED);
+            assertThat(intField(page, "firstHoverEvents")).isZero();
+            assertThat(intField(page, "replacementHoverEvents")).isZero();
+        }
+    }
+
+    @Test
+    void allowForAHoverTargetThatIsUnchangedStillRunsTheBackendExactlyOnce() throws Exception {
+        // Section 27: hover must reach the exact target exactly once - never zero (denied
+        // silently) and never twice (a hidden retry).
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-hover")) {
+            IElement target = page.find().button().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .hover(target)
+                            .policy(ctx -> PolicyDecision.allow("test.toctou.hover.unchanged"))
+                            .execute();
+
+            assertThat(result.success()).isTrue();
+            assertThat(intField(page, "firstHoverEvents")).isEqualTo(1);
+            assertThat(intField(page, "replacementHoverEvents")).isZero();
+        }
+    }
+
+    @Test
+    void allowForAPressTargetThatIsReplacedDuringPolicyEvaluationNeverTransfersToTheReplacement()
+            throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-press")) {
+            IElement target = page.find().textbox().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .pressKey(target, KeyPress.of(PortableKey.ENTER))
+                            .policy(
+                                    ctx -> {
+                                        page.evaluate(
+                                                "replaceFirstPressTargetWithReplacementSameLocator()");
+                                        return PolicyDecision.allow("test.toctou.press.allowed");
+                                    })
+                            .execute();
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+            assertThat(result.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.TARGET_CHANGED);
+            assertThat(intField(page, "firstPressEvents")).isZero();
+            assertThat(intField(page, "replacementPressEvents")).isZero();
+        }
+    }
+
+    @Test
+    void aPressKeyOnAnUnchangedTargetInvokesTheBackendExactlyOnceNeverTwice() throws Exception {
+        // Section 26: an accidental double press can submit a form twice. This proves exactly one
+        // framework-level press reaches the target, never a hidden retry after the first.
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-press")) {
+            IElement target = page.find().textbox().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .pressKey(target, KeyPress.of(PortableKey.ENTER))
+                            .policy(ctx -> PolicyDecision.allow("test.toctou.press.unchanged"))
+                            .execute();
+
+            assertThat(result.success()).isTrue();
+            assertThat(intField(page, "firstPressEvents")).isEqualTo(1);
+            assertThat(intField(page, "replacementPressEvents")).isZero();
+        }
+    }
+
+    @Test
+    void
+            allowForATypeSequentiallyTargetThatIsReplacedDuringPolicyEvaluationNeverTransfersToTheReplacement()
+                    throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-typesequence")) {
+            IElement target = page.find().textbox().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .typeSequentially(target, "typed-value")
+                            .policy(
+                                    ctx -> {
+                                        page.evaluate(
+                                                "replaceFirstTypeSeqInputWithReplacementSameLocator()");
+                                        return PolicyDecision.allow(
+                                                "test.toctou.typesequence.allowed");
+                                    })
+                            .execute();
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.executionMode()).isEqualTo(ActionExecutionMode.NOT_EXECUTED);
+            assertThat(result.failure().orElseThrow().type())
+                    .isEqualTo(ActionFailureType.TARGET_CHANGED);
+            assertThat(intField(page, "firstTypeSeqEvents")).isZero();
+            assertThat(intField(page, "replacementTypeSeqEvents")).isZero();
+            assertThat(page.evaluate("document.getElementById('replacement').value")).isEqualTo("");
+        }
+    }
+
+    @Test
+    void allowForATypeSequentiallyTargetThatIsUnchangedStillRunsTheBackendExactlyOnce()
+            throws Exception {
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-typesequence")) {
+            IElement target = page.find().textbox().named("Confirm").first();
+
+            ActionResult<Void> result =
+                    page.action()
+                            .typeSequentially(target, "hi")
+                            .policy(
+                                    ctx ->
+                                            PolicyDecision.allow(
+                                                    "test.toctou.typesequence.unchanged"))
+                            .execute();
+
+            assertThat(result.success()).isTrue();
+            assertThat(intField(page, "firstTypeSeqEvents")).isGreaterThan(0);
+            assertThat(intField(page, "replacementTypeSeqEvents")).isZero();
+            assertThat(page.evaluate("document.getElementById('first').value")).isEqualTo("hi");
+        }
+    }
+
+    @Test
+    void
+            verifiedCheckHandleBoundBeforeReplacementNeverActsOnTheReplacementAfterwardEitherProvingTheSharedMechanism()
+                    throws Exception {
+        // Section 14: proves the same deep boundary as
+        // verifiedHandleBoundBeforeReplacementNeverActsOnTheReplacementAfterward below, through a
+        // second, non-click action - demonstrating the atomic-handle-binding mechanism
+        // (bindToVerifiedTarget) is genuinely shared, not click-specific machinery this suite
+        // happens to also exercise for check().
+        try (var support = Phase4TestSupport.start();
+                var page = support.open("/actions/policy-toctou-check")) {
+            IElement target = page.find().checkbox().named("Confirm").first();
+            IElement verifiedTarget = target.verifiedForExecution().orElseThrow();
+
+            page.evaluate("replaceFirstCheckboxWithReplacementSameLocator()");
+
+            try {
+                page.actionBackend().check(verifiedTarget);
+            } catch (RuntimeException detachedHandle) {
+                // Acceptable: the verified handle's own node is now detached from the DOM.
+            }
+
+            assertThat(intField(page, "firstCheckEvents")).isZero();
+            assertThat(intField(page, "replacementCheckEvents")).isZero();
         }
     }
 
