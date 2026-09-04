@@ -25,7 +25,9 @@ not imply a published compatibility line.
   outputs at the same positions, and every recorded branch selection corresponding exclusively to
   that plan node's matching branch - on every construction path (direct construction,
   `WorkflowRecorderV2`, and JSON decode alike), so a tree inconsistent with its own plan can never
-  exist.
+  exist. Both the plan and the execution tree are independently bounded to the same maximum
+  conditional-nesting depth, checked before any further recursive descent, at construction, encode,
+  decode, and replay traversal alike, using one single-source-of-truth constant.
   New `io.webagent4j.recording.replay` package: `ReplayValidator` checks a `WorkflowRecordingV2`
   against a live `Workflow`'s current structural plan before any replay is attempted - relying on
   the recording's own already-guaranteed internal coherence as a precondition - and

@@ -319,7 +319,7 @@ class JsonWorkflowRecordingV2CodecTest {
                         + oneActionStepJson("leaf")
                         + ",\"branchSelection\":null,\"children\":[]}";
         StringBuilder nested = new StringBuilder(leafNodeJson);
-        for (int i = 0; i < JsonWorkflowRecordingV2Codec.MAX_TREE_DEPTH + 5; i++) {
+        for (int i = 0; i < RecordingV2PlanTreeValidator.MAX_TREE_DEPTH + 5; i++) {
             nested =
                     new StringBuilder(
                             "{\"step\":"
@@ -343,6 +343,97 @@ class JsonWorkflowRecordingV2CodecTest {
         assertThatThrownBy(() -> codec.decode(corrupted))
                 .isInstanceOf(RecordingFormatException.class)
                 .hasMessageContaining("exceeds maximum nesting depth");
+    }
+
+    /**
+     * DEPTH-REC2-006: {@code encode}'s own depth guard refuses a nesting depth one over the limit
+     * before generating any JSON - exercised directly against a hand-built plan-node/execution-node
+     * graph, since a {@link WorkflowRecordingV2} exceeding this depth can never be constructed in
+     * the first place (see {@link RecordingV2PlanTreeValidator}), making this encode-side check a
+     * defense-in-depth guarantee rather than one reachable through the public API.
+     */
+    @Test
+    void encodeRefusesExcessiveNestingDepthBeforeFullGeneration() {
+        int overLimit = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH + 1;
+        WorkflowPlanNode deepPlanNode =
+                RecordingV2Fixtures.nestedConditionalPlanNode("c0", overLimit);
+
+        assertThatThrownBy(
+                        () ->
+                                JsonWorkflowRecordingV2Codec.validateEncodablePlanNode(
+                                        deepPlanNode, new int[] {0}, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exceeds maximum encodable nesting depth");
+
+        RecordedExecutionNodeV2 deepExecutionNode =
+                RecordingV2Fixtures.nestedConditionalExecutionNode("c0", overLimit);
+
+        assertThatThrownBy(
+                        () ->
+                                JsonWorkflowRecordingV2Codec.validateEncodableNode(
+                                        deepExecutionNode, new int[] {0}, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exceeds maximum encodable nesting depth");
+    }
+
+    /**
+     * DEPTH-REC2-007: {@code decode} cleanly rejects a nesting depth exactly one over the limit -
+     * the precise boundary complementing {@link
+     * #decodeRejectsExcessiveNestingDepthBeforeStackOverflow()}'s well-past-the-limit case.
+     */
+    @Test
+    void decodeRejectsNestingDepthExactlyOneOverLimit() {
+        String leafNodeJson =
+                "{\"step\":"
+                        + oneActionStepJson("leaf")
+                        + ",\"branchSelection\":null,\"children\":[]}";
+        StringBuilder nested = new StringBuilder(leafNodeJson);
+        for (int i = 0; i < RecordingV2PlanTreeValidator.MAX_TREE_DEPTH + 1; i++) {
+            nested =
+                    new StringBuilder(
+                            "{\"step\":"
+                                    + oneConditionalStepJson("cond" + i)
+                                    + ",\"branchSelection\":\"THEN\",\"children\":["
+                                    + nested
+                                    + "]}");
+        }
+        WorkflowRecordingV2 minimal = RecordingV2Fixtures.minimalCompleted("wf");
+        String valid = codec.encode(minimal);
+        int failureFieldStart = valid.lastIndexOf("\"failure\":");
+        int nodesFieldStart = valid.lastIndexOf("\"nodes\":[", failureFieldStart);
+        int contentEnd = valid.lastIndexOf(']', failureFieldStart);
+        String corrupted =
+                valid.substring(0, nodesFieldStart)
+                        + "\"nodes\":["
+                        + nested
+                        + "]"
+                        + valid.substring(contentEnd + 1);
+
+        assertThatThrownBy(() -> codec.decode(corrupted))
+                .isInstanceOf(RecordingFormatException.class)
+                .hasMessageContaining("exceeds maximum nesting depth");
+    }
+
+    /**
+     * DEPTH-REC2-008: a matched plan/tree pair at exactly the maximum supported depth round-trips
+     * through {@code encode}/{@code decode} unchanged - {@code decode(encode(recording))} never
+     * fails for depth reasons {@code encode} itself would not have already refused.
+     */
+    @Test
+    void roundTripsAtExactDepthLimit() {
+        int depth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH;
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.nestedConditionalPlan("wf", depth);
+        WorkflowRecordingV2 recording =
+                RecordingV2Fixtures.recordingWith(
+                        "wf",
+                        plan,
+                        WorkflowStatus.COMPLETED,
+                        List.of(RecordingV2Fixtures.nestedConditionalExecutionNode("c0", depth)),
+                        Optional.empty());
+
+        WorkflowRecordingV2 decoded = codec.decode(codec.encode(recording));
+
+        assertThat(decoded).isEqualTo(recording);
     }
 
     private static String oneActionStepJson(String stepId) {

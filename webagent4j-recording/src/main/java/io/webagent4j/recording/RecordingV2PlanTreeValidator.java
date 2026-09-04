@@ -30,33 +30,76 @@ import java.util.Optional;
  * declarations, in the same order, so a genuine recording's tree and plan are always positionally
  * aligned; a recording that is not is exactly what must be rejected.
  *
- * <p><b>Complexity:</b> {@link #validate} visits only the branch each conditional actually
- * selected, exactly mirroring the tree's own zero-nodes-for-the-unselected-branch shape - overall
- * linear in the recorded tree's size, never exponential, and never enumerating branch-outcome
- * combinations.
+ * <p><b>Complexity:</b> {@link #validate} visits each plan node at most twice - once while checking
+ * the execution tree (only the branch each conditional actually selected, exactly mirroring the
+ * tree's own zero-nodes-for-the-unselected-branch shape) and once, independently, while confirming
+ * the plan's own nesting depth (which must visit both branches, since the tree alone could never
+ * reveal excessive depth hidden only in a branch nothing selected) - overall linear in the plan's
+ * size, never exponential, and never enumerating branch-outcome combinations.
+ *
+ * <p><b>Depth is bounded before recursing, not after:</b> {@link #MAX_TREE_DEPTH} is this module's
+ * single source of truth for the maximum supported conditional-nesting depth, checked at each level
+ * before either recursion descends one level further - so neither this validator's own call stack,
+ * nor a well-formed decoder or encoder using the same constant and the same check-before
+ * discipline, can be driven into a {@link StackOverflowError} by an arbitrarily deep hostile input.
+ * Depth is 1 for a top-level {@link WorkflowStepType#CONDITIONAL} step, 2 for one nested in either
+ * of its branches, and so on - the same semantics {@code Workflow.Builder#build()} already enforces
+ * for a live workflow definition via its own (inaccessible outside {@code io.webagent4j.workflow})
+ * nesting-depth constant of the same value.
  */
 final class RecordingV2PlanTreeValidator {
 
+    /**
+     * Maximum supported conditional-nesting depth for both a recording's plan and its execution
+     * tree - this module's single source of truth, reused by {@link JsonWorkflowRecordingV2Codec}
+     * for its own encode- and decode-side checks rather than each keeping an independent copy.
+     */
+    static final int MAX_TREE_DEPTH = 64;
+
     private RecordingV2PlanTreeValidator() {}
 
-    /** Validates that {@code nodes} is a structurally authorized path through {@code planNodes}. */
+    /**
+     * Validates that {@code nodes} is a structurally authorized path through {@code planNodes}, and
+     * that {@code planNodes} does not itself exceed {@link #MAX_TREE_DEPTH}.
+     *
+     * @throws IllegalArgumentException if {@code nodes} is inconsistent with {@code planNodes} at
+     *     any level, or either structure's nesting depth exceeds {@link #MAX_TREE_DEPTH}
+     */
     static void validate(List<RecordedExecutionNodeV2> nodes, List<WorkflowPlanNode> planNodes) {
-        validateLevel(nodes, planNodes);
+        validatePlanDepth(planNodes, 0);
+        validateLevel(nodes, planNodes, 0);
+    }
+
+    private static void validatePlanDepth(List<WorkflowPlanNode> planNodes, int depth) {
+        for (WorkflowPlanNode planNode : planNodes) {
+            if (planNode.stepType() != WorkflowStepType.CONDITIONAL) {
+                continue;
+            }
+            int childDepth = depth + 1;
+            if (childDepth > MAX_TREE_DEPTH) {
+                throw new IllegalArgumentException(
+                        "recorded plan exceeds the maximum supported nesting depth");
+            }
+            for (WorkflowPlanBranch branch : planNode.branches()) {
+                validatePlanDepth(branch.nodes(), childDepth);
+            }
+        }
     }
 
     private static void validateLevel(
-            List<RecordedExecutionNodeV2> nodes, List<WorkflowPlanNode> planNodes) {
+            List<RecordedExecutionNodeV2> nodes, List<WorkflowPlanNode> planNodes, int depth) {
         if (nodes.size() != planNodes.size()) {
             throw new IllegalArgumentException(
                     "recorded execution nodes do not match the recorded plan's node count at this"
                             + " level");
         }
         for (int i = 0; i < nodes.size(); i++) {
-            validateNode(nodes.get(i), planNodes.get(i));
+            validateNode(nodes.get(i), planNodes.get(i), depth);
         }
     }
 
-    private static void validateNode(RecordedExecutionNodeV2 node, WorkflowPlanNode planNode) {
+    private static void validateNode(
+            RecordedExecutionNodeV2 node, WorkflowPlanNode planNode, int depth) {
         RecordedWorkflowStepV2 step = node.step();
         if (!step.stepId().equals(planNode.stepId())) {
             throw new IllegalArgumentException(
@@ -80,7 +123,12 @@ final class RecordingV2PlanTreeValidator {
                     "recorded branch selection is not structurally possible for this recorded"
                             + " plan node");
         }
-        validateLevel(node.children(), matchingBranch.nodes());
+        int childDepth = depth + 1;
+        if (childDepth > MAX_TREE_DEPTH) {
+            throw new IllegalArgumentException(
+                    "recorded execution tree exceeds the maximum supported nesting depth");
+        }
+        validateLevel(node.children(), matchingBranch.nodes(), childDepth);
     }
 
     private static void validateOutput(

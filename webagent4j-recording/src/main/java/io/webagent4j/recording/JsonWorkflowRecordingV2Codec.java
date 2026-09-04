@@ -60,16 +60,18 @@ import java.util.Set;
  * tree (only the branch each conditional actually selected). These are separate recursive JSON
  * structures with separate {@code MAX_PLAN_NODES}/{@code MAX_NODES} counters, each incremented and
  * checked before the node it counts is allocated - so a hostile plan cannot exhaust the node budget
- * meant for the execution tree, or vice versa. Nesting depth for both is bounded by a single {@code
- * MAX_TREE_DEPTH}, checked explicitly by this decoder's own recursive descent - independent of, and
- * strictly tighter than, the JSON parser's own {@code StreamReadConstraints} nesting limit -
- * because this decoder's node-by-node reconstruction recurses in step with the JSON structure:
- * bounding only the parser's tree-building recursion would leave this decoder's own recursive
- * methods still exposed to a {@link StackOverflowError} from a document deep enough to pass the
- * parser but not this stricter check. {@code MAX_TREE_DEPTH} reuses the same value as {@code
- * Workflow.MAX_CONDITIONAL_NESTING_DEPTH} (the live nesting bound {@code Workflow.Builder#build()}
- * already enforces) and {@link JsonWorkflowRecordingCodec#MAX_NESTING_DEPTH}, for consistency with
- * both.
+ * meant for the execution tree, or vice versa. Nesting depth for both is bounded by {@link
+ * RecordingV2PlanTreeValidator#MAX_TREE_DEPTH} - this module's single source of truth for that
+ * bound, also enforced by {@link WorkflowRecordingV2}'s own compact constructor, so this decoder
+ * defines no independent copy of the value. Depth is checked explicitly by this decoder's own
+ * recursive descent - independent of, and strictly tighter than, the JSON parser's own {@link
+ * StreamReadConstraints} nesting limit - because this decoder's node-by-node reconstruction
+ * recurses in step with the JSON structure: bounding only the parser's tree-building recursion
+ * would leave this decoder's own recursive methods still exposed to a {@link StackOverflowError}
+ * from a document deep enough to pass the parser but not this stricter check. The encode side
+ * enforces the identical bound before ever descending into a node's children or branches, so {@code
+ * decode(encode(recording))} never fails for depth reasons that {@code encode} itself could have
+ * refused up front.
  */
 public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2Codec {
 
@@ -107,21 +109,13 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
     static final int MAX_STRING_LENGTH_CHARS = 32_768;
 
     /**
-     * Maximum accepted nesting depth this decoder's own recursive descent will follow into either
-     * the plan's branch structure or the execution tree's children - see the class Javadoc. Reuses
-     * {@code Workflow.MAX_CONDITIONAL_NESTING_DEPTH}'s value for consistency with the live nesting
-     * bound a recording of a real execution can never exceed.
-     */
-    static final int MAX_TREE_DEPTH = 64;
-
-    /**
      * Maximum accepted raw JSON nesting depth, enforced by the parser itself via {@link
-     * StreamReadConstraints} as a safety net beneath {@link #MAX_TREE_DEPTH}: each single level of
-     * this decoder's own tree recursion spans several JSON object/array levels (a node, its {@code
-     * children}/{@code branches} array, a child/branch object, its own nested array), so this
-     * parser limit is set generously above what {@link #MAX_TREE_DEPTH} legitimately requires,
-     * purely to bound the JSON parser's own tree-building recursion independently of this decoder's
-     * stricter, explicit check.
+     * StreamReadConstraints} as a safety net beneath {@link RecordingV2PlanTreeValidator#
+     * MAX_TREE_DEPTH}: each single level of this decoder's own tree recursion spans several JSON
+     * object/array levels (a node, its {@code children}/{@code branches} array, a child/branch
+     * object, its own nested array), so this parser limit is set generously above what that depth
+     * bound legitimately requires, purely to bound the JSON parser's own tree-building recursion
+     * independently of this decoder's stricter, explicit check.
      */
     static final int MAX_JSON_NESTING_DEPTH = 512;
 
@@ -207,7 +201,7 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
         validateEncodablePlan(recording.plan());
         int[] nodeCount = {0};
         for (RecordedExecutionNodeV2 node : recording.nodes()) {
-            validateEncodableNode(node, nodeCount);
+            validateEncodableNode(node, nodeCount, 0);
         }
         recording.failure().ifPresent(JsonWorkflowRecordingV2Codec::validateEncodableFailure);
     }
@@ -216,11 +210,14 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
         requireEncodableLength(plan.workflowId().value());
         int[] planNodeCount = {0};
         for (WorkflowPlanNode node : plan.nodes()) {
-            validateEncodablePlanNode(node, planNodeCount);
+            validateEncodablePlanNode(node, planNodeCount, 0);
         }
     }
 
-    private static void validateEncodablePlanNode(WorkflowPlanNode node, int[] counter) {
+    // Package-private (not private) so REC2 depth tests can exercise this guard directly with a
+    // hand-built WorkflowPlanNode graph, without needing a WorkflowRecordingV2 whose own
+    // construction-time invariant would otherwise make an over-depth input impossible to obtain.
+    static void validateEncodablePlanNode(WorkflowPlanNode node, int[] counter, int depth) {
         counter[0]++;
         if (counter[0] > MAX_PLAN_NODES) {
             throw new IllegalArgumentException(
@@ -228,21 +225,31 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
         }
         requireEncodableLength(node.stepId().value());
         node.declaredOutput().ifPresent(JsonWorkflowRecordingV2Codec::requireEncodableOutput);
+        if (!node.branches().isEmpty() && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {
+            throw new IllegalArgumentException(
+                    "recording plan exceeds maximum encodable nesting depth");
+        }
         for (WorkflowPlanBranch branch : node.branches()) {
             for (WorkflowPlanNode child : branch.nodes()) {
-                validateEncodablePlanNode(child, counter);
+                validateEncodablePlanNode(child, counter, depth + 1);
             }
         }
     }
 
-    private static void validateEncodableNode(RecordedExecutionNodeV2 node, int[] counter) {
+    // Package-private for the identical white-box-testing reason as validateEncodablePlanNode.
+    static void validateEncodableNode(RecordedExecutionNodeV2 node, int[] counter, int depth) {
         counter[0]++;
         if (counter[0] > MAX_NODES) {
             throw new IllegalArgumentException("recording exceeds maximum encodable node count");
         }
         validateEncodableStep(node.step());
+        if (node.branchSelection().isPresent()
+                && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {
+            throw new IllegalArgumentException("recording exceeds maximum encodable nesting depth");
+        }
+        int childDepth = node.branchSelection().isPresent() ? depth + 1 : depth;
         for (RecordedExecutionNodeV2 child : node.children()) {
-            validateEncodableNode(child, counter);
+            validateEncodableNode(child, counter, childDepth);
         }
     }
 
@@ -538,7 +545,7 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
         Optional<WorkflowPlanOutput> declaredOutput =
                 decodeOptionalOutput(node, "declaredOutput", path + ".declaredOutput");
         ArrayNode branchesArray = requireArray(node, "branches", path + ".branches");
-        if (branchesArray.size() > 0 && depth >= MAX_TREE_DEPTH) {
+        if (branchesArray.size() > 0 && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {
             throw new RecordingFormatException("recording exceeds maximum nesting depth");
         }
         List<WorkflowPlanBranch> branches = new ArrayList<>(branchesArray.size());
@@ -587,11 +594,12 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
                         "branchSelection",
                         path + ".branchSelection");
         ArrayNode childrenArray = requireArray(node, "children", path + ".children");
-        if (childrenArray.size() > 0 && depth >= MAX_TREE_DEPTH) {
+        if (branchSelection.isPresent() && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {
             throw new RecordingFormatException("recording exceeds maximum nesting depth");
         }
+        int childDepth = branchSelection.isPresent() ? depth + 1 : depth;
         List<RecordedExecutionNodeV2> children =
-                decodeExecutionNodes(childrenArray, path + ".children", depth + 1, counter);
+                decodeExecutionNodes(childrenArray, path + ".children", childDepth, counter);
         return new RecordedExecutionNodeV2(step, branchSelection, children);
     }
 

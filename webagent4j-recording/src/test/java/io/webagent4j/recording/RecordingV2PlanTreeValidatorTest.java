@@ -11,14 +11,17 @@ import io.webagent4j.workflow.WorkflowPlanOutput;
 import io.webagent4j.workflow.WorkflowStatus;
 import io.webagent4j.workflow.WorkflowStepId;
 import io.webagent4j.workflow.WorkflowStepType;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
- * PLAN-TREE-001..012 adversarial coverage for {@link RecordingV2PlanTreeValidator}: proves a {@link
- * WorkflowRecordingV2} can never be constructed unless its {@link RecordedExecutionNodeV2} tree is
- * a genuine, structurally authorized path through its own {@link WorkflowExecutionPlan}.
+ * PLAN-TREE-001..012 and DEPTH-REC2-001..005 adversarial coverage for {@link
+ * RecordingV2PlanTreeValidator}: proves a {@link WorkflowRecordingV2} can never be constructed
+ * unless its {@link RecordedExecutionNodeV2} tree is a genuine, structurally authorized path
+ * through its own {@link WorkflowExecutionPlan}, and that both structures' conditional-nesting
+ * depth is bounded before any unbounded recursive descent.
  *
  * <p>Every adversarial fixture here is hand-built directly - never produced through {@link
  * WorkflowRecorderV2} - so each one demonstrates a plan/tree pair a real execution could never
@@ -338,5 +341,126 @@ class RecordingV2PlanTreeValidatorTest {
                                         Optional.empty()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("recorded step ID does not match");
+    }
+
+    // ---- DEPTH-REC2: nesting depth bounds ----
+
+    /** DEPTH-REC2-001: a matched plan/tree pair at exactly the maximum depth is accepted. */
+    @Test
+    void depthRec2001TreeDepthAtLimitIsAccepted() {
+        int depth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH;
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.nestedConditionalPlan("wf", depth);
+        List<RecordedExecutionNodeV2> nodes =
+                List.of(RecordingV2Fixtures.nestedConditionalExecutionNode("c0", depth));
+
+        WorkflowRecordingV2 recording =
+                RecordingV2Fixtures.recordingWith(
+                        "wf", plan, WorkflowStatus.COMPLETED, nodes, Optional.empty());
+
+        assertThat(recording.nodes()).hasSize(1);
+    }
+
+    /**
+     * DEPTH-REC2-002: one level past the maximum depth is cleanly rejected, with no {@link
+     * StackOverflowError} - the check-before-recursing discipline bounds the validator's own call
+     * stack regardless of how deep the hostile input claims to be.
+     */
+    @Test
+    void depthRec2002TreeDepthOneOverLimitIsRejectedWithoutStackOverflow() {
+        int depth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH + 1;
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.nestedConditionalPlan("wf", depth);
+        List<RecordedExecutionNodeV2> nodes =
+                List.of(RecordingV2Fixtures.nestedConditionalExecutionNode("c0", depth));
+
+        assertThatThrownBy(
+                        () ->
+                                RecordingV2Fixtures.recordingWith(
+                                        "wf",
+                                        plan,
+                                        WorkflowStatus.COMPLETED,
+                                        nodes,
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exceeds the maximum supported nesting depth");
+    }
+
+    /**
+     * DEPTH-REC2-003: a plan nested to exactly the maximum depth is accepted even when the recorded
+     * tree never selects into it (top-level conditional recorded with no selection) - proving the
+     * plan's own depth is checked independently of which branch, if any, the tree actually
+     * traverses.
+     */
+    @Test
+    void depthRec2003PlanDepthAtLimitIsAcceptedWithAnUnselectedTree() {
+        int depth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH;
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.nestedConditionalPlan("wf", depth);
+        RecordedExecutionNodeV2 unselected =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.conditionalStep("c0", true),
+                        Optional.empty(),
+                        List.of());
+
+        WorkflowRecordingV2 recording =
+                RecordingV2Fixtures.recordingWith(
+                        "wf",
+                        plan,
+                        WorkflowStatus.COMPLETED,
+                        List.of(unselected),
+                        Optional.empty());
+
+        assertThat(recording.nodes()).hasSize(1);
+    }
+
+    /**
+     * DEPTH-REC2-004: a plan nested one level past the maximum depth is rejected even though the
+     * recorded tree never selects into it - the plan's own excessive depth, hidden entirely in a
+     * branch nothing selected, is still caught by the independent whole-plan depth walk.
+     */
+    @Test
+    void depthRec2004PlanDepthOneOverLimitIsRejectedEvenWithAnUnselectedTree() {
+        int depth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH + 1;
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.nestedConditionalPlan("wf", depth);
+        RecordedExecutionNodeV2 unselected =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.conditionalStep("c0", true),
+                        Optional.empty(),
+                        List.of());
+
+        assertThatThrownBy(
+                        () ->
+                                RecordingV2Fixtures.recordingWith(
+                                        "wf",
+                                        plan,
+                                        WorkflowStatus.COMPLETED,
+                                        List.of(unselected),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("recorded plan exceeds the maximum supported nesting depth");
+    }
+
+    /**
+     * DEPTH-REC2-005: excessive depth is rejected by direct, in-memory {@code new
+     * WorkflowRecordingV2(...)} construction - not only through the {@link RecordingV2Fixtures}
+     * test helper - confirming the guard applies on the raw constructor call itself.
+     */
+    @Test
+    void depthRec2005DirectConstructionOneOverLimitIsRejected() {
+        int depth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH + 1;
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.nestedConditionalPlan("wf", depth);
+        List<RecordedExecutionNodeV2> nodes =
+                List.of(RecordingV2Fixtures.nestedConditionalExecutionNode("c0", depth));
+
+        assertThatThrownBy(
+                        () ->
+                                new WorkflowRecordingV2(
+                                        RecordingSchemaVersionV2.V2,
+                                        new RecordingId("recording-1"),
+                                        Instant.parse("2026-01-01T00:00:00Z"),
+                                        new WorkflowId("wf"),
+                                        WorkflowStatus.COMPLETED,
+                                        plan,
+                                        nodes,
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

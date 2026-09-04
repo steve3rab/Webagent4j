@@ -269,8 +269,9 @@ final class RecordingV2Fixtures {
 
     /**
      * A single top-level CONDITIONAL plan node nested {@code depth} levels deep via its own THEN
-     * branch - its ELSE branch is always structurally present but empty at every level, so only the
-     * THEN chain carries any depth.
+     * branch (a top-level conditional is depth 1, one nested in either branch is depth 2, matching
+     * {@link RecordingV2PlanTreeValidator}'s own semantics) - its ELSE branch is always
+     * structurally present but empty at every level, so only the THEN chain carries any depth.
      */
     static WorkflowExecutionPlan nestedConditionalPlan(String workflowId, int depth) {
         return new WorkflowExecutionPlan(
