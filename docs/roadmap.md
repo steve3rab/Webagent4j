@@ -76,6 +76,12 @@ too), and browser navigation has no equivalent transport-level seam at all - see
 See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this release.
 `1.1.x` (final release: `1.1.1`) is the previous stable line.
 
+## 1.3: active development
+
+`develop` is now `1.3.0-SNAPSHOT`, the active line for the next release; no `1.3.0` feature has been
+decided or implemented yet. `1.2.0` remains the current stable line (`1.2.x`) until a future release
+supersedes it.
+
 ## Post-1.2 candidates
 
 Full SSRF isolation, `robots.txt` support, adversarial robustness qualification for Firefox and

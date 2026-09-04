@@ -1,6 +1,6 @@
 # WebAgent4J
 
-[![CI](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml)
+[![CI](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml/badge.svg)](https://github.com/steve3rab/Webagent4j/actions/workflows/ci.yml)
 [![Java 21+](https://img.shields.io/badge/Java-21%2B-ED8B00.svg?logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
