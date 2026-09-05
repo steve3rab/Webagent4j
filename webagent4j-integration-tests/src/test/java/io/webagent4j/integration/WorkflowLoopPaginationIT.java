@@ -39,6 +39,8 @@ import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowInputs;
 import io.webagent4j.workflow.WorkflowPlanner;
 import io.webagent4j.workflow.WorkflowResult;
+import io.webagent4j.workflow.WorkflowStepResult;
+import io.webagent4j.workflow.WorkflowStepStatus;
 import io.webagent4j.workflow.WorkflowStepType;
 import io.webagent4j.workflow.WorkflowSteps;
 import io.webagent4j.workflow.WorkflowVariable;
@@ -289,12 +291,16 @@ class WorkflowLoopPaginationIT {
                     .isEqualTo(WorkflowFailureType.ACTION_FAILED);
             assertThat(result.failure().orElseThrow().actionFailureType())
                     .contains(ActionFailureType.TARGET_CHANGED);
-            // Nothing after the failing click ever ran - no read, no further iteration.
-            assertThat(
-                            result.steps().stream()
-                                    .filter(s -> s.stepId().value().startsWith("read-current-page"))
-                                    .count())
-                    .isZero();
+            // Nothing after the failing click ever ran: the read step is still present in the
+            // flat steps list (WorkflowEngine records a NOT_RUN placeholder for every declared
+            // step that follows a failure, exactly like it does outside a loop), but its status
+            // proves it was never actually executed - no read, no further iteration.
+            WorkflowStepResult readStep =
+                    result.steps().stream()
+                            .filter(s -> s.stepId().value().startsWith("read-current-page"))
+                            .findFirst()
+                            .orElseThrow();
+            assertThat(readStep.status()).isEqualTo(WorkflowStepStatus.NOT_RUN);
             // Two independently-counted oracles, mirroring ActionPolicyTargetIdentityIT's own
             // rationale: the original "next" button and its replacement fire to distinct counter
             // names, so a click that lands on either one is separately observable - never
