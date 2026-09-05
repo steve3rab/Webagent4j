@@ -17,6 +17,7 @@ import io.webagent4j.recording.RecordingSchemaVersionV2;
 import io.webagent4j.recording.WorkflowRecorderV2;
 import io.webagent4j.recording.WorkflowRecordingV2;
 import io.webagent4j.workflow.IWorkflowCondition;
+import io.webagent4j.workflow.IWorkflowStep;
 import io.webagent4j.workflow.IWorkflowVariables;
 import io.webagent4j.workflow.Workflow;
 import io.webagent4j.workflow.WorkflowBranchSelection;
@@ -281,6 +282,324 @@ class WorkflowLoopReplayTest {
 
         IReplayOutcome outcome = WorkflowReplayer.replay(hostileRecording, workflow);
         assertThat(outcome).isInstanceOf(IReplayOutcome.Rejected.class);
+    }
+
+    // ---- RPL-LOOP-BOUND: nested loops must be resolved structurally, never by runtime ID -----
+
+    /** True, false, true, false, ... - exactly one authorized iteration per continuation cycle. */
+    private static final class AlternatingCondition implements IWorkflowCondition {
+        private final AtomicInteger evaluations = new AtomicInteger();
+
+        @Override
+        public boolean evaluate(IWorkflowVariables variables) {
+            return evaluations.getAndIncrement() % 2 == 0;
+        }
+
+        @Override
+        public String describe() {
+            return "alternating";
+        }
+
+        @Override
+        public Set<WorkflowVariable<?>> referencedVariables() {
+            return Set.of();
+        }
+    }
+
+    private static Workflow nestedLoopWorkflow(
+            String workflowId,
+            String outerId,
+            int outerMax,
+            IWorkflowCondition outerCondition,
+            String innerId,
+            int innerMax,
+            IWorkflowCondition innerCondition,
+            String bodyId) {
+        return Workflow.builder(workflowId)
+                .step(
+                        WorkflowSteps.loop(
+                                outerId,
+                                outerCondition,
+                                outerMax,
+                                List.of(
+                                        WorkflowSteps.loop(
+                                                innerId,
+                                                innerCondition,
+                                                innerMax,
+                                                List.of(
+                                                        WorkflowSteps.action(
+                                                                bodyId,
+                                                                vars ->
+                                                                        new SentinelPreparedAction(
+                                                                                "ok")))))))
+                .build();
+    }
+
+    @Test
+    void bound003NestedLoopWithinBoundIsAccepted() {
+        // Each of 2 outer iterations runs its own inner loop exactly once (AlternatingCondition's
+        // shared, cumulative counter still produces exactly one authorized inner iteration per
+        // outer attempt: true, false, true, false), well within innerMax=2.
+        Workflow workflow =
+                nestedLoopWorkflow(
+                        "wf-nested-within-bound",
+                        "outer",
+                        3,
+                        new CountingUntilFalseCondition(2, new AtomicInteger()),
+                        "inner",
+                        2,
+                        new AlternatingCondition(),
+                        "body");
+        WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+        WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());
+        assertThat(execution.result().completed()).isTrue();
+        WorkflowRecordingV2 recording =
+                recorder.record(new RecordingId("rec-nested"), Instant.now(), plan, execution);
+
+        assertThat(ReplayValidator.validate(recording, workflow)).isEmpty();
+        assertThat(WorkflowReplayer.replay(recording, workflow))
+                .isInstanceOf(IReplayOutcome.Replayed.class);
+    }
+
+    private static RecordedWorkflowStepV2 loopWrapperStep(String stepId) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.LOOP,
+                WorkflowStepStatus.SUCCEEDED,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    private static RecordedWorkflowStepV2 iterationDecisionStep(String stepId, boolean outcome) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.LOOP_ITERATION,
+                WorkflowStepStatus.SUCCEEDED,
+                Optional.of(new RecordedCondition(outcome, "d")),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    private static RecordedExecutionNodeV2 succeededBodyLeaf(String stepId) {
+        RecordedWorkflowStepV2 bodyStep =
+                new RecordedWorkflowStepV2(
+                        new WorkflowStepId(stepId),
+                        WorkflowStepType.ACTION,
+                        WorkflowStepStatus.SUCCEEDED,
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(
+                                new RecordedAction(
+                                        ActionId.create(),
+                                        ActionType.CLICK,
+                                        ActionStatus.SUCCESS,
+                                        ActionExecutionMode.REAL)));
+        return new RecordedExecutionNodeV2(bodyStep, Optional.empty(), List.of());
+    }
+
+    /**
+     * Builds {@code authorizedCount} fabricated {@code THEN} iterations - each carrying one {@code
+     * childNode} as its own single body child - plus one final {@code NONE} stop, all under {@code
+     * loopId}'s own runtime iteration qualification.
+     */
+    private static List<RecordedExecutionNodeV2> fabricatedIterations(
+            int authorizedCount,
+            String loopId,
+            java.util.function.IntFunction<RecordedExecutionNodeV2> childAt) {
+        List<RecordedExecutionNodeV2> iterations = new ArrayList<>();
+        for (int i = 0; i < authorizedCount; i++) {
+            iterations.add(
+                    new RecordedExecutionNodeV2(
+                            iterationDecisionStep(loopId + "#" + i, true),
+                            Optional.of(WorkflowBranchSelection.THEN),
+                            List.of(childAt.apply(i))));
+        }
+        iterations.add(
+                new RecordedExecutionNodeV2(
+                        iterationDecisionStep(loopId + "#" + authorizedCount, false),
+                        Optional.of(WorkflowBranchSelection.NONE),
+                        List.of()));
+        return iterations;
+    }
+
+    private static WorkflowRecordingV2 recordingOf(
+            WorkflowExecutionPlan plan, RecordedExecutionNodeV2 wrapper) {
+        return new WorkflowRecordingV2(
+                RecordingSchemaVersionV2.V2,
+                new RecordingId("hostile-nested"),
+                Instant.now(),
+                plan.workflowId(),
+                WorkflowStatus.COMPLETED,
+                plan,
+                List.of(wrapper),
+                Optional.empty());
+    }
+
+    @Test
+    void bound004And006InnerLoopExceedingItsOwnBoundIsRejectedEvenWithOuterWithinBound() {
+        // outerMax=5, innerMax=2 - a single, valid outer iteration whose inner loop fabricates 3
+        // authorized ("THEN") iterations, one more than innerMax permits.
+        Workflow workflow =
+                nestedLoopWorkflow(
+                        "wf-inner-exceeds",
+                        "outer",
+                        5,
+                        new CountingUntilFalseCondition(100, new AtomicInteger()),
+                        "inner",
+                        2,
+                        new CountingUntilFalseCondition(100, new AtomicInteger()),
+                        "body");
+        WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+
+        List<RecordedExecutionNodeV2> innerIterations =
+                fabricatedIterations(3, "inner#0", i -> succeededBodyLeaf("body#0#" + i));
+        RecordedExecutionNodeV2 innerWrapper =
+                new RecordedExecutionNodeV2(
+                        loopWrapperStep("inner#0"), Optional.empty(), innerIterations);
+        List<RecordedExecutionNodeV2> outerIterations =
+                fabricatedIterations(1, "outer", i -> innerWrapper);
+        RecordedExecutionNodeV2 outerWrapper =
+                new RecordedExecutionNodeV2(
+                        loopWrapperStep("outer"), Optional.empty(), outerIterations);
+
+        WorkflowRecordingV2 hostileRecording = recordingOf(plan, outerWrapper);
+
+        Optional<ReplayValidationFailure> validation =
+                ReplayValidator.validate(hostileRecording, workflow);
+        assertThat(validation).isPresent();
+        assertThat(validation.get().type())
+                .isEqualTo(ReplayFailureType.LOOP_ITERATION_COUNT_EXCEEDS_BOUND);
+        assertThat(WorkflowReplayer.replay(hostileRecording, workflow))
+                .isInstanceOf(IReplayOutcome.Rejected.class);
+    }
+
+    @Test
+    void bound007OuterLoopExceedingItsOwnBoundIsRejectedEvenWithInnerWithinBound() {
+        // outerMax=2, innerMax=5 - 3 fabricated authorized outer iterations (one more than
+        // outerMax permits), each with a genuinely-valid single inner iteration.
+        Workflow workflow =
+                nestedLoopWorkflow(
+                        "wf-outer-exceeds",
+                        "outer",
+                        2,
+                        new CountingUntilFalseCondition(100, new AtomicInteger()),
+                        "inner",
+                        5,
+                        new CountingUntilFalseCondition(100, new AtomicInteger()),
+                        "body");
+        WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+
+        java.util.function.IntFunction<RecordedExecutionNodeV2> innerWrapperAt =
+                outerIndex -> {
+                    List<RecordedExecutionNodeV2> innerIterations =
+                            fabricatedIterations(
+                                    1,
+                                    "inner#" + outerIndex,
+                                    i -> succeededBodyLeaf("body#" + outerIndex + "#" + i));
+                    return new RecordedExecutionNodeV2(
+                            loopWrapperStep("inner#" + outerIndex),
+                            Optional.empty(),
+                            innerIterations);
+                };
+        List<RecordedExecutionNodeV2> outerIterations =
+                fabricatedIterations(3, "outer", innerWrapperAt);
+        RecordedExecutionNodeV2 outerWrapper =
+                new RecordedExecutionNodeV2(
+                        loopWrapperStep("outer"), Optional.empty(), outerIterations);
+
+        WorkflowRecordingV2 hostileRecording = recordingOf(plan, outerWrapper);
+
+        Optional<ReplayValidationFailure> validation =
+                ReplayValidator.validate(hostileRecording, workflow);
+        assertThat(validation).isPresent();
+        assertThat(validation.get().type())
+                .isEqualTo(ReplayFailureType.LOOP_ITERATION_COUNT_EXCEEDS_BOUND);
+        assertThat(WorkflowReplayer.replay(hostileRecording, workflow))
+                .isInstanceOf(IReplayOutcome.Rejected.class);
+    }
+
+    @Test
+    void bound005TheSameNestedLoopDeclarationAcrossMultipleOuterIterationsIsValidatedEachTime() {
+        // 3 outer iterations, each running its own inner loop exactly once - every runtime
+        // occurrence of "inner" (inner#0, inner#1, inner#2) must be checked against the identical
+        // live bound (innerMax=2), never confused with one another.
+        Workflow workflow =
+                nestedLoopWorkflow(
+                        "wf-repeated-inner",
+                        "outer",
+                        3,
+                        new CountingUntilFalseCondition(3, new AtomicInteger()),
+                        "inner",
+                        2,
+                        new AlternatingCondition(),
+                        "body");
+        WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+        WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());
+        assertThat(execution.result().completed()).isTrue();
+        WorkflowRecordingV2 recording =
+                recorder.record(
+                        new RecordingId("rec-repeated-inner"), Instant.now(), plan, execution);
+
+        assertThat(ReplayValidator.validate(recording, workflow)).isEmpty();
+    }
+
+    @Test
+    void bound009ALiteralHashDigitSequenceInADeclaredIdIsResolvedCorrectlyNeverStripped() {
+        // The declared loop ID is itself "inner#0" - if the fix ever stripped a trailing
+        // "#<digits>"
+        // heuristically, this declared ID would be corrupted into "inner" and fail to resolve.
+        Workflow workflow =
+                nestedLoopWorkflow(
+                        "wf-literal-hash-id",
+                        "outer",
+                        2,
+                        new CountingUntilFalseCondition(1, new AtomicInteger()),
+                        "inner#0",
+                        2,
+                        new AlternatingCondition(),
+                        "body");
+        WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+        WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());
+        assertThat(execution.result().completed()).isTrue();
+        WorkflowRecordingV2 recording =
+                recorder.record(
+                        new RecordingId("rec-literal-hash"), Instant.now(), plan, execution);
+
+        assertThat(ReplayValidator.validate(recording, workflow)).isEmpty();
+    }
+
+    private static IWorkflowStep boundedLoop(String stepId, List<IWorkflowStep> body) {
+        return WorkflowSteps.loop(
+                stepId, new CountingUntilFalseCondition(1, new AtomicInteger()), 2, body);
+    }
+
+    @Test
+    void bound010ATriplyNestedLoopResolvesTheInnermostBoundStructurally() {
+        IWorkflowStep innerLoop =
+                boundedLoop(
+                        "inner",
+                        List.of(
+                                WorkflowSteps.action(
+                                        "body", vars -> new SentinelPreparedAction("ok"))));
+        IWorkflowStep middleLoop = boundedLoop("middle", List.of(innerLoop));
+        IWorkflowStep outerLoop = boundedLoop("outer", List.of(middleLoop));
+        Workflow workflow = Workflow.builder("wf-triple-nested").step(outerLoop).build();
+        WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+        WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());
+        assertThat(execution.result().completed()).isTrue();
+        WorkflowRecordingV2 recording =
+                recorder.record(
+                        new RecordingId("rec-triple-nested"), Instant.now(), plan, execution);
+
+        // Runtime IDs at the deepest level compose like "inner#0#0#0" - resolved structurally
+        // against the live "inner" declaration, never by parsing that composed string.
+        assertThat(ReplayValidator.validate(recording, workflow)).isEmpty();
+        assertThat(WorkflowReplayer.replay(recording, workflow))
+                .isInstanceOf(IReplayOutcome.Replayed.class);
     }
 
     @Test
