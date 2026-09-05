@@ -67,11 +67,11 @@ Expected absence is represented by a typed result, typed exception, or documente
 
 Only renderings explicitly documented as safe/structural may be logged as such. General record `toString()` output is not automatically a logging boundary. Some structured failures retain a raw `Throwable` for advanced in-process diagnosis; callers must treat it as sensitive.
 
-Native Java serialization is not a supported persistence or compatibility format. Use stable structured fields and, for workflow recordings, the documented JSON schema V1.
+Native Java serialization is not a supported persistence or compatibility format. Use stable structured fields and, for workflow recordings, one of the documented JSON schemas (V1 or V2 - see [Recording](recording.md)).
 
 ## Recording compatibility
 
-Recording JSON compatibility is versioned separately from Java binary compatibility. Schema V1 is strict: unknown schema versions do not fall back, duplicate/unknown fields and impossible state combinations are rejected, and enums are encoded by name. A future incompatible shape requires a new schema version and migration policy; it must not silently reinterpret V1.
+Recording JSON compatibility is versioned separately from Java binary compatibility, and separately per schema (V1 and V2 each own a disjoint schema-version number space, so a payload from one can never be silently accepted as the other). Each schema is strict: unknown schema versions do not fall back, duplicate/unknown fields and impossible state combinations are rejected, and enums are encoded by name. A future incompatible shape requires a new schema version and migration policy; it must not silently reinterpret an existing one. There is no implicit or automatic conversion between V1 and V2.
 
 ## Resource ownership and thread safety
 

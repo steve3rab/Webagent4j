@@ -100,11 +100,12 @@ WebAgent4J is a deterministic semantic automation foundation, not a universal vi
 
 ## Recording
 
-- A recording is data, not an executable program.
-- No automatic live replay, browser/action recreation, retry inference, storage backend, screenshot/DOM/HAR/video capture, or alternate serialization format.
-- Only JSON schema V1 is supported. Unknown versions fail explicitly.
-- Caller/action metadata identifiers are persisted verbatim and are not secret channels.
-- The Structured Execution Tree ([workflow.md#execution-tree](workflow.md#execution-tree)) is a separate, runtime-only feature, not part of Recording V1: it is never serialized into a recording, and there is no Recording V2, tree JSON schema, tree replay, tree persistence, or tree diff/import in this version.
+- A recording is data, not an executable program, in both schema versions.
+- No automatic *real side-effect* live replay (browser/action recreation against a real backend), retry inference, storage backend, screenshot/DOM/HAR/video capture, or alternate serialization format, in either schema version.
+- Two JSON schema versions are supported (V1 and V2), each with its own disjoint version-number space; an unknown version, or a payload's version number belonging to the other schema's space, fails explicitly rather than falling back. There is no implicit or automatic V1-to-V2 migration - see [recording.md#recording-v2](recording.md#recording-v2).
+- Caller/action metadata identifiers are persisted verbatim and are not secret channels, in both schema versions.
+- Recording V2 ([recording.md#recording-v2](recording.md#recording-v2)) captures the executed workflow's `WorkflowExecutionPlan` and a tree mirroring `WorkflowExecutionTree`, with a typed `WorkflowPlanOutput` (name, type, secret classification) per published output instead of V1's bare output-variable name. There is currently no published JSON Schema file for V2 (unlike V1's); the Java model and codec are the sole authoritative description.
+- Deterministic Replay ([recording.md#deterministic-replay](recording.md#deterministic-replay)) validates a Recording V2 trace against a live `Workflow` and reconstructs its recorded decision path - it never evaluates a condition, never invokes an action factory, never resolves or verifies a backend target, and never performs any side effect. Eligibility rests on two guarantees, not plan equality alone: the recording's own internal plan/tree coherence, guaranteed unconditionally at construction (see [recording.md#recording-v2](recording.md#recording-v2)), and the recorded plan matching the live workflow's current plan, which is what `ReplayValidator` itself checks. Only a `COMPLETED` recording can be replayed in this scope; replaying a `FAILED` trace is not yet defined. Real governed-target side-effect replay (actually re-invoking an action, under this codebase's existing exact-target-revalidation and interruption/deadline guarantees) is not implemented - this is a deliberate, documented 1.3 scope decision, not an oversight.
 
 ## Plugins
 

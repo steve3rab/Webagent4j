@@ -8,6 +8,44 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+### Added
+
+- Recording V2 and Deterministic Replay: `WorkflowRecordingV2` captures a tree-shaped workflow
+  execution - a `WorkflowExecutionPlan` plus a tree mirroring `WorkflowExecutionTree`, so a
+  branching execution's actual decision path is explicit - alongside a typed `WorkflowPlanOutput`
+  (name, type, secret classification) per published output instead of Recording V1's bare output
+  variable name. `WorkflowRecorderV2` captures a real `WorkflowExecution`
+  (`WorkflowEngine#executeWithTree`) into this format; `JsonWorkflowRecordingV2Codec` encodes and
+  decodes it with the same canonical-JSON, fail-closed, resource-bounded discipline
+  `JsonWorkflowRecordingCodec` established for V1, using a disjoint schema-version number space
+  (`RecordingSchemaVersionV2`) so a V1-shaped payload can never be silently accepted as a V2 one or
+  vice versa. There is no implicit or automatic V1-to-V2 conversion anywhere in this module.
+  `WorkflowRecordingV2`'s own construction unconditionally validates that its execution-node tree is
+  a structurally authorized path through its own plan - the same step IDs, types, and declared
+  outputs at the same positions, and every recorded branch selection corresponding exclusively to
+  that plan node's matching branch - on every construction path (direct construction,
+  `WorkflowRecorderV2`, and JSON decode alike), so a tree inconsistent with its own plan can never
+  exist. A `CONDITIONAL` node's captured decision is validated the same way: its condition outcome
+  and branch selection must be captured together or not at all, a `SUCCEEDED` conditional always
+  has both, and a present outcome must agree with the selection it implies (`true` only ever selects
+  `THEN`; `false` only ever selects the plan's own non-`THEN` branch) - so a recording can never
+  claim a condition succeeded without recording what it actually decided. Both the plan and the
+  execution tree are independently bounded to the same maximum conditional-nesting depth, checked
+  before any further recursive descent, at construction, encode, decode, and replay traversal alike,
+  using one single-source-of-truth constant.
+  New `io.webagent4j.recording.replay` package: `ReplayValidator` checks a `WorkflowRecordingV2`
+  against a live `Workflow`'s current structural plan before any replay is attempted - relying on
+  the recording's own already-guaranteed internal coherence as a precondition - and
+  `WorkflowReplayer` reconstructs the recorded decision trace as a flattened `ReplayedWorkflow` -
+  structural/decision replay only, in this initial implementation: it never evaluates a condition,
+  never invokes an action factory, never resolves or verifies a backend target, and never performs
+  any side effect. The recorded branch decision is the one replayed - a condition is never
+  re-evaluated, and there is no hidden retry, second attempt, or fallback to a different branch or
+  target. Only a `COMPLETED` recording can be replayed; a `FAILED` trace and real governed-target
+  side-effect replay are out of scope for this initial implementation - a deliberate, documented
+  scope decision, not an oversight. See [Recording](docs/recording.md#recording-v2) and
+  [Limitations](docs/limitations.md#recording).
+
 ## [1.2.0] - 2026-09-04
 
 ### Added
