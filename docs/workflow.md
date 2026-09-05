@@ -81,6 +81,40 @@ continue with the step that structurally follows the conditional
 - **Result shape:** a conditional step's own `WorkflowStepResult` carries the branch decision in its `condition()` field (its outcome is never used to derive `SKIPPED` for this step type - only `ifElse`/`ifThen`'s own missing-else no-op path and `SUCCEEDED`/`FAILED` apply) and publishes no output variable or action summary of its own. `WorkflowResult.steps()` stays one flat, execution-ordered list: the conditional step's own result is immediately followed by whichever single branch's steps actually ran, in order - the branch that did not run contributes nothing to the list, at any nesting depth.
 - **Conditions stay pure:** a branch condition is the same `IWorkflowCondition` used for step guards elsewhere - deterministic and side-effect-free. This feature does not let a condition perform a side-effecting action.
 
+## Bounded loops
+
+`WorkflowSteps.loop(id, continueCondition, maxIterations, body)` adds one deterministic, explicitly-bounded repetition control-flow step - never a disguised repeat-until-success mechanism:
+
+```text
+reach loop step
+      |
+      v
+continuation condition evaluated exactly once  <---------------------+
+      |                                                               |
+   true? --- no --> stop (SUCCEEDED, no-op for this attempt)          |
+      |                                                               |
+     yes                                                              |
+      |                                                               |
+iteration count >= maxIterations? --- yes --> LOOP_ITERATION_LIMIT_EXCEEDED (fail closed)
+      |
+     no
+      |
+      v
+   body runs to completion ---------------------------------------->--+
+```
+
+- **Mandatory, framework-bounded `maxIterations`:** every loop declares a positive iteration bound, checked against a framework-wide maximum (`Workflow.MAX_LOOP_ITERATIONS`) at build time. There is no unbounded or "run until the condition says stop, however long that takes" mode.
+- **Evaluate-once per iteration attempt:** the continuation condition is evaluated exactly once per attempt, never re-evaluated while that iteration's body runs, and never evaluated speculatively for a future iteration.
+- **Fail-closed at the bound:** if the condition still evaluates `true` once `maxIterations` iterations have already run, the loop fails with `LOOP_ITERATION_LIMIT_EXCEEDED` rather than silently stopping - reaching the bound while continuation is still requested is a workflow failure, never a quietly accepted success.
+- **No hidden retry:** a body failure stops the whole workflow immediately, exactly like any other failure - the failed step is never retried, the condition is never re-checked, and no further iteration is ever attempted.
+- **Zero side effects from an iteration that never started:** exactly mirroring branching's own non-selected-branch guarantee, an iteration the engine never reached because the condition was false, the bound was hit, or execution was interrupted first contributes zero step executions, zero action-factory calls, and zero backend invocations - never a placeholder up to `maxIterations`.
+- **Interruption:** identical two boundaries to a conditional step, applied per iteration attempt - before the condition is evaluated, and after the decision is captured but before the body starts - each guarded by the executing thread's interrupt status and failing the check closed with `LOOP_STEP_INTERRUPTED` if observed.
+- **Combined control-flow nesting depth:** a loop nested inside a conditional branch, or a conditional nested inside a loop body, all count toward the exact same shared nesting-depth bound (`Workflow.MAX_CONTROL_FLOW_NESTING_DEPTH`, equal in value to the existing conditional-only limit) - never two independently-tracked limits.
+- **Cumulative executed-node budget:** beyond any single loop's own `maxIterations`, `WorkflowEngine` enforces a cumulative budget (`MAX_EXECUTED_WORKFLOW_NODES`) across the whole execution, failing closed with `EXECUTED_NODE_BUDGET_EXCEEDED` - this is what stops a nested-loop structure that is locally within every individual bound yet combinatorially explosive once multiplied together (for example, an outer loop of 100 wrapping an inner loop of 100).
+- **Loop body outputs are never definitely available afterward:** a step inside `body` that declares an output is validated for structural collisions exactly like any other step, and its value remains readable after the loop through the ordinary `WorkflowOutputs`/`WorkflowResult#output(...)` lookup - but it is never treated as *definitely* available to a later step's own condition, since the loop may run zero iterations. This is the identical guard-aware definite-assignment rule already documented above for a `when(...)`-guarded producer, applied to a loop body as a whole rather than introducing a second mechanism.
+- **Result shape:** a loop produces one wrapper `WorkflowStepResult` (`WorkflowStepType.LOOP`, always `SUCCEEDED` when reached - it never itself reports a nested failure, exactly like a conditional's own decision node) followed by one `WorkflowStepType.LOOP_ITERATION` result per continuation check actually performed. Each `LOOP_ITERATION` is structurally identical to an `ifThen` decision: a `true` outcome selects `WorkflowBranchSelection.THEN` and carries that iteration's own body steps as children; a `false` outcome selects `NONE` as a no-op stop with zero children. `WorkflowResult.steps()` stays one flat, execution-ordered list exactly as before.
+- **Conditions stay pure:** the continuation condition is the same `IWorkflowCondition` used everywhere else - deterministic and side-effect-free. A loop does not let a condition perform a side-effecting action, and nothing about looping changes what a condition is allowed to do.
+
 ## Execution tree
 
 `WorkflowEngine#executeWithTree(workflow, inputs)` runs the exact same single execution as `execute(workflow, inputs)`, additionally returning a `WorkflowExecutionTree` - a hierarchical view of the control-flow path that actually executed, alongside the existing flat `WorkflowResult` (bundled together as `WorkflowExecution`):
@@ -111,6 +145,8 @@ This is a structural companion to `WorkflowResult.steps()`, not a replacement fo
 
 **Not a new recording format:** Recording V1 depends only on `WorkflowResult.steps()`, which is completely unaffected. The execution tree is runtime-only in this version - it is never serialized into a `WorkflowRecording`, and calling `executeWithTree` and recording the resulting `WorkflowResult` produces a byte-identical recording to calling `execute` directly.
 
+**Loops:** a `WorkflowStepType.LOOP` node's children are its own `LOOP_ITERATION` nodes, one per continuation check actually performed - never a branch selection of its own, since it represents no single decision. Each `LOOP_ITERATION` node follows the identical shape a `CONDITIONAL` node already has (see "Bounded loops" above): `THEN` with that iteration's own body as children, or `NONE` with zero children for the final, non-continuing check. An iteration that never started (the bound was hit, or execution stopped first) contributes nothing - never a placeholder up to `maxIterations`.
+
 ## Execution plan
 
 `WorkflowPlanner.plan(workflow)` builds a `WorkflowExecutionPlan` - a deterministic, backend-neutral description of what a `Workflow` is structurally capable of executing, entirely from its already-validated definition:
@@ -138,7 +174,9 @@ Workflow
 
 **No invented outcomes:** the plan never exposes a policy decision, a target-resolution result, or any other runtime-dependent verdict - there is no such field on `WorkflowPlanNode` at all, since planning cannot know what a real execution's policy evaluation or target verification would decide.
 
-**Resource bounds:** a plan's node count is proportional to the number of steps the definition declares - nested conditionals are represented as a tree, never expanded into every combination of branch outcomes as an independent list. Nesting is bounded by the same `Workflow.MAX_CONDITIONAL_NESTING_DEPTH` every `Workflow` is already bounded by, so building a plan for a definition at the maximum nesting depth never risks a `StackOverflowError`.
+**Resource bounds:** a plan's node count is proportional to the number of steps the definition declares - nested conditionals are represented as a tree, never expanded into every combination of branch outcomes as an independent list. Nesting is bounded by the same `Workflow.MAX_CONTROL_FLOW_NESTING_DEPTH` every `Workflow` is already bounded by, so building a plan for a definition at the maximum nesting depth never risks a `StackOverflowError`.
+
+**Loops:** a `LOOP` plan node carries exactly one `THEN` branch, describing `body` structurally once - never unrolled into `maxIterations` copies, regardless of how large the declared bound is. Planning stays `O(definition nodes)` even for a deeply nested loop; the bound itself is not part of the plan (see "Bounded loops" above for why), only the body's own structure.
 
 **Determinism:** two plans built from the same `Workflow` are always logically equal - no random UUID, timestamp, or hash-order-dependent iteration is ever part of a plan's shape.
 
@@ -168,7 +206,7 @@ WorkflowValidationReport
 
 **Definite assignment, exactly as build-time:** the report distinguishes a *declared* output from one that is *definitely available* - guaranteed to have been published by the time execution reaches whatever structurally follows its producer. A guarded (`when(...)`) producer's output is declared but never definite. An `ifElse` output is definite only when both branches unconditionally guarantee it (an intersection, never a union); an `ifThen` output is never definite afterward, since its `thenSteps` may not have run at all. These are the identical rules [Definition validation](#definition-validation) and [Branching](#branching) already document - `validate()` does not reinterpret them.
 
-**Structured diagnostics:** each `WorkflowValidationDiagnostic` carries a stable `WorkflowValidationCode` (`EMPTY_STEP_LIST`, `DUPLICATE_INPUT_DECLARATION`, `DUPLICATE_STEP_ID`, `CONDITIONAL_DEPTH_EXCEEDED`, `CONDITION_METADATA_INVALID`, `OUTPUT_NOT_DEFINITELY_AVAILABLE`, `OUTPUT_COLLISION`, `OUTPUT_TYPE_MISMATCH`, `OUTPUT_SECRET_CLASSIFICATION_MISMATCH`), a `WorkflowValidationSeverity` (`ERROR` only in this version - every diagnostic corresponds to an invariant `build()` already enforces as fail-closed, so there is no separate warning/informational tier), the step ID and/or variable name it concerns when applicable, and a safe message. Diagnostic order is deterministic: definition-traversal order, never `HashMap`/`HashSet` iteration order.
+**Structured diagnostics:** each `WorkflowValidationDiagnostic` carries a stable `WorkflowValidationCode` (`EMPTY_STEP_LIST`, `DUPLICATE_INPUT_DECLARATION`, `DUPLICATE_STEP_ID`, `CONDITIONAL_DEPTH_EXCEEDED`, `CONDITION_METADATA_INVALID`, `OUTPUT_NOT_DEFINITELY_AVAILABLE`, `OUTPUT_COLLISION`, `OUTPUT_TYPE_MISMATCH`, `OUTPUT_SECRET_CLASSIFICATION_MISMATCH`, `LOOP_INVALID_MAX_ITERATIONS`, `LOOP_NESTING_DEPTH_EXCEEDED`), a `WorkflowValidationSeverity` (`ERROR` only in this version - every diagnostic corresponds to an invariant `build()` already enforces as fail-closed, so there is no separate warning/informational tier), the step ID and/or variable name it concerns when applicable, and a safe message. Diagnostic order is deterministic: definition-traversal order, never `HashMap`/`HashSet` iteration order.
 
 **Resource bounds:** diagnostics are capped at `MAX_VALIDATION_DIAGNOSTICS` (256); once reached, `WorkflowValidationReport#diagnosticsTruncated()` is set and further diagnostics are discarded rather than retained without bound. `build()` never accumulates more than one diagnostic, since it throws on the first.
 
@@ -204,4 +242,4 @@ Workflow definitions are immutable/reusable. Each execution has isolated session
 
 ## Deliberate exclusions
 
-No loops, recursion (over data - nested `ifElse`/`ifThen` structure is not recursion), parallel branches, DAG scheduler, transactions/sagas, persistence/checkpoints, timers/scheduling, external triggers, workflow-wide cancellation/timeout, YAML/JSON workflow DSL, or hidden retry. Deterministic if/else branching (`ifElse`/`ifThen`) is supported; workflow variables, `switch`/`case`, loops, and condition-driven exception handling are not.
+No recursion (over data - nested `ifElse`/`ifThen`/`loop` structure is not recursion), parallel branches or parallel iterations, DAG scheduler, transactions/sagas, persistence/checkpoints, timers/scheduling, external triggers, workflow-wide cancellation/timeout, YAML/JSON workflow DSL, arbitrary mutable inter-iteration loop state, or hidden retry. Deterministic if/else branching (`ifElse`/`ifThen`) and bounded, explicitly-limited repetition (`loop`, see "Bounded loops" above) are supported; `switch`/`case`, unbounded loops, and condition-driven exception handling are not.
