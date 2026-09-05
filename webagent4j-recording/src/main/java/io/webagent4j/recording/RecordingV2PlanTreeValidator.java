@@ -87,7 +87,8 @@ final class RecordingV2PlanTreeValidator {
     private static void validatePlanDepth(List<WorkflowPlanNode> planNodes, int depth) {
         for (WorkflowPlanNode planNode : planNodes) {
             if (planNode.stepType() != WorkflowStepType.CONDITIONAL
-                    && planNode.stepType() != WorkflowStepType.LOOP) {
+                    && planNode.stepType() != WorkflowStepType.LOOP
+                    && planNode.stepType() != WorkflowStepType.PARALLEL) {
                 continue;
             }
             int childDepth = depth + 1;
@@ -139,6 +140,10 @@ final class RecordingV2PlanTreeValidator {
         validateOutput(step.output(), planNode.declaredOutput());
         if (planNode.stepType() == WorkflowStepType.LOOP) {
             validateLoopNode(node, planNode, depth, idSuffix);
+            return;
+        }
+        if (planNode.stepType() == WorkflowStepType.PARALLEL) {
+            validateParallelNode(node, planNode, depth, idSuffix);
             return;
         }
         if (planNode.stepType() != WorkflowStepType.CONDITIONAL) {
@@ -327,6 +332,105 @@ final class RecordingV2PlanTreeValidator {
         return step.status() == WorkflowStepStatus.FAILED
                 && step.failure().isPresent()
                 && step.failure().get().type() == WorkflowFailureType.LOOP_STEP_INTERRUPTED;
+    }
+
+    /**
+     * Validates a recorded {@link WorkflowStepType#PARALLEL} node - added in 1.3.0: it never itself
+     * carries a branch selection (see {@link RecordedExecutionNodeV2}'s own invariant). A status
+     * other than {@link WorkflowStepStatus#SUCCEEDED} (skipped by its own optional guard, failed
+     * before any branch launched, or never reached) must carry zero children - no branch is ever
+     * launched in any of those cases. A {@code SUCCEEDED} node must carry exactly one {@link
+     * WorkflowStepType#PARALLEL_BRANCH} child per branch this plan node declares, positionally
+     * matched (never a different count - {@code Workflow.MIN_PARALLEL_BRANCHES} guarantees the plan
+     * itself always declares at least two).
+     */
+    private static void validateParallelNode(
+            RecordedExecutionNodeV2 node, WorkflowPlanNode planNode, int depth, String idSuffix) {
+        if (node.branchSelection().isPresent()) {
+            throw new IllegalArgumentException(
+                    "a recorded PARALLEL node must never carry a branch selection");
+        }
+        if (node.step().status() != WorkflowStepStatus.SUCCEEDED) {
+            if (!node.children().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a recorded PARALLEL node that is not SUCCEEDED must carry zero children -"
+                                + " no branch is ever launched unless the step itself succeeds");
+            }
+            return;
+        }
+        List<WorkflowPlanBranch> branches = planNode.branches();
+        if (node.children().size() != branches.size()) {
+            throw new IllegalArgumentException(
+                    "a SUCCEEDED recorded PARALLEL node's branch count does not match its recorded"
+                            + " plan");
+        }
+        int childDepth = depth + 1;
+        if (childDepth > MAX_TREE_DEPTH) {
+            throw new IllegalArgumentException(
+                    "recorded execution tree exceeds the maximum supported nesting depth");
+        }
+        for (int i = 0; i < node.children().size(); i++) {
+            validateParallelBranchNode(
+                    node.children().get(i),
+                    planNode.stepId().value(),
+                    branches.get(i).nodes(),
+                    childDepth,
+                    idSuffix,
+                    i);
+        }
+    }
+
+    /**
+     * Validates one recorded {@link WorkflowStepType#PARALLEL_BRANCH} against its positionally-
+     * matched plan branch - added in 1.3.0. Its own step ID must be {@code parallelStepId +
+     * idSuffix + "@" + branchIndex}, mirroring exactly how {@code
+     * WorkflowEngine.Session#executeParallelStepInto} qualifies a real branch's own step IDs.
+     * {@link WorkflowStepStatus#NOT_RUN} (this branch was never launched - either an
+     * earlier-declared sibling branch failed first, or the whole step never reached this branch)
+     * must carry zero children; {@link WorkflowStepStatus#SUCCEEDED} (this branch was launched -
+     * its own outcome, success or failure, is carried by its children) must carry at least one
+     * child, matched exactly like any other level via {@link #validateLevel}, since a declared
+     * branch is never empty ({@code WorkflowSteps#parallel} rejects an empty branch outright). No
+     * other status is structurally possible for a {@code PARALLEL_BRANCH}'s own wrapper result (see
+     * {@link RecordedWorkflowStepV2}'s own invariant, already enforced independently of this
+     * check).
+     */
+    private static void validateParallelBranchNode(
+            RecordedExecutionNodeV2 branchNode,
+            String parallelStepId,
+            List<WorkflowPlanNode> branchPlan,
+            int depth,
+            String idSuffix,
+            int branchIndex) {
+        RecordedWorkflowStepV2 step = branchNode.step();
+        if (step.stepType() != WorkflowStepType.PARALLEL_BRANCH) {
+            throw new IllegalArgumentException(
+                    "a PARALLEL node's recorded children must all be PARALLEL_BRANCH steps");
+        }
+        String branchSuffix = idSuffix + "@" + branchIndex;
+        if (!step.stepId().value().equals(parallelStepId + branchSuffix)) {
+            throw new IllegalArgumentException(
+                    "recorded PARALLEL_BRANCH step ID does not match its expected branch"
+                            + " qualification");
+        }
+        if (branchNode.branchSelection().isPresent()) {
+            throw new IllegalArgumentException(
+                    "a recorded PARALLEL_BRANCH node must never carry a branch selection");
+        }
+        if (step.status() == WorkflowStepStatus.NOT_RUN) {
+            if (!branchNode.children().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a NOT_RUN recorded PARALLEL_BRANCH must carry zero children - it was"
+                                + " never launched");
+            }
+            return;
+        }
+        if (branchNode.children().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "a SUCCEEDED recorded PARALLEL_BRANCH must carry its own branch's recorded"
+                            + " steps as children - a declared branch is never empty");
+        }
+        validateLevel(branchNode.children(), branchPlan, depth, branchSuffix);
     }
 
     /**

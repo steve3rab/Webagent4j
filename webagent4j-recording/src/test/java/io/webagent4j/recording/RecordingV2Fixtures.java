@@ -478,4 +478,93 @@ final class RecordingV2Fixtures {
                                         new WorkflowPlanBranch(
                                                 WorkflowBranchSelection.THEN, List.of())))));
     }
+
+    // ---- PARALLEL fixtures --------------------------------------------------------------------
+
+    static RecordedWorkflowStepV2 parallelStep(String stepId) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.PARALLEL,
+                WorkflowStepStatus.SUCCEEDED,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    static RecordedWorkflowStepV2 skippedParallelStep(String stepId, String description) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.PARALLEL,
+                WorkflowStepStatus.SKIPPED,
+                Optional.of(new RecordedCondition(false, description)),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    static RecordedWorkflowStepV2 parallelBranchStep(String stepId) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.PARALLEL_BRANCH,
+                WorkflowStepStatus.SUCCEEDED,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    static RecordedWorkflowStepV2 notRunParallelBranchStep(String stepId) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.PARALLEL_BRANCH,
+                WorkflowStepStatus.NOT_RUN,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    /** A {@code PARALLEL} plan node ("parallelId") whose branches are each a single ACTION step. */
+    static WorkflowExecutionPlan parallelPlan(
+            String workflowId, String parallelId, String... branchBodyIds) {
+        return new WorkflowExecutionPlan(
+                new WorkflowId(workflowId), List.of(parallelPlanNode(parallelId, branchBodyIds)));
+    }
+
+    static WorkflowPlanNode parallelPlanNode(String parallelId, String... branchBodyIds) {
+        List<WorkflowPlanBranch> branches = new java.util.ArrayList<>();
+        for (String bodyId : branchBodyIds) {
+            branches.add(
+                    new WorkflowPlanBranch(
+                            WorkflowBranchSelection.THEN, List.of(actionPlanNode(bodyId))));
+        }
+        return new WorkflowPlanNode(
+                new WorkflowStepId(parallelId),
+                WorkflowStepType.PARALLEL,
+                false,
+                Optional.empty(),
+                branches);
+    }
+
+    /**
+     * The execution-tree counterpart of {@link #parallelPlanNode}: every branch launched and
+     * SUCCEEDED, each with its own single ACTION step's real result.
+     */
+    static RecordedExecutionNodeV2 allBranchesSucceededNode(
+            String parallelId, String... branchBodyIds) {
+        List<RecordedExecutionNodeV2> branchNodes = new java.util.ArrayList<>();
+        for (int i = 0; i < branchBodyIds.length; i++) {
+            branchNodes.add(
+                    new RecordedExecutionNodeV2(
+                            parallelBranchStep(parallelId + "@" + i),
+                            Optional.empty(),
+                            List.of(
+                                    leaf(
+                                            succeededActionStep(
+                                                    branchBodyIds[i] + "@" + i,
+                                                    Optional.empty())))));
+        }
+        return new RecordedExecutionNodeV2(parallelStep(parallelId), Optional.empty(), branchNodes);
+    }
 }
