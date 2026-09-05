@@ -60,6 +60,13 @@ public final class WorkflowPlanner {
                             planElseBranch(conditional.elseSteps()));
             return new WorkflowPlanNode(step.id(), stepType, false, Optional.empty(), branches);
         }
+        if (concreteStep instanceof LoopWorkflowStep loop) {
+            List<WorkflowPlanBranch> branches =
+                    List.of(
+                            new WorkflowPlanBranch(
+                                    WorkflowBranchSelection.THEN, planNodes(loop.body())));
+            return new WorkflowPlanNode(step.id(), stepType, false, Optional.empty(), branches);
+        }
         boolean guarded = step.condition().isPresent();
         Optional<WorkflowPlanOutput> declaredOutput =
                 concreteStep.outputVariable().map(WorkflowPlanner::toPlanOutput);
