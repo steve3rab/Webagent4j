@@ -257,6 +257,36 @@ ReplayValidator.validate(recording, workflow)
 See [Workflows](docs/workflow.md) and [Recording](docs/recording.md) for the complete model behind
 every step above.
 
+### Bounded parallelism example
+
+`WorkflowSteps.parallel` declares a fixed, structurally-represented set of read-only branches that
+all run once the step is reached, joined deterministically:
+
+```java
+.step(
+        WorkflowSteps.parallel(
+                "check-pages",
+                List.of(
+                        List.of(readPageIndicatorStep()), // branch 0
+                        List.of(readCatalogTotalStep())))) // branch 1
+```
+
+- The branch count is checked against `Workflow.MIN_PARALLEL_BRANCHES`/`MAX_PARALLEL_BRANCHES` (2-8)
+  at build time - never unbounded, never a single implicit branch.
+- Every action step inside a branch must come from a factory that explicitly overrides
+  `IWorkflowActionFactory#isParallelSafe()` to `true`; anything the framework cannot prove
+  side-effect-free is rejected at validation time - fail closed, not fail open.
+- Branches join in declaration order, not real completion order: if branch 0 fails, branch 1's
+  result - even if it finished first - is discarded and reported `NOT_RUN`, preserving the same
+  "exactly one failure, ordered before/after" guarantee that every other step type already provides.
+- Each branch observes an isolated fork of workflow state; no branch can see another branch's
+  in-flight variables, secrets, or outputs while any branch is still running.
+
+See [Workflows](docs/workflow.md#bounded-parallelism) and
+[Recording](docs/recording.md#bounded-parallelism) for the complete model, and
+[Limitations](docs/limitations.md) for the caller-responsibility caveat around concurrent access to
+a shared resource such as an `IPage`.
+
 ## Main capabilities
 
 | Area | Main modules | Purpose |
@@ -272,7 +302,7 @@ every step above.
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
 | HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
 | Browser crawler | `webagent4j-browser-crawler` | Single-lane crawling of JavaScript-rendered pages |
-| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, bounded loops (`1.3`, in progress), validation, static planning, and structured execution results |
+| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, bounded loops, bounded parallelism (`1.3`, in progress), validation, static planning, and structured execution results |
 | Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison; Recording V2 and Deterministic Replay (`io.webagent4j.recording.replay`) for `1.3`, in progress |
 | Plugins | `webagent4j-plugin-api` | Explicit trusted custom locator strategies |
 | CLI | `webagent4j-cli` | Small command-line application |
@@ -295,8 +325,18 @@ assignments:
   step: a mandatory `maxIterations` checked against a framework-wide maximum, a continuation
   condition evaluated exactly once per iteration attempt, and fail-closed behavior if the bound is
   reached while the condition is still true — never a disguised repeat-until-success mechanism.
-  Parallel iterations and arbitrary mutable inter-iteration state are explicitly out of scope. See
+  Arbitrary mutable inter-iteration state is explicitly out of scope. See
   [Workflows](docs/workflow.md#bounded-loops).
+- **Bounded parallelism** (`1.3`, in progress) — `WorkflowSteps.parallel` declares a fixed set of 2-8
+  branches (`Workflow.MAX_PARALLEL_BRANCHES`) that all structurally run once the step is reached,
+  joined in deterministic branch-definition order regardless of real completion order; a bounded,
+  per-step thread pool executes them with isolated per-branch state, deterministic output merge and
+  failure-selection rules, and reactive cancellation of branches that can no longer affect the
+  result. This first version is restricted to read-only/observational branches only — a branch's
+  action steps must be explicitly declared safe by their factory (`isParallelSafe()`), and the
+  framework fails closed on anything it cannot prove safe. Concurrent browser side effects (clicks,
+  typing, navigation) are explicitly out of scope for this version. See
+  [Workflows](docs/workflow.md#bounded-parallelism).
 - **Three deliberately separate introspection views**, never merged or toggled between:
 
   ```text
@@ -438,6 +478,13 @@ continues on `develop` (`1.3.0-SNAPSHOT`), currently in progress:
 - **Bounded Workflow Loops** — `WorkflowSteps.loop` adds an explicitly-bounded repetition step
   integrated across validation, the Execution Plan (`LOOP { BODY }`, never unrolled), the Execution
   Tree (only actually-executed iterations recorded), and Recording V2/Deterministic Replay.
+- **Deterministic Bounded Workflow Parallelism** — `WorkflowSteps.parallel` adds a fixed set of
+  2-8 declared, always-run-once branches, executed through a bounded per-step thread pool with
+  isolated per-branch state, deterministic definition-order join and failure-selection semantics,
+  and fail-closed read-only/observational branch-safety validation
+  (`IWorkflowActionFactory#isParallelSafe()`); integrated across validation, the Execution Plan, the
+  Execution Tree, and Recording V2/Deterministic Replay. Concurrent browser side effects remain out
+  of scope for this version.
 
 See [Roadmap](docs/roadmap.md) for the complete, non-normative direction.
 
