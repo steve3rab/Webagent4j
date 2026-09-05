@@ -26,10 +26,11 @@ import io.webagent4j.recording.replay.ReplayValidator;
 import io.webagent4j.recording.replay.ReplayedWorkflow;
 import io.webagent4j.recording.replay.WorkflowReplayer;
 import io.webagent4j.verification.IVerification;
+import io.webagent4j.workflow.IWorkflowCondition;
 import io.webagent4j.workflow.IWorkflowStep;
+import io.webagent4j.workflow.IWorkflowVariables;
 import io.webagent4j.workflow.Workflow;
 import io.webagent4j.workflow.WorkflowBranchSelection;
-import io.webagent4j.workflow.WorkflowConditions;
 import io.webagent4j.workflow.WorkflowEngine;
 import io.webagent4j.workflow.WorkflowExecution;
 import io.webagent4j.workflow.WorkflowExecutionNode;
@@ -45,6 +46,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Predicate;
 import org.junit.jupiter.api.Test;
 
@@ -69,14 +71,50 @@ class WorkflowLoopPaginationIT {
     private static Workflow paginationWorkflow() {
         return Workflow.builder("paginate")
                 .requiredInput(PAGE)
-                .step(WorkflowSteps.assign("seed", CURRENT_PAGE, "1"))
                 .step(
                         WorkflowSteps.loop(
                                 "paginate-loop",
-                                WorkflowConditions.notEquals(CURRENT_PAGE, "3"),
+                                pageIndicatorNotAtLastPage(),
                                 5,
                                 List.of(clickNextStep(), readCurrentPageStep())))
                 .build();
+    }
+
+    /**
+     * The loop's continuation condition reads the page's own live state directly through {@code
+     * PAGE} (already a required input, so definitely available before the loop) rather than a
+     * separately-seeded workflow variable: {@code CURRENT_PAGE} is declared exactly once, by {@link
+     * #readCurrentPageStep()} inside the loop body, which is the framework's ordinary single-writer
+     * rule (see {@code docs/workflow.md#bounded-loops}) - a step before the loop and a step inside
+     * the body can never legally publish the same variable, since both would run on the same
+     * execution path.
+     */
+    private static IWorkflowCondition pageIndicatorNotAtLastPage() {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return !"3".equals(readPageIndicatorText(variables.require(PAGE)));
+            }
+
+            @Override
+            public String describe() {
+                return "pageIndicatorNotAtLastPage()";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of(PAGE);
+            }
+        };
+    }
+
+    private static String readPageIndicatorText(IPage page) {
+        ExtractionResult<String> extracted =
+                page.extract(
+                        ExtractionRequest.text(
+                                LocatorDefinition.forRole(ElementRole.STATUS)
+                                        .named("Current page")));
+        return extracted.value();
     }
 
     private static IWorkflowStep clickNextStep() {
@@ -151,14 +189,9 @@ class WorkflowLoopPaginationIT {
 
         @Override
         public ActionResult<String> execute() {
-            ExtractionResult<String> extracted =
-                    page.extract(
-                            ExtractionRequest.text(
-                                    LocatorDefinition.forRole(ElementRole.STATUS)
-                                            .named("Current page")));
             return new ActionResult<>(
                     true,
-                    extracted.value(),
+                    readPageIndicatorText(page),
                     Duration.ZERO,
                     List.of(),
                     Optional.empty(),
@@ -205,8 +238,8 @@ class WorkflowLoopPaginationIT {
                             workflow, WorkflowInputs.builder().put(PAGE, page).build());
 
             assertThat(execution.result().completed()).isTrue();
-            // steps: seed (assign) + the loop wrapper.
-            WorkflowExecutionNode loopNode = execution.tree().nodes().get(1);
+            // steps: the loop wrapper is the workflow's only top-level step.
+            WorkflowExecutionNode loopNode = execution.tree().nodes().get(0);
             assertThat(loopNode.result().stepType()).isEqualTo(WorkflowStepType.LOOP);
             assertThat(loopNode.branchSelection()).isEmpty();
             assertThat(loopNode.children()).hasSize(3); // 2 THEN iterations + 1 NONE stop
@@ -238,11 +271,10 @@ class WorkflowLoopPaginationIT {
             Workflow workflow =
                     Workflow.builder("paginate-target-changed")
                             .requiredInput(PAGE)
-                            .step(WorkflowSteps.assign("seed", CURRENT_PAGE, "1"))
                             .step(
                                     WorkflowSteps.loop(
                                             "paginate-loop",
-                                            WorkflowConditions.notEquals(CURRENT_PAGE, "3"),
+                                            pageIndicatorNotAtLastPage(),
                                             5,
                                             List.of(
                                                     clickNextWithTargetReplaced(page),
@@ -303,7 +335,7 @@ class WorkflowLoopPaginationIT {
                     recorder.record(
                             new RecordingId("pagination-run-1"), Instant.now(), plan, execution);
 
-            RecordedExecutionNodeV2 loopNode = recording.nodes().get(1);
+            RecordedExecutionNodeV2 loopNode = recording.nodes().get(0);
             assertThat(loopNode.children()).hasSize(3);
 
             int clicksBeforeReplay = support.clickCount("next");
@@ -315,9 +347,9 @@ class WorkflowLoopPaginationIT {
             IReplayOutcome outcome = WorkflowReplayer.replay(recording, workflow);
             assertThat(outcome).isInstanceOf(IReplayOutcome.Replayed.class);
             ReplayedWorkflow replayed = ((IReplayOutcome.Replayed) outcome).workflow();
-            // seed + loop wrapper + (decision + click-next + read-current-page) * 2 iterations +
-            // the final (false) stop decision = 1 + 1 + 3*2 + 1 = 9.
-            assertThat(replayed.steps()).hasSize(9);
+            // loop wrapper + (decision + click-next + read-current-page) * 2 iterations +
+            // the final (false) stop decision = 1 + 3*2 + 1 = 8.
+            assertThat(replayed.steps()).hasSize(8);
 
             // Structural/decision replay performs zero browser side effects: the server's own
             // independent click counter is unchanged after replay.

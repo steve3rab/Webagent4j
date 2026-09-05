@@ -22,7 +22,9 @@ import io.webagent4j.recording.replay.IReplayOutcome;
 import io.webagent4j.recording.replay.ReplayValidator;
 import io.webagent4j.recording.replay.WorkflowReplayer;
 import io.webagent4j.verification.IVerification;
+import io.webagent4j.workflow.IWorkflowCondition;
 import io.webagent4j.workflow.IWorkflowStep;
+import io.webagent4j.workflow.IWorkflowVariables;
 import io.webagent4j.workflow.Workflow;
 import io.webagent4j.workflow.WorkflowConditions;
 import io.webagent4j.workflow.WorkflowEngine;
@@ -38,6 +40,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Predicate;
 
 /**
@@ -77,11 +80,10 @@ public final class BoundedBrowserWorkflowShowcaseExample {
                                             "apply-discount-if-premium",
                                             WorkflowConditions.isTrue(PREMIUM_CUSTOMER),
                                             List.of(clickStep("Apply Discount"))))
-                            .step(WorkflowSteps.assign("seed-page", CURRENT_PAGE, "1"))
                             .step(
                                     WorkflowSteps.loop(
                                             "paginate",
-                                            WorkflowConditions.notEquals(CURRENT_PAGE, "3"),
+                                            pageIndicatorNotAtLastPage(),
                                             5, // maxIterations - no hidden infinite loop, ever
                                             List.of(clickStep("Next"), readPageIndicatorStep())));
 
@@ -108,7 +110,7 @@ public final class BoundedBrowserWorkflowShowcaseExample {
             execution.result().throwIfFailed();
 
             // Inspect the actual execution tree: exactly the iterations that ran.
-            var loopNode = execution.tree().nodes().get(2);
+            var loopNode = execution.tree().nodes().get(1);
             System.out.println("Loop iterations recorded: " + loopNode.children().size());
 
             // Capture Recording V2 and encode it to canonical JSON.
@@ -153,6 +155,41 @@ public final class BoundedBrowserWorkflowShowcaseExample {
                                 LocatorDefinition.forRole(ElementRole.STATUS)
                                         .named("Current page")),
                 CURRENT_PAGE);
+    }
+
+    /**
+     * The loop's continuation condition reads the page's own live state directly through {@code
+     * PAGE} (already a required input, so definitely available before the loop) rather than a
+     * separately-seeded workflow variable: {@code CURRENT_PAGE} is declared exactly once, by {@link
+     * #readPageIndicatorStep()} inside the loop body. A step before the loop and a step inside the
+     * body can never legally publish the same variable - both would run on the same execution path
+     * - so a pre-loop "seed" assignment of {@code CURRENT_PAGE} would collide with the body's own
+     * declaration; see {@code docs/workflow.md#bounded-loops}.
+     */
+    private static IWorkflowCondition pageIndicatorNotAtLastPage() {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                IPage page = variables.require(PAGE);
+                String current =
+                        page.extract(
+                                        ExtractionRequest.text(
+                                                LocatorDefinition.forRole(ElementRole.STATUS)
+                                                        .named("Current page")))
+                                .value();
+                return !"3".equals(current);
+            }
+
+            @Override
+            public String describe() {
+                return "pageIndicatorNotAtLastPage()";
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of(PAGE);
+            }
+        };
     }
 
     /**
