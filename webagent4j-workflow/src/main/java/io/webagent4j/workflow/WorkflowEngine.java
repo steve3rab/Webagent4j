@@ -1101,17 +1101,28 @@ public final class WorkflowEngine {
          * immediately, before any branch starts: a branch never observes another branch's in-flight
          * variables, secrets, or outputs, regardless of real completion order.
          *
-         * <p>As soon as any branch reports a failure, every other branch's {@link Future} is
-         * cancelled ({@code mayInterruptIfRunning=true}) - a best-effort, cooperative request: a
-         * branch already past its own last interruption checkpoint (or containing none at all) may
-         * still run to its own natural completion, and whatever it computes is safely discarded
-         * later if it turns out not to be needed (see {@link #joinParallelBranches}), never
-         * forcibly killed mid-step. This method always waits for every branch's task to reach a
-         * terminal state - normal completion or cancellation - and always shuts the executor down,
-         * with no orphaned task and no leaked thread, before returning; an interruption of the
-         * calling thread while waiting is tolerated (every remaining branch is cancelled and the
-         * wait continues) and re-applied to the calling thread's own interrupt flag before this
-         * method returns, never silently swallowed.
+         * <p>As soon as a branch at index {@code f} reports a failure, every branch at an index
+         * strictly greater than {@code f} - never {@code f} itself, and never a lower index - has
+         * its {@link Future} cancelled ({@code mayInterruptIfRunning=true}): a best-effort,
+         * cooperative request a branch already past its own last interruption checkpoint (or
+         * containing none at all) may simply outlive, in which case whatever it computes is safely
+         * discarded later (see {@link #joinParallelBranches}), never forcibly killed mid-step. A
+         * branch at an index less than or equal to the lowest failed index observed so far is
+         * <b>never</b> cancelled by this method, at any point: since the final reported failure is
+         * always the lowest-index branch that failed among <em>all</em> of them, every branch at or
+         * before whichever index has already been confirmed failed is certain to end up kept (see
+         * {@link #joinParallelBranches}) no matter what any other branch does later - cancelling it
+         * preemptively would fabricate a never-launched outcome for a branch this step's own
+         * contract already promises to keep genuine. (An earlier revision of this method cancelled
+         * every other branch on any failure, which could race a lower-index branch's own Future
+         * into being cancelled before it ever started, discarding real content the recorded result
+         * is supposed to retain - see {@code WorkflowParallelRecordingV2Test} for the regression
+         * this fixes.) This method always waits for every branch's task to reach a terminal state -
+         * normal completion or cancellation - and always shuts the executor down, with no orphaned
+         * task and no leaked thread, before returning; an interruption of the calling thread while
+         * waiting is tolerated (every branch strictly after the lowest failed index observed so far
+         * is cancelled and the wait continues) and re-applied to the calling thread's own interrupt
+         * flag before this method returns, never silently swallowed.
          *
          * <p>Returned outcomes are not necessarily in branch-definition order - see {@link
          * BranchOutcome#branchIndex()} and {@link #joinParallelBranches}, which restores that order
@@ -1152,21 +1163,27 @@ public final class WorkflowEngine {
 
                 @SuppressWarnings("unchecked")
                 BranchOutcome[] outcomes = new BranchOutcome[branchCount];
+                int lowestFailedIndexSoFar = Integer.MAX_VALUE;
                 for (int received = 0; received < branchCount; received++) {
                     Future<BranchOutcome> completed = null;
                     while (completed == null) {
                         try {
                             completed = completionService.take();
                         } catch (InterruptedException e) {
+                            // The calling thread's own interrupt flag has no effect on any branch's
+                            // own, independent worker thread - there is nothing of ours to cancel
+                            // here; simply keep waiting for every branch's own genuine outcome, and
+                            // restore the flag once every branch is actually done (see below).
                             interruptedWhileWaiting = true;
-                            cancelAll(futures);
                         }
                     }
                     try {
                         BranchOutcome outcome = completed.get();
                         outcomes[outcome.branchIndex()] = outcome;
-                        if (outcome.failure().isPresent()) {
-                            cancelAll(futures);
+                        if (outcome.failure().isPresent()
+                                && outcome.branchIndex() < lowestFailedIndexSoFar) {
+                            lowestFailedIndexSoFar = outcome.branchIndex();
+                            cancelStrictlyAfter(futures, lowestFailedIndexSoFar);
                         }
                     } catch (CancellationException e) {
                         // Left null; filled in below as a never-launched/discarded outcome.
@@ -1174,7 +1191,6 @@ public final class WorkflowEngine {
                         // completed.get() on an already-done future never actually blocks, but
                         // remains declared - treat identically to the take() interruption above.
                         interruptedWhileWaiting = true;
-                        cancelAll(futures);
                         received--;
                     } catch (ExecutionException e) {
                         throw new IllegalStateException(
@@ -1208,9 +1224,18 @@ public final class WorkflowEngine {
             }
         }
 
-        private static void cancelAll(List<Future<BranchOutcome>> futures) {
-            for (Future<BranchOutcome> future : futures) {
-                future.cancel(true);
+        /**
+         * Cancels every future at an index strictly greater than {@code lowestFailedIndexSoFar} -
+         * {@code futures} is indexed identically to branch definition order, since {@link
+         * #runBranchesConcurrently} submits them in that exact order. Never cancels index {@code
+         * lowestFailedIndexSoFar} itself or anything before it: see {@link
+         * #runBranchesConcurrently}'s own Javadoc for why a branch at or before the lowest failed
+         * index observed so far must never be cancelled by this engine's own logic.
+         */
+        private static void cancelStrictlyAfter(
+                List<Future<BranchOutcome>> futures, int lowestFailedIndexSoFar) {
+            for (int i = lowestFailedIndexSoFar + 1; i < futures.size(); i++) {
+                futures.get(i).cancel(true);
             }
         }
 

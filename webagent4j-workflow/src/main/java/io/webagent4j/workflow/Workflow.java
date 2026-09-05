@@ -218,6 +218,13 @@ public final class Workflow {
                 if (elseMatch.isPresent()) {
                     return elseMatch;
                 }
+            } else if (concreteStep instanceof ParallelWorkflowStep parallel) {
+                for (List<IWorkflowStep> branch : parallel.branches()) {
+                    Optional<Integer> branchMatch = findLoopMaxIterations(branch, stepId);
+                    if (branchMatch.isPresent()) {
+                        return branchMatch;
+                    }
+                }
             }
         }
         return Optional.empty();
