@@ -10,6 +10,35 @@ not imply a published compatibility line.
 
 ### Added
 
+- Static Workflow Introspection: `new WorkflowIntrospector().inspect(workflow)` adds a new,
+  dedicated `webagent4j-workflow` type - a deterministic, backend-neutral
+  `WorkflowIntrospectionReport` summarizing an already-valid `Workflow` definition's static
+  complexity and safety surface, computed entirely from its structure. It never evaluates an
+  `IWorkflowCondition` (not even `referencedVariables()`), never invokes an
+  `IWorkflowActionFactory`, never touches a backend, browser, or network resource, and never
+  creates a thread - a `PARALLEL` step's branches are inspected sequentially, in declaration order.
+  The report exposes step/conditional/loop/parallel/action counts, combined control-flow depth
+  (reusing `Workflow#MAX_CONTROL_FLOW_NESTING_DEPTH`'s exact semantics), input/output metadata
+  (name, type, secret classification, and guard-aware definite availability - reusing the exact
+  same rule `Workflow`'s own definite-assignment analysis already documents, never a second,
+  divergent one), and `maximumPotentialExecutionNodes`: a conservative upper bound on how many
+  entries a single execution's flat `WorkflowResult#steps()` could contain, computed bottom-up in
+  `O(definition nodes)` time with no physical loop/branch unrolling - a conditional step takes the
+  larger of its two branches (never the sum, since exactly one runs), a loop is computed
+  mathematically from its declared `maxIterations` (never unrolled), and a parallel step sums every
+  declared branch (since every one genuinely runs). Every addition and multiplication uses
+  saturating arithmetic, capping at `Long.MAX_VALUE` with an explicit
+  `maximumPotentialExecutionNodesSaturated` flag rather than silently overflowing.
+  `mayExceedRuntimeNodeBudget` compares that bound against the engine's own cumulative
+  executed-step-node budget as information for a caller's own policy - never a validation failure,
+  and never folded into `WorkflowValidationReport`: a workflow whose declared bounds could in
+  principle exceed the runtime budget is not thereby invalid. `riskIndicators` lists a small,
+  fixed, deterministically-ordered set of named `WorkflowStaticRiskIndicator` structural facts
+  (contains loops/parallelism/actions/secret outputs, may exceed the runtime node budget) -
+  deliberately never a combined numeric "risk score." A fourth, deliberately separate structural
+  concept alongside the existing Validation Report, Execution Plan, and Execution Tree - never
+  merged with any of them. See [Workflows](docs/workflow.md#static-workflow-introspection).
+
 - Deterministic Bounded Workflow Parallelism: `WorkflowSteps.parallel(id, branches)` adds a
   deterministic, strictly bounded fan-out control-flow step to `webagent4j-workflow` - between two
   and a new framework-wide `MAX_PARALLEL_BRANCHES` (8) declared branches, launched concurrently on

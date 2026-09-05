@@ -298,6 +298,56 @@ Workflow
 
 **Not a new recording format:** Recording V1 is entirely unaffected; `WorkflowExecutionPlan` is never serialized into a `WorkflowRecording`. Planning is not a dry run, a replay, or an execution-plan preview of a specific future execution's outcome - it is a static structural description only.
 
+## Static workflow introspection
+
+`new WorkflowIntrospector().inspect(workflow)` builds a `WorkflowIntrospectionReport` - a deterministic, backend-neutral summary of an already-valid `Workflow` definition's static complexity and safety surface, computed entirely from its structure, without ever executing anything:
+
+```text
+WorkflowIntrospectionReport
+├── definitionNodeCount / maximumControlFlowDepth
+├── conditionalCount / loopCount / parallelCount / actionCount
+├── declaredInputCount / requiredInputCount / optionalInputCount / inputs
+├── declaredOutputCount / definitelyAvailableOutputCount / secretOutputCount / outputs
+├── maximumLoopIterations / maximumParallelBranches / totalParallelBranches
+├── maximumPotentialExecutionNodes (+ ...Saturated) / mayExceedRuntimeNodeBudget
+├── containsActions / containsLoops / containsParallelism / containsSecrets
+└── riskIndicators: [WorkflowStaticRiskIndicator...]
+```
+
+**Four related, deliberately separate concepts, answering four different questions:**
+
+- `WorkflowValidationReport` (below): *is this definition structurally coherent, and why (or why not)?*
+- `WorkflowExecutionPlan` (above): *what could structurally execute?*
+- `WorkflowIntrospectionReport`: *how complex is that structure, and what bounded runtime pressure may it represent?*
+- `WorkflowExecutionTree`: *what actually executed?*
+
+None of the four depends on any of the others, and none is ever merged into or toggled from another with a flag. `WorkflowIntrospector` is a dedicated type, deliberately kept separate from `Workflow.Builder`, `WorkflowPlanner`, and `WorkflowEngine`.
+
+**Zero side effects, stricter than validation:** `inspect(workflow)` never calls an `IWorkflowActionFactory`, never resolves or contacts a backend/browser/network destination, never creates a thread/executor/`Future` (a `PARALLEL` step's branches are inspected sequentially, in declaration order, exactly like every other container step's contents) - and, unlike `Workflow.Builder#build()`/`validate()`, never even calls `IWorkflowCondition#referencedVariables()`: an already-built `Workflow` needs nothing further from a caller-supplied condition to be inspected. Every fixture in `WorkflowIntrospectorTest` that supplies a condition or action factory throws if ever invoked, proving this directly rather than merely asserting a zero counter.
+
+**Every metric is a fact about the definition, never a prediction:** `inspect` never evaluates a condition, so a loop that always exits after one iteration in practice is indistinguishable here from one that always runs to its declared `maxIterations` bound - both report the same worst-case potential. There is no `estimatedExecutionTime`, `estimatedMemoryMb`, or network/CPU estimate: nothing here is speculative.
+
+**Combined control-flow depth reuses the single source of truth:** `maximumControlFlowDepth` is computed with the exact same recursive rule (`depth + 1` per `CONDITIONAL`/`LOOP`/`PARALLEL` level, a conditional's two branches each starting from the same depth, never summed) that `Workflow#MAX_CONTROL_FLOW_NESTING_DEPTH` enforces at `build()` time - never a second, divergent counter.
+
+**`maximumPotentialExecutionNodes` is a conservative, exact-by-construction upper bound** on how many entries `WorkflowResult#steps()` could contain for a single valid execution, computed bottom-up from each step's own worst case:
+
+- a leaf (`ACTION`/`ASSIGN`) step always contributes `1`;
+- a `CONDITIONAL` step contributes `1` (its own decision entry) plus **the larger of its two branches** - never the sum, since at runtime exactly one branch ever runs;
+- a `LOOP` step contributes `2` (its own wrapper entry, plus one final continuation-check entry that either stops the loop or discovers `LOOP_ITERATION_LIMIT_EXCEEDED`) plus `maxIterations` copies of (`1` iteration-decision entry plus the body's own potential) - the exact shape `WorkflowEngine`'s own bounded iteration produces, never a plain `maxIterations * body` estimate;
+- a `PARALLEL` step contributes `1` (its own wrapper entry) plus, for every declared branch, `1` (that branch's own `PARALLEL_BRANCH` wrapper entry) plus that branch's own potential - the **sum** across every branch, since every declared branch genuinely runs, never the maximum.
+
+Every addition and multiplication saturates at `Long.MAX_VALUE` rather than silently overflowing - `maximumPotentialExecutionNodesSaturated()` distinguishes a true overflow from a worst case that happens to compute to exactly `Long.MAX_VALUE`. The whole computation visits each declared step a small, fixed number of times - never proportional to `maxIterations` or a branch count, never a physical unrolling - so it stays `O(definition nodes)` regardless of how large a workflow's declared bounds are.
+
+**Runtime budget comparison is information, not a validation failure:** `mayExceedRuntimeNodeBudget()` is `true` when `maximumPotentialExecutionNodes()` exceeds `WorkflowEngine`'s own cumulative executed-step-node budget, or when the computation saturated before a definitive comparison could be made. A workflow whose declared bounds could in principle exceed that budget is not thereby invalid - a `loop max=10000` that in practice exits after two iterations never comes close - so this never fails `build()` and is never folded into `WorkflowValidationReport`.
+
+**No score:** `riskIndicators()` lists a small, fixed set of named `WorkflowStaticRiskIndicator` facts (`MAY_EXCEED_RUNTIME_NODE_BUDGET`, `CONTAINS_LOOPS`, `CONTAINS_PARALLELISM`, `CONTAINS_ACTIONS`, `CONTAINS_SECRET_OUTPUTS`) a caller's own policy may act on - always in that enum's declaration order, never duplicated, never combined into a numeric "risk score" or "complexity score". Using a loop, parallelism, an action, or a secret is not itself a red flag; these are structural facts, not vulnerabilities.
+
+**Definite assignment reuses the exact same guard-aware rule** `Workflow`'s own Javadoc and [Branching](#branching)/[Bounded loops](#bounded-loops)/[Bounded parallelism](#bounded-parallelism) document: a guarded producer's output is never definite; a conditional's output is definite only when both branches unconditionally guarantee it, identically; a loop body's output is never definite, since the loop may run zero iterations; a `PARALLEL` branch's output is definite only when both the `PARALLEL` step itself and that specific producing step are unguarded. Since `WorkflowIntrospector` only ever receives an already-valid `Workflow`, it recomputes this independently rather than reusing `Workflow.Builder`'s own private analysis - there is no public seam to call into - but it is the identical rule, not a third, divergent one.
+
+**Secret safety:** `inputs()`/`outputs()` expose only a variable's name, declared runtime type, and secret classification - never a value, secret or otherwise. The whole report is safe to log.
+
+**Limitations:** a static upper bound can be far larger than any actual execution will ever produce; conditions are never evaluated, so a loop's or conditional's real, in-practice behavior is never predicted; there is no timing, memory, CPU, or network-bandwidth estimate, and no probabilistic guess at which branch a condition will select. `WorkflowExecutionPlan` and `WorkflowIntrospectionReport` are deliberately not merged into one type: the plan is the full structural tree; the report is its aggregated metric summary. See [Limitations](limitations.md#workflows) for the complete list.
+
 ## Validation report
 
 `Workflow.Builder#validate()` explains the builder's *current* definition state as a structured `WorkflowValidationReport`, without ever throwing and without mutating the builder - calling `validate()` any number of times, in any order relative to `step`/`requiredInput`/`optionalInput`/`build()`, never changes the builder's own state or a later call's result for the same state:
