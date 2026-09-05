@@ -162,8 +162,8 @@ customers, and stopping once the last page is reached - never guessing, never lo
 The full runnable source is
 [`webagent4j-examples/.../BoundedBrowserWorkflowShowcaseExample.java`](webagent4j-examples/src/main/java/io/webagent4j/examples/BoundedBrowserWorkflowShowcaseExample.java);
 it compiles and is exercised as part of this repository's own build. It runs against a tiny local
-HTTP fixture started inline in `main()` (omitted below for brevity, along with the small action
-helpers) - never a public website - so the whole example stays deterministic and Internet-free.
+HTTP fixture started inline in `main()` (omitted below for brevity, along with the small helper
+methods) - never a public website - so the whole example stays deterministic and Internet-free.
 
 ```java
 // Typed inputs: a live page, a boolean flag, a secret API key never printed or logged
@@ -178,11 +178,10 @@ Workflow.Builder builder =
                                 "apply-discount-if-premium",
                                 WorkflowConditions.isTrue(PREMIUM_CUSTOMER),
                                 List.of(clickStep("Apply Discount"))))
-                .step(WorkflowSteps.assign("seed-page", CURRENT_PAGE, "1"))
                 .step(
                         WorkflowSteps.loop(
                                 "paginate",
-                                WorkflowConditions.notEquals(CURRENT_PAGE, "3"),
+                                pageIndicatorNotAtLastPage(),
                                 5, // maxIterations - no hidden infinite loop, ever
                                 List.of(clickStep("Next"), readPageIndicatorStep())));
 
@@ -209,7 +208,7 @@ WorkflowExecution execution = new WorkflowEngine().executeWithTree(workflow, inp
 execution.result().throwIfFailed();
 
 // Inspect the actual execution tree: exactly the iterations that ran.
-var loopNode = execution.tree().nodes().get(2);
+var loopNode = execution.tree().nodes().get(1);
 System.out.println("Loop iterations recorded: " + loopNode.children().size());
 
 // Capture Recording V2 and encode it to canonical JSON.
