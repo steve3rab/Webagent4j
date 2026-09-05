@@ -367,4 +367,303 @@ class WorkflowLoopRecordingV2Test {
         assertThatThrownBy(() -> codec.decode(hostileJson))
                 .isInstanceOf(RecordingFormatException.class);
     }
+
+    // ---- REC2-LOOP-BODY: a THEN iteration's authorized body must structurally match bodyPlan --
+
+    @Test
+    void body001SucceededTrueThenWithNonEmptyBodyPlanButZeroChildrenIsRejected() {
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.loopPlan("wf", "loop", "body");
+        RecordedExecutionNodeV2 iteration =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopIterationStep("loop#0", true),
+                        Optional.of(WorkflowBranchSelection.THEN),
+                        List.of());
+        RecordedExecutionNodeV2 wrapper =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopStep("loop"), Optional.empty(), List.of(iteration));
+
+        assertThatThrownBy(
+                        () ->
+                                RecordingV2Fixtures.recordingWith(
+                                        "wf",
+                                        plan,
+                                        WorkflowStatus.COMPLETED,
+                                        List.of(wrapper),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void body002SucceededTrueThenWithGenuinelyEmptyBodyPlanAndZeroChildrenIsAccepted() {
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.loopPlanEmptyBody("wf", "loop");
+        RecordedExecutionNodeV2 iteration =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopIterationStep("loop#0", true),
+                        Optional.of(WorkflowBranchSelection.THEN),
+                        List.of());
+        RecordedExecutionNodeV2 wrapper =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopStep("loop"), Optional.empty(), List.of(iteration));
+
+        WorkflowRecordingV2 recording =
+                RecordingV2Fixtures.recordingWith(
+                        "wf", plan, WorkflowStatus.COMPLETED, List.of(wrapper), Optional.empty());
+
+        assertThat(recording.nodes()).containsExactly(wrapper);
+    }
+
+    @Test
+    void body003FailedLoopStepInterruptedTrueThenWithZeroChildrenIsAccepted() {
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.loopPlan("wf", "loop", "body");
+        RecordedExecutionNodeV2 iteration =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopIterationStepFailed(
+                                "loop#0",
+                                true,
+                                RecordingV2Fixtures.loopStepInterruptedFailure("loop#0")),
+                        Optional.of(WorkflowBranchSelection.THEN),
+                        List.of());
+        RecordedExecutionNodeV2 wrapper =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopStep("loop"), Optional.empty(), List.of(iteration));
+
+        WorkflowRecordingV2 recording =
+                RecordingV2Fixtures.recordingWith(
+                        "wf",
+                        plan,
+                        WorkflowStatus.FAILED,
+                        List.of(wrapper),
+                        Optional.of(RecordingV2Fixtures.loopStepInterruptedFailure("loop#0")));
+
+        assertThat(recording.nodes()).containsExactly(wrapper);
+    }
+
+    @Test
+    void body004FailedWithADifferentFailureTrueThenWithZeroChildrenIsRejected() {
+        // LOOP_ITERATION_LIMIT_EXCEEDED is a real WorkflowFailureType a LOOP_ITERATION can carry,
+        // but WorkflowEngine only ever pairs it with no branch selection at all - never THEN. A
+        // THEN selection with zero children is only ever genuine for LOOP_STEP_INTERRUPTED (see
+        // BODY-003); anything else, including this otherwise-plausible-looking failure type, must
+        // still be rejected.
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.loopPlan("wf", "loop", "body");
+        RecordedExecutionNodeV2 iteration =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopIterationStepFailed(
+                                "loop#0",
+                                true,
+                                RecordingV2Fixtures.loopIterationLimitExceededFailure("loop#0")),
+                        Optional.of(WorkflowBranchSelection.THEN),
+                        List.of());
+        RecordedExecutionNodeV2 wrapper =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopStep("loop"), Optional.empty(), List.of(iteration));
+
+        // A top-level failure is supplied so the recording clears WorkflowRecordingV2's own
+        // "a FAILED recording must carry a failure" precondition and the rejection under test -
+        // RecordingV2PlanTreeValidator's own structural check - is the one that actually fires.
+        assertThatThrownBy(
+                        () ->
+                                RecordingV2Fixtures.recordingWith(
+                                        "wf",
+                                        plan,
+                                        WorkflowStatus.FAILED,
+                                        List.of(wrapper),
+                                        Optional.of(
+                                                RecordingV2Fixtures
+                                                        .loopIterationLimitExceededFailure(
+                                                                "loop#0"))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void body005SucceededTrueThenWithExactBodyChildrenIsAccepted() {
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.loopPlan("wf", "loop", "body");
+        RecordedExecutionNodeV2 bodyChild =
+                RecordingV2Fixtures.leaf(
+                        RecordingV2Fixtures.succeededActionStep("body#0", Optional.empty()));
+        RecordedExecutionNodeV2 iteration =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopIterationStep("loop#0", true),
+                        Optional.of(WorkflowBranchSelection.THEN),
+                        List.of(bodyChild));
+        RecordedExecutionNodeV2 wrapper =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopStep("loop"), Optional.empty(), List.of(iteration));
+
+        WorkflowRecordingV2 recording =
+                RecordingV2Fixtures.recordingWith(
+                        "wf", plan, WorkflowStatus.COMPLETED, List.of(wrapper), Optional.empty());
+
+        assertThat(recording.nodes()).containsExactly(wrapper);
+    }
+
+    @Test
+    void body006SucceededTrueThenMissingOneBodyChildIsRejected() {
+        WorkflowExecutionPlan plan =
+                RecordingV2Fixtures.loopPlanTwoBodySteps("wf", "loop", "body1", "body2");
+        RecordedExecutionNodeV2 onlyFirstChild =
+                RecordingV2Fixtures.leaf(
+                        RecordingV2Fixtures.succeededActionStep("body1#0", Optional.empty()));
+        RecordedExecutionNodeV2 iteration =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopIterationStep("loop#0", true),
+                        Optional.of(WorkflowBranchSelection.THEN),
+                        List.of(onlyFirstChild));
+        RecordedExecutionNodeV2 wrapper =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopStep("loop"), Optional.empty(), List.of(iteration));
+
+        assertThatThrownBy(
+                        () ->
+                                RecordingV2Fixtures.recordingWith(
+                                        "wf",
+                                        plan,
+                                        WorkflowStatus.COMPLETED,
+                                        List.of(wrapper),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void body007SucceededTrueThenWithAnExtraBodyChildIsRejected() {
+        WorkflowExecutionPlan plan = RecordingV2Fixtures.loopPlan("wf", "loop", "body");
+        RecordedExecutionNodeV2 declaredChild =
+                RecordingV2Fixtures.leaf(
+                        RecordingV2Fixtures.succeededActionStep("body#0", Optional.empty()));
+        RecordedExecutionNodeV2 extraChild =
+                RecordingV2Fixtures.leaf(
+                        RecordingV2Fixtures.succeededActionStep("extra#0", Optional.empty()));
+        RecordedExecutionNodeV2 iteration =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopIterationStep("loop#0", true),
+                        Optional.of(WorkflowBranchSelection.THEN),
+                        List.of(declaredChild, extraChild));
+        RecordedExecutionNodeV2 wrapper =
+                new RecordedExecutionNodeV2(
+                        RecordingV2Fixtures.loopStep("loop"), Optional.empty(), List.of(iteration));
+
+        assertThatThrownBy(
+                        () ->
+                                RecordingV2Fixtures.recordingWith(
+                                        "wf",
+                                        plan,
+                                        WorkflowStatus.COMPLETED,
+                                        List.of(wrapper),
+                                        Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void body008GenuineEngineExecutionWithATwoStepBodyIsAccepted() {
+        Workflow workflow =
+                Workflow.builder("wf-loop-two-step-body")
+                        .step(
+                                WorkflowSteps.loop(
+                                        "loop",
+                                        new CountingUntilFalseCondition(2, new AtomicInteger()),
+                                        5,
+                                        List.of(
+                                                WorkflowSteps.action(
+                                                        "body1",
+                                                        vars ->
+                                                                new FakePreparedAction<>(
+                                                                        ActionResults.success(
+                                                                                "ok"))),
+                                                WorkflowSteps.action(
+                                                        "body2",
+                                                        vars ->
+                                                                new FakePreparedAction<>(
+                                                                        ActionResults.success(
+                                                                                "ok"))))))
+                        .build();
+        WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+        WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());
+        assertThat(execution.result().completed()).isTrue();
+
+        WorkflowRecordingV2 recording =
+                recorder.record(
+                        new RecordingId("rec-loop-two-step-body"),
+                        Instant.parse("2026-01-01T00:00:00Z"),
+                        plan,
+                        execution);
+
+        RecordedExecutionNodeV2 wrapper = recording.nodes().get(0);
+        for (int i = 0; i < 2; i++) {
+            RecordedExecutionNodeV2 iteration = wrapper.children().get(i);
+            assertThat(iteration.branchSelection()).contains(WorkflowBranchSelection.THEN);
+            assertThat(iteration.children()).hasSize(2);
+        }
+        assertThat(codec.decode(codec.encode(recording))).isEqualTo(recording);
+    }
+
+    @Test
+    void body009GenuineEngineInterruptionAfterDecisionBeforeBodyIsAccepted() {
+        AtomicInteger bodyExecutions = new AtomicInteger();
+        // Deterministic interruption technique mirroring WorkflowLoopEngineTest#loop008: the
+        // condition itself interrupts the executing thread right before returning true, so the
+        // engine's own second interruption boundary (after the decision is captured, before the
+        // body starts) fires deterministically - never a timing-dependent flake.
+        IWorkflowCondition interruptAfterDeciding =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        Thread.currentThread().interrupt();
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "interruptAfterDeciding";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        try {
+            Workflow workflow =
+                    Workflow.builder("wf-loop-interrupted")
+                            .step(
+                                    WorkflowSteps.loop(
+                                            "loop",
+                                            interruptAfterDeciding,
+                                            5,
+                                            List.of(
+                                                    WorkflowSteps.action(
+                                                            "body",
+                                                            vars -> {
+                                                                bodyExecutions.incrementAndGet();
+                                                                return new FakePreparedAction<>(
+                                                                        ActionResults.success(
+                                                                                "ok"));
+                                                            }))))
+                            .build();
+            WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+            WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());
+            assertThat(execution.result().completed()).isFalse();
+            assertThat(execution.result().failure().orElseThrow().type())
+                    .isEqualTo(WorkflowFailureType.LOOP_STEP_INTERRUPTED);
+            assertThat(bodyExecutions).hasValue(0);
+
+            WorkflowRecordingV2 recording =
+                    recorder.record(
+                            new RecordingId("rec-loop-interrupted"),
+                            Instant.parse("2026-01-01T00:00:00Z"),
+                            plan,
+                            execution);
+
+            RecordedExecutionNodeV2 wrapper = recording.nodes().get(0);
+            assertThat(wrapper.children()).hasSize(1);
+            RecordedExecutionNodeV2 interrupted = wrapper.children().get(0);
+            assertThat(interrupted.branchSelection()).contains(WorkflowBranchSelection.THEN);
+            assertThat(interrupted.children()).isEmpty();
+            assertThat(interrupted.step().status()).isEqualTo(WorkflowStepStatus.FAILED);
+            assertThat(interrupted.step().failure().orElseThrow().type())
+                    .isEqualTo(WorkflowFailureType.LOOP_STEP_INTERRUPTED);
+            assertThat(codec.decode(codec.encode(recording))).isEqualTo(recording);
+        } finally {
+            Thread.interrupted(); // clear the interrupt flag so it never leaks into later tests
+        }
+    }
 }

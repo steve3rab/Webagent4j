@@ -209,12 +209,20 @@ final class RecordingV2PlanTreeValidator {
      *       never {@link WorkflowStepStatus#FAILED} - a false outcome is always a successful no-op,
      *       exactly like {@code ifThen}'s own false decision.
      *   <li>a {@code true} outcome: either {@link WorkflowBranchSelection#THEN} (the iteration was
-     *       authorized - its children, if any, matching {@code bodyPlan} exactly; empty only when
-     *       interrupted immediately after the decision) or no selection at all, exclusively when
-     *       {@code status} is {@link WorkflowStepStatus#FAILED} with {@link
+     *       authorized) or no selection at all, exclusively when {@code status} is {@link
+     *       WorkflowStepStatus#FAILED} with {@link
      *       WorkflowFailureType#LOOP_ITERATION_LIMIT_EXCEEDED} - the bound was reached while still
      *       {@code true}, so the iteration was never authorized to start at all. {@link
-     *       WorkflowBranchSelection#ELSE} is never structurally possible for a loop iteration.
+     *       WorkflowBranchSelection#ELSE} is never structurally possible for a loop iteration. A
+     *       {@code THEN} selection's children must match {@code bodyPlan} exactly (validated
+     *       positionally, exactly like a conditional branch) whenever {@code bodyPlan} is
+     *       non-empty, with exactly one exception: {@code status} {@link WorkflowStepStatus#FAILED}
+     *       with {@link WorkflowFailureType#LOOP_STEP_INTERRUPTED} - the one state where the thread
+     *       was interrupted after the decision was captured but before {@code runSteps} was ever
+     *       invoked for the body, so zero children were ever produced no matter how large {@code
+     *       bodyPlan} is. A {@code SUCCEEDED} {@code THEN} iteration may only ever carry zero
+     *       children when {@code bodyPlan} itself is empty - never as a stand-in for a body that
+     *       was authorized but never actually recorded.
      * </ul>
      */
     private static void validateLoopIterationNode(
@@ -286,10 +294,39 @@ final class RecordingV2PlanTreeValidator {
                     "a LOOP_ITERATION with a true condition outcome can only select THEN or carry"
                             + " no selection at all");
         }
+        boolean interruptedBeforeBody = isInterruptedBeforeBody(step);
         if (iterationNode.children().isEmpty()) {
+            if (!bodyPlan.isEmpty() && !interruptedBeforeBody) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION that selected THEN for a non-empty loop body must carry"
+                                + " that body's own recorded children - WorkflowEngine only ever"
+                                + " leaves a THEN iteration's children empty for a genuinely empty"
+                                + " declared body, or when interrupted before the body could"
+                                + " start");
+            }
             return;
         }
+        if (interruptedBeforeBody) {
+            throw new IllegalArgumentException(
+                    "a LOOP_ITERATION recorded as interrupted before its body started must carry"
+                            + " zero children");
+        }
         validateLevel(iterationNode.children(), bodyPlan, depth, iterationSuffix);
+    }
+
+    /**
+     * True exactly for the one {@code true}-outcome, {@code THEN}-selected state {@code
+     * WorkflowEngine.Session#executeLoopStepInto} can produce with zero children despite a
+     * non-empty declared body: the executing thread was interrupted after the continuation decision
+     * was captured but before {@code runSteps} was ever invoked for the body, so the iteration's
+     * own result carries {@link WorkflowFailureType#LOOP_STEP_INTERRUPTED} directly (via {@code
+     * addInterrupted}) rather than deferring to a child step's failure the way every other
+     * loop-body failure does.
+     */
+    private static boolean isInterruptedBeforeBody(RecordedWorkflowStepV2 step) {
+        return step.status() == WorkflowStepStatus.FAILED
+                && step.failure().isPresent()
+                && step.failure().get().type() == WorkflowFailureType.LOOP_STEP_INTERRUPTED;
     }
 
     /**
