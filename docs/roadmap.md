@@ -81,6 +81,15 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this relea
 `develop` is `1.3.0-SNAPSHOT`, the active line for the next release. `1.2.0` remains the current
 stable line (`1.2.x`) until a future release supersedes it. In progress:
 
+- **Static Workflow Introspection** - `new WorkflowIntrospector().inspect(workflow)` returns a
+  `WorkflowIntrospectionReport`: a deterministic, backend-neutral summary of an already-valid
+  `Workflow` definition's static complexity and safety surface (step counts, combined control-flow
+  depth, input/output metadata, and a saturating-arithmetic conservative upper bound on how many
+  flat result entries a single execution could produce), computed without ever evaluating a
+  condition, invoking an action factory, or touching a backend, browser, network resource, or
+  thread. A dedicated fourth structural concept alongside `WorkflowValidationReport`,
+  `WorkflowExecutionPlan`, and `WorkflowExecutionTree` - never merged with any of them. See
+  [Workflows](workflow.md#static-workflow-introspection).
 - **Recording V2 and Deterministic Replay** - `WorkflowRecordingV2` captures a tree-shaped
   workflow execution (a `WorkflowExecutionPlan` plus a tree mirroring `WorkflowExecutionTree`) with
   typed, secret-classified published outputs, replacing V1's flat step list and bare output-variable
