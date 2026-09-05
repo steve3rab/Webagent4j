@@ -40,5 +40,18 @@ public enum ReplayFailureType {
      * scope deliberately leaves undecided rather than guess at - see {@link WorkflowRecordingV2}
      * and {@link Workflow}.
      */
-    UNSUPPORTED_STATUS
+    UNSUPPORTED_STATUS,
+
+    /**
+     * A recorded {@link io.webagent4j.workflow.WorkflowStepType#LOOP}'s number of actually-run
+     * iterations exceeds the live workflow's own declared {@code maxIterations} for that step -
+     * added in 1.3.0. A recording's own structural plan never encodes {@code maxIterations} (see
+     * {@code docs/workflow.md#bounded-loops}), so this check is made here, against the live {@link
+     * Workflow}, rather than as part of {@link WorkflowRecordingV2}'s own construction-time
+     * invariants: a hostile recording claiming to be a genuine, {@code COMPLETED} trace of a
+     * bounded loop cannot smuggle in more iterations than that loop's live definition actually
+     * authorizes, even though the recording's plan and tree are otherwise perfectly
+     * self-consistent.
+     */
+    LOOP_ITERATION_COUNT_EXCEEDS_BOUND
 }

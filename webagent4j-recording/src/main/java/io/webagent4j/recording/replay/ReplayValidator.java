@@ -1,9 +1,13 @@
 package io.webagent4j.recording.replay;
 
+import io.webagent4j.recording.RecordedExecutionNodeV2;
 import io.webagent4j.recording.WorkflowRecordingV2;
 import io.webagent4j.workflow.Workflow;
 import io.webagent4j.workflow.WorkflowPlanner;
 import io.webagent4j.workflow.WorkflowStatus;
+import io.webagent4j.workflow.WorkflowStepStatus;
+import io.webagent4j.workflow.WorkflowStepType;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -72,6 +76,41 @@ public final class ReplayValidator {
                             ReplayFailureType.INCOMPATIBLE_WORKFLOW,
                             "recording's plan does not match the live workflow's current"
                                     + " structure"));
+        }
+        return checkLoopIterationBounds(recording.nodes(), workflow);
+    }
+
+    /**
+     * Recursively finds every recorded {@link WorkflowStepType#LOOP} node and rejects one whose
+     * number of actually-run iterations (its own {@code LOOP_ITERATION} children) exceeds the live
+     * {@code workflow}'s own declared {@code maxIterations} for that step - see {@link
+     * ReplayFailureType#LOOP_ITERATION_COUNT_EXCEEDS_BOUND}. A reached loop always recorded at
+     * least one continuation check (see {@code WorkflowEngine.Session#executeLoopStepInto}), so its
+     * actual run count is exactly {@code children().size() - 1} (the final, non-continuing or
+     * never-authorized check does not itself count as a run iteration); a loop never reached at all
+     * ({@link WorkflowStepStatus#NOT_RUN}) trivially has zero children and is skipped.
+     */
+    private static Optional<ReplayValidationFailure> checkLoopIterationBounds(
+            List<RecordedExecutionNodeV2> nodes, Workflow workflow) {
+        for (RecordedExecutionNodeV2 node : nodes) {
+            if (node.step().stepType() == WorkflowStepType.LOOP
+                    && node.step().status() != WorkflowStepStatus.NOT_RUN) {
+                int actualIterations = node.children().size() - 1;
+                int maxIterations =
+                        workflow.loopMaxIterations(node.step().stepId()).orElse(Integer.MAX_VALUE);
+                if (actualIterations > maxIterations) {
+                    return Optional.of(
+                            new ReplayValidationFailure(
+                                    ReplayFailureType.LOOP_ITERATION_COUNT_EXCEEDS_BOUND,
+                                    "a recorded loop ran more iterations than the live workflow's"
+                                            + " declared bound authorizes"));
+                }
+            }
+            Optional<ReplayValidationFailure> nested =
+                    checkLoopIterationBounds(node.children(), workflow);
+            if (nested.isPresent()) {
+                return nested;
+            }
         }
         return Optional.empty();
     }

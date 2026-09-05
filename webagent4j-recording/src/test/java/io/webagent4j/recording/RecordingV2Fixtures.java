@@ -357,4 +357,45 @@ final class RecordingV2Fixtures {
         return conditionalNode(
                 conditionalStep("root", false), WorkflowBranchSelection.ELSE, List.of());
     }
+
+    // ---- LOOP fixtures ----------------------------------------------------------------------
+
+    static RecordedWorkflowStepV2 loopStep(String stepId) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.LOOP,
+                WorkflowStepStatus.SUCCEEDED,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    static RecordedWorkflowStepV2 loopIterationStep(String stepId, boolean outcome) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.LOOP_ITERATION,
+                WorkflowStepStatus.SUCCEEDED,
+                Optional.of(new RecordedCondition(outcome, "d")),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    /** A {@code LOOP} plan node ("loopId") whose body is a single ACTION plan node ("bodyId"). */
+    static WorkflowExecutionPlan loopPlan(String workflowId, String loopId, String bodyId) {
+        return new WorkflowExecutionPlan(
+                new WorkflowId(workflowId), List.of(loopPlanNode(loopId, bodyId)));
+    }
+
+    static WorkflowPlanNode loopPlanNode(String loopId, String bodyId) {
+        return new WorkflowPlanNode(
+                new WorkflowStepId(loopId),
+                WorkflowStepType.LOOP,
+                false,
+                Optional.empty(),
+                List.of(
+                        new WorkflowPlanBranch(
+                                WorkflowBranchSelection.THEN, List.of(actionPlanNode(bodyId)))));
+    }
 }

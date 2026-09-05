@@ -104,6 +104,7 @@ public record RecordedWorkflowStepV2(
             }
         }
         if (stepType != WorkflowStepType.CONDITIONAL
+                && stepType != WorkflowStepType.LOOP_ITERATION
                 && condition.isPresent()
                 && !condition.get().outcome()
                 && status != WorkflowStepStatus.SKIPPED) {
@@ -121,6 +122,37 @@ public record RecordedWorkflowStepV2(
             if (status == WorkflowStepStatus.SKIPPED) {
                 throw new IllegalArgumentException(
                         "a CONDITIONAL step's own branch decision is never SKIPPED");
+            }
+        }
+        if (stepType == WorkflowStepType.LOOP) {
+            if (condition.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a LOOP step's own result never carries a condition outcome - each"
+                                + " iteration's continuation check is its own LOOP_ITERATION"
+                                + " result");
+            }
+            if (output.isPresent()) {
+                throw new IllegalArgumentException("a LOOP step cannot carry a published output");
+            }
+            if (action.isPresent()) {
+                throw new IllegalArgumentException("a LOOP step cannot carry an action");
+            }
+            if (status == WorkflowStepStatus.SKIPPED) {
+                throw new IllegalArgumentException("a LOOP step's own result is never SKIPPED");
+            }
+        }
+        if (stepType == WorkflowStepType.LOOP_ITERATION) {
+            if (output.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION cannot carry a published output - an iteration's body"
+                                + " steps carry their own outputs");
+            }
+            if (action.isPresent()) {
+                throw new IllegalArgumentException("a LOOP_ITERATION cannot carry an action");
+            }
+            if (status == WorkflowStepStatus.SKIPPED) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION's own continuation decision is never SKIPPED");
             }
         }
         if (stepType == WorkflowStepType.ASSIGN && action.isPresent()) {
@@ -176,6 +208,14 @@ public record RecordedWorkflowStepV2(
                 }
                 requireNoActionSummary(action, failureType);
             }
+            case LOOP_ITERATION_LIMIT_EXCEEDED, LOOP_STEP_INTERRUPTED -> {
+                if (stepType != WorkflowStepType.LOOP_ITERATION) {
+                    throw new IllegalArgumentException(
+                            failureType + " can only occur on a LOOP_ITERATION step");
+                }
+                requireNoActionSummary(action, failureType);
+            }
+            case EXECUTED_NODE_BUDGET_EXCEEDED -> requireNoActionSummary(action, failureType);
         }
     }
 

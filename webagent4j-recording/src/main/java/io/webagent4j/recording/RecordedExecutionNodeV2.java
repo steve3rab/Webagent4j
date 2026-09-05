@@ -26,23 +26,45 @@ public record RecordedExecutionNodeV2(
         Optional<WorkflowBranchSelection> branchSelection,
         List<RecordedExecutionNodeV2> children) {
 
-    /** Validates node shape invariants. */
+    /**
+     * Validates node shape invariants - mirrors {@code WorkflowExecutionNode}'s own rule exactly,
+     * including its {@link WorkflowStepType#LOOP}/{@link WorkflowStepType#LOOP_ITERATION}
+     * extension: a {@code LOOP} node's children are its own {@code LOOP_ITERATION} nodes and it
+     * never itself carries a branch selection; a {@code LOOP_ITERATION} node follows {@code
+     * CONDITIONAL}'s own shape (a branch selection whenever it has children).
+     */
     public RecordedExecutionNodeV2 {
         Objects.requireNonNull(step, "step");
         branchSelection = Objects.requireNonNull(branchSelection, "branchSelection");
         children = List.copyOf(Objects.requireNonNull(children, "children"));
-        if (step.stepType() != WorkflowStepType.CONDITIONAL) {
+        WorkflowStepType stepType = step.stepType();
+        if (stepType == WorkflowStepType.LOOP) {
             if (branchSelection.isPresent()) {
                 throw new IllegalArgumentException(
-                        "only a CONDITIONAL step's execution node may carry a branch selection");
+                        "a LOOP execution node never carries a branch selection - see"
+                                + " WorkflowStepType#LOOP_ITERATION for each iteration's own"
+                                + " decision");
+            }
+        } else if (stepType == WorkflowStepType.CONDITIONAL
+                || stepType == WorkflowStepType.LOOP_ITERATION) {
+            if (!children.isEmpty() && branchSelection.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a "
+                                + stepType
+                                + " execution node with children must carry a branch"
+                                + " selection");
+            }
+        } else {
+            if (branchSelection.isPresent()) {
+                throw new IllegalArgumentException(
+                        "only a CONDITIONAL, LOOP, or LOOP_ITERATION step's execution node may"
+                                + " carry a branch selection");
             }
             if (!children.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "only a CONDITIONAL step's execution node may have children");
+                        "only a CONDITIONAL, LOOP, or LOOP_ITERATION step's execution node may"
+                                + " have children");
             }
-        } else if (!children.isEmpty() && branchSelection.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "a CONDITIONAL execution node with children must carry a branch selection");
         }
     }
 }
