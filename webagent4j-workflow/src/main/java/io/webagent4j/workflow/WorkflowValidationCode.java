@@ -43,5 +43,43 @@ public enum WorkflowValidationCode {
      * #CONDITIONAL_DEPTH_EXCEEDED} (kept unchanged for a {@code CONDITIONAL} step that is itself
      * the one exceeding the shared bound) to a {@code LOOP} step exceeding that same shared bound.
      */
-    LOOP_NESTING_DEPTH_EXCEEDED
+    LOOP_NESTING_DEPTH_EXCEEDED,
+
+    /**
+     * A {@link WorkflowStepType#PARALLEL} step declares fewer than {@link
+     * Workflow#MIN_PARALLEL_BRANCHES} or more than {@link Workflow#MAX_PARALLEL_BRANCHES} branches
+     * - added in 1.3.0.
+     */
+    PARALLEL_INVALID_BRANCH_COUNT,
+
+    /**
+     * A {@link WorkflowStepType#PARALLEL} step is nested deeper than {@link
+     * Workflow#MAX_CONTROL_FLOW_NESTING_DEPTH} - added in 1.3.0, sharing the same combined
+     * control-flow counter and bound {@link #LOOP_NESTING_DEPTH_EXCEEDED} already generalized for
+     * {@code LOOP}.
+     */
+    PARALLEL_NESTING_DEPTH_EXCEEDED,
+
+    /**
+     * A {@link WorkflowStepType#PARALLEL} branch contains a step this framework cannot prove is
+     * safe to run concurrently with its sibling branches - added in 1.3.0: an {@link
+     * WorkflowStepType#ACTION} step whose {@link IWorkflowActionFactory#isParallelSafe()} returns
+     * {@code false} (the default) or throws, found anywhere inside the branch, including nested
+     * inside a further {@code ifElse}/{@code ifThen}/{@code loop}/{@code parallel} step.
+     * Fail-closed: no step is ever treated as parallel-safe by default (see {@code
+     * docs/workflow.md#parallel}).
+     */
+    PARALLEL_BRANCH_UNSAFE_STEP,
+
+    /**
+     * Two different branches of the same {@link WorkflowStepType#PARALLEL} step declare the same
+     * output name - added in 1.3.0. Unlike {@link WorkflowSteps#ifElse}'s two mutually exclusive
+     * branches (where an identical redeclaration in both is safe, since at most one ever runs),
+     * every {@code PARALLEL} branch genuinely executes concurrently, so two branches racing to
+     * publish the same name is always a genuine collision - even when the two declarations are
+     * byte-identical (same type, same secret classification). A collision against an output
+     * declared before the {@code PARALLEL} step (by an earlier sibling step, or a declared input)
+     * is reported as the existing {@link #OUTPUT_COLLISION} instead, exactly as for any other step.
+     */
+    PARALLEL_BRANCH_OUTPUT_COLLISION
 }

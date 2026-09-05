@@ -26,7 +26,14 @@ import java.util.Optional;
  *     runtime decision would select. For a {@link WorkflowStepType#LOOP} step: always exactly one,
  *     of kind {@link WorkflowBranchSelection#THEN}, representing the loop's {@code body} - present
  *     once, structurally, never unrolled into {@code maxIterations} copies (see {@link
- *     WorkflowPlanner#plan}). Empty for every other step type.
+ *     WorkflowPlanner#plan}). For a {@link WorkflowStepType#PARALLEL} step - added in 1.3.0:
+ *     between {@link Workflow#MIN_PARALLEL_BRANCHES} and {@link Workflow#MAX_PARALLEL_BRANCHES}
+ *     entries, one per declared branch in definition order, every one of kind {@link
+ *     WorkflowBranchSelection#THEN} - reusing {@code THEN}'s existing "the branch that runs"
+ *     meaning, now shared across all three control-flow step types, since every {@code PARALLEL}
+ *     branch, like a loop's body, structurally always runs once this step is reached; the branch's
+ *     own position in this list, not any label, is what identifies it. Empty for every other step
+ *     type.
  */
 public record WorkflowPlanNode(
         WorkflowStepId stepId,
@@ -79,9 +86,32 @@ public record WorkflowPlanNode(
                         "a LOOP plan node must carry exactly one THEN branch, representing its"
                                 + " body");
             }
+        } else if (stepType == WorkflowStepType.PARALLEL) {
+            // A PARALLEL step's guard is an ordinary optional when(...) skip-guard, unlike
+            // CONDITIONAL/LOOP's mandatory condition slot, so - unlike those two - a PARALLEL plan
+            // node legitimately may be guarded; nothing to reject about `guarded` here.
+            if (declaredOutput.isPresent()) {
+                throw new IllegalArgumentException("a PARALLEL plan node cannot declare an output");
+            }
+            if (branches.size() < Workflow.MIN_PARALLEL_BRANCHES
+                    || branches.size() > Workflow.MAX_PARALLEL_BRANCHES) {
+                throw new IllegalArgumentException(
+                        "a PARALLEL plan node must carry between "
+                                + Workflow.MIN_PARALLEL_BRANCHES
+                                + " and "
+                                + Workflow.MAX_PARALLEL_BRANCHES
+                                + " branches (inclusive)");
+            }
+            for (WorkflowPlanBranch branch : branches) {
+                if (branch.kind() != WorkflowBranchSelection.THEN) {
+                    throw new IllegalArgumentException(
+                            "every PARALLEL plan node branch must be of kind THEN - each declared"
+                                    + " branch structurally always runs");
+                }
+            }
         } else if (!branches.isEmpty()) {
             throw new IllegalArgumentException(
-                    "only a CONDITIONAL or LOOP plan node may carry branches");
+                    "only a CONDITIONAL, LOOP, or PARALLEL plan node may carry branches");
         }
     }
 }
