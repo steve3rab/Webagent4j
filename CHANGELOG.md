@@ -10,6 +10,27 @@ not imply a published compatibility line.
 
 ### Added
 
+- Bounded Workflow Loops: `WorkflowSteps.loop(id, continueCondition, maxIterations, body)` adds a
+  deterministic, explicitly-bounded repetition control-flow step to `webagent4j-workflow` - a
+  mandatory `maxIterations` (checked against a new framework-wide `MAX_LOOP_ITERATIONS` maximum),
+  a continuation condition evaluated exactly once per iteration attempt, and a body run to
+  completion before the condition is ever re-evaluated. Reaching `maxIterations` while the
+  condition still evaluates `true` fails closed rather than silently stopping. A loop's own
+  control-flow nesting shares the exact same combined depth bound conditional branching already
+  uses, and a cumulative executed-step-node budget guards against a nested-loop structure that is
+  locally within every individual bound yet combinatorially explosive once multiplied together. A
+  loop body's own outputs are structurally declared but never treated as definitely available
+  afterward - a loop may run zero iterations, so nothing it produces can ever be statically
+  guaranteed, exactly like a guarded producer's output. The Execution Plan represents a loop
+  structurally as `LOOP { BODY }`, never unrolled into `maxIterations` copies; the Execution Tree
+  records only the iterations that actually ran, each its own `LOOP_ITERATION` node, with no
+  placeholder for one that never started. Recording V2 and Deterministic Replay are extended the
+  same way: a recorded loop captures only its actually-executed iterations, `ReplayValidator`
+  rejects a recording whose iteration count exceeds what the live workflow's own declared bound
+  authorizes, and replay reproduces the recorded iteration count and decisions without ever
+  re-evaluating the continuation condition or performing a side effect. See
+  [Workflows](docs/workflow.md#bounded-loops) and [Recording](docs/recording.md#bounded-loops).
+
 - Recording V2 and Deterministic Replay: `WorkflowRecordingV2` captures a tree-shaped workflow
   execution - a `WorkflowExecutionPlan` plus a tree mirroring `WorkflowExecutionTree`, so a
   branching execution's actual decision path is explicit - alongside a typed `WorkflowPlanOutput`

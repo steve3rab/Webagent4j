@@ -1,6 +1,7 @@
 package io.webagent4j.recording;
 
 import io.webagent4j.workflow.WorkflowActionSummary;
+import io.webagent4j.workflow.WorkflowBranchSelection;
 import io.webagent4j.workflow.WorkflowConditionResult;
 import io.webagent4j.workflow.WorkflowExecution;
 import io.webagent4j.workflow.WorkflowExecutionNode;
@@ -9,13 +10,11 @@ import io.webagent4j.workflow.WorkflowFailure;
 import io.webagent4j.workflow.WorkflowPlanBranch;
 import io.webagent4j.workflow.WorkflowPlanNode;
 import io.webagent4j.workflow.WorkflowPlanOutput;
-import io.webagent4j.workflow.WorkflowStepId;
 import io.webagent4j.workflow.WorkflowStepResult;
+import io.webagent4j.workflow.WorkflowStepType;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -70,10 +69,7 @@ public final class WorkflowRecorderV2 {
         Objects.requireNonNull(capturedAt, "capturedAt");
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(execution, "execution");
-        Map<WorkflowStepId, WorkflowPlanOutput> declaredOutputs =
-                indexDeclaredOutputs(plan.nodes());
-        List<RecordedExecutionNodeV2> nodes =
-                recordNodes(execution.tree().nodes(), declaredOutputs);
+        List<RecordedExecutionNodeV2> nodes = recordNodes(execution.tree().nodes(), plan.nodes());
         return new WorkflowRecordingV2(
                 RecordingSchemaVersionV2.V2,
                 recordingId,
@@ -85,51 +81,89 @@ public final class WorkflowRecorderV2 {
                 execution.result().failure().map(WorkflowRecorderV2::recordFailure));
     }
 
-    private static Map<WorkflowStepId, WorkflowPlanOutput> indexDeclaredOutputs(
-            List<WorkflowPlanNode> nodes) {
-        Map<WorkflowStepId, WorkflowPlanOutput> index = new HashMap<>();
-        indexDeclaredOutputsInto(nodes, index);
-        return index;
-    }
-
-    private static void indexDeclaredOutputsInto(
-            List<WorkflowPlanNode> nodes, Map<WorkflowStepId, WorkflowPlanOutput> index) {
-        for (WorkflowPlanNode node : nodes) {
-            node.declaredOutput().ifPresent(output -> index.put(node.stepId(), output));
-            for (WorkflowPlanBranch branch : node.branches()) {
-                indexDeclaredOutputsInto(branch.nodes(), index);
-            }
-        }
-    }
-
+    /**
+     * Records {@code nodes} against {@code planNodes}, matched strictly positionally at this level
+     * - never by step ID - since a {@link WorkflowStepType#LOOP}'s iterations reuse the exact same
+     * declared step IDs the plan describes only once, qualified per iteration only in the live
+     * execution tree itself (see {@code WorkflowEngine.Session#qualify}); positional matching is
+     * therefore the only correct correlation, mirroring {@link RecordingV2PlanTreeValidator}'s own
+     * approach for the identical reason.
+     */
     private static List<RecordedExecutionNodeV2> recordNodes(
-            List<WorkflowExecutionNode> nodes,
-            Map<WorkflowStepId, WorkflowPlanOutput> declaredOutputs) {
+            List<WorkflowExecutionNode> nodes, List<WorkflowPlanNode> planNodes) {
         List<RecordedExecutionNodeV2> recorded = new ArrayList<>(nodes.size());
-        for (WorkflowExecutionNode node : nodes) {
-            recorded.add(recordNode(node, declaredOutputs));
+        for (int i = 0; i < nodes.size(); i++) {
+            recorded.add(recordNode(nodes.get(i), planNodes.get(i)));
         }
         return recorded;
     }
 
     private static RecordedExecutionNodeV2 recordNode(
-            WorkflowExecutionNode node, Map<WorkflowStepId, WorkflowPlanOutput> declaredOutputs) {
-        RecordedWorkflowStepV2 step = recordStep(node.result(), declaredOutputs);
-        List<RecordedExecutionNodeV2> children = recordNodes(node.children(), declaredOutputs);
+            WorkflowExecutionNode node, WorkflowPlanNode planNode) {
+        RecordedWorkflowStepV2 step = recordStep(node.result(), planNode.declaredOutput());
+        if (node.result().stepType() == WorkflowStepType.LOOP) {
+            // planNode carries exactly one THEN branch (the body, described once); node.children()
+            // is one LOOP_ITERATION node per continuation check actually performed - each matched
+            // against that same body plan, reused across iterations rather than consumed.
+            List<WorkflowPlanNode> bodyPlan = planNode.branches().get(0).nodes();
+            return new RecordedExecutionNodeV2(
+                    step, node.branchSelection(), recordIterations(node.children(), bodyPlan));
+        }
+        if (node.children().isEmpty()) {
+            return new RecordedExecutionNodeV2(step, node.branchSelection(), List.of());
+        }
+        WorkflowPlanBranch matchingBranch =
+                findBranch(planNode.branches(), node.branchSelection().orElseThrow());
+        List<RecordedExecutionNodeV2> children =
+                recordNodes(node.children(), matchingBranch.nodes());
         return new RecordedExecutionNodeV2(step, node.branchSelection(), children);
     }
 
+    /**
+     * Records each of a {@link WorkflowStepType#LOOP}'s {@code LOOP_ITERATION} nodes - itself not a
+     * plan node, since the plan never unrolls iterations - whose own children (that one iteration's
+     * body, if it ran) are matched against {@code bodyPlan} exactly like {@link #recordNodes}
+     * would.
+     */
+    private static List<RecordedExecutionNodeV2> recordIterations(
+            List<WorkflowExecutionNode> iterationNodes, List<WorkflowPlanNode> bodyPlan) {
+        List<RecordedExecutionNodeV2> recorded = new ArrayList<>(iterationNodes.size());
+        for (WorkflowExecutionNode iterationNode : iterationNodes) {
+            RecordedWorkflowStepV2 iterationStep =
+                    recordStep(iterationNode.result(), Optional.empty());
+            List<RecordedExecutionNodeV2> bodyChildren =
+                    iterationNode.children().isEmpty()
+                            ? List.of()
+                            : recordNodes(iterationNode.children(), bodyPlan);
+            recorded.add(
+                    new RecordedExecutionNodeV2(
+                            iterationStep, iterationNode.branchSelection(), bodyChildren));
+        }
+        return recorded;
+    }
+
+    private static WorkflowPlanBranch findBranch(
+            List<WorkflowPlanBranch> branches, WorkflowBranchSelection selection) {
+        for (WorkflowPlanBranch branch : branches) {
+            if (branch.kind() == selection) {
+                return branch;
+            }
+        }
+        throw new IllegalArgumentException(
+                "recorded branch selection is not structurally possible for this plan node - plan"
+                        + " and execution must describe the same workflow");
+    }
+
     private static RecordedWorkflowStepV2 recordStep(
-            WorkflowStepResult step, Map<WorkflowStepId, WorkflowPlanOutput> declaredOutputs) {
+            WorkflowStepResult step, Optional<WorkflowPlanOutput> declaredOutput) {
         Optional<WorkflowPlanOutput> output = Optional.empty();
         if (step.outputVariableName().isPresent()) {
-            WorkflowPlanOutput declared = declaredOutputs.get(step.stepId());
-            if (declared == null) {
+            if (declaredOutput.isEmpty()) {
                 throw new IllegalArgumentException(
                         "plan does not declare an output for a step the execution published one"
                                 + " for - plan and execution must describe the same workflow");
             }
-            output = Optional.of(declared);
+            output = declaredOutput;
         }
         return new RecordedWorkflowStepV2(
                 step.stepId(),

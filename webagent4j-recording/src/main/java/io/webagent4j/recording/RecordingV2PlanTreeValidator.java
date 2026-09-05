@@ -1,6 +1,7 @@
 package io.webagent4j.recording;
 
 import io.webagent4j.workflow.WorkflowBranchSelection;
+import io.webagent4j.workflow.WorkflowFailureType;
 import io.webagent4j.workflow.WorkflowPlanBranch;
 import io.webagent4j.workflow.WorkflowPlanNode;
 import io.webagent4j.workflow.WorkflowPlanOutput;
@@ -80,12 +81,13 @@ final class RecordingV2PlanTreeValidator {
      */
     static void validate(List<RecordedExecutionNodeV2> nodes, List<WorkflowPlanNode> planNodes) {
         validatePlanDepth(planNodes, 0);
-        validateLevel(nodes, planNodes, 0);
+        validateLevel(nodes, planNodes, 0, "");
     }
 
     private static void validatePlanDepth(List<WorkflowPlanNode> planNodes, int depth) {
         for (WorkflowPlanNode planNode : planNodes) {
-            if (planNode.stepType() != WorkflowStepType.CONDITIONAL) {
+            if (planNode.stepType() != WorkflowStepType.CONDITIONAL
+                    && planNode.stepType() != WorkflowStepType.LOOP) {
                 continue;
             }
             int childDepth = depth + 1;
@@ -100,21 +102,33 @@ final class RecordingV2PlanTreeValidator {
     }
 
     private static void validateLevel(
-            List<RecordedExecutionNodeV2> nodes, List<WorkflowPlanNode> planNodes, int depth) {
+            List<RecordedExecutionNodeV2> nodes,
+            List<WorkflowPlanNode> planNodes,
+            int depth,
+            String idSuffix) {
         if (nodes.size() != planNodes.size()) {
             throw new IllegalArgumentException(
                     "recorded execution nodes do not match the recorded plan's node count at this"
                             + " level");
         }
         for (int i = 0; i < nodes.size(); i++) {
-            validateNode(nodes.get(i), planNodes.get(i), depth);
+            validateNode(nodes.get(i), planNodes.get(i), depth, idSuffix);
         }
     }
 
+    /**
+     * Validates one node against its positionally-matched plan node. {@code idSuffix} is the
+     * iteration qualification this node's step ID is expected to carry - empty everywhere except
+     * inside a {@link WorkflowStepType#LOOP} body, where it is {@code "#<iteration>"} (composing
+     * for nested loops), mirroring exactly how {@code WorkflowEngine.Session#qualify} constructs a
+     * loop iteration's real step IDs. The plan itself never carries this suffix - a {@link
+     * io.webagent4j.workflow.WorkflowExecutionPlan} describes a loop's body exactly once - so the
+     * expected ID is always {@code planNode.stepId() + idSuffix}.
+     */
     private static void validateNode(
-            RecordedExecutionNodeV2 node, WorkflowPlanNode planNode, int depth) {
+            RecordedExecutionNodeV2 node, WorkflowPlanNode planNode, int depth, String idSuffix) {
         RecordedWorkflowStepV2 step = node.step();
-        if (!step.stepId().equals(planNode.stepId())) {
+        if (!step.stepId().value().equals(planNode.stepId().value() + idSuffix)) {
             throw new IllegalArgumentException(
                     "recorded step ID does not match the recorded plan at this position");
         }
@@ -123,6 +137,10 @@ final class RecordingV2PlanTreeValidator {
                     "recorded step type does not match the recorded plan at this position");
         }
         validateOutput(step.output(), planNode.declaredOutput());
+        if (planNode.stepType() == WorkflowStepType.LOOP) {
+            validateLoopNode(node, planNode, depth, idSuffix);
+            return;
+        }
         if (planNode.stepType() != WorkflowStepType.CONDITIONAL) {
             return;
         }
@@ -142,7 +160,173 @@ final class RecordingV2PlanTreeValidator {
             throw new IllegalArgumentException(
                     "recorded execution tree exceeds the maximum supported nesting depth");
         }
-        validateLevel(node.children(), matchingBranch.nodes(), childDepth);
+        validateLevel(node.children(), matchingBranch.nodes(), childDepth, idSuffix);
+    }
+
+    /**
+     * Validates a recorded {@link WorkflowStepType#LOOP} node: it never itself carries a branch
+     * selection (see {@link RecordedExecutionNodeV2}'s own invariant), and each of its children is
+     * one {@link WorkflowStepType#LOOP_ITERATION} continuation check, in order, whose own step ID
+     * must be {@code loopId + idSuffix + "#" + iterationIndex} - hostile input in the count, shape,
+     * ID, or decision of any of them is rejected. The live {@code maxIterations} bound itself is
+     * deliberately not checked here - a {@link io.webagent4j.workflow.WorkflowExecutionPlan} never
+     * encodes it, so only {@code io.webagent4j.recording.replay.ReplayValidator}, which has the
+     * live {@link io.webagent4j.workflow.Workflow} available, can (see its own Javadoc).
+     */
+    private static void validateLoopNode(
+            RecordedExecutionNodeV2 node, WorkflowPlanNode planNode, int depth, String idSuffix) {
+        if (node.branchSelection().isPresent()) {
+            throw new IllegalArgumentException(
+                    "a recorded LOOP node must never carry a branch selection");
+        }
+        int childDepth = depth + 1;
+        if (childDepth > MAX_TREE_DEPTH) {
+            throw new IllegalArgumentException(
+                    "recorded execution tree exceeds the maximum supported nesting depth");
+        }
+        List<WorkflowPlanNode> bodyPlan = planNode.branches().get(0).nodes();
+        List<RecordedExecutionNodeV2> iterations = node.children();
+        for (int i = 0; i < iterations.size(); i++) {
+            String iterationSuffix = idSuffix + "#" + i;
+            validateLoopIterationNode(
+                    iterations.get(i),
+                    planNode.stepId().value(),
+                    bodyPlan,
+                    childDepth,
+                    iterationSuffix);
+        }
+    }
+
+    /**
+     * Validates one recorded {@link WorkflowStepType#LOOP_ITERATION} against the three - and only
+     * three - states {@code WorkflowEngine.Session#executeLoopStepInto} can actually produce for
+     * it:
+     *
+     * <ul>
+     *   <li>no captured outcome (evaluation itself failed, or interrupted before it could run): no
+     *       selection, no children.
+     *   <li>a {@code false} outcome: always {@link WorkflowBranchSelection#NONE}, zero children,
+     *       never {@link WorkflowStepStatus#FAILED} - a false outcome is always a successful no-op,
+     *       exactly like {@code ifThen}'s own false decision.
+     *   <li>a {@code true} outcome: either {@link WorkflowBranchSelection#THEN} (the iteration was
+     *       authorized) or no selection at all, exclusively when {@code status} is {@link
+     *       WorkflowStepStatus#FAILED} with {@link
+     *       WorkflowFailureType#LOOP_ITERATION_LIMIT_EXCEEDED} - the bound was reached while still
+     *       {@code true}, so the iteration was never authorized to start at all. {@link
+     *       WorkflowBranchSelection#ELSE} is never structurally possible for a loop iteration. A
+     *       {@code THEN} selection's children must match {@code bodyPlan} exactly (validated
+     *       positionally, exactly like a conditional branch) whenever {@code bodyPlan} is
+     *       non-empty, with exactly one exception: {@code status} {@link WorkflowStepStatus#FAILED}
+     *       with {@link WorkflowFailureType#LOOP_STEP_INTERRUPTED} - the one state where the thread
+     *       was interrupted after the decision was captured but before {@code runSteps} was ever
+     *       invoked for the body, so zero children were ever produced no matter how large {@code
+     *       bodyPlan} is. A {@code SUCCEEDED} {@code THEN} iteration may only ever carry zero
+     *       children when {@code bodyPlan} itself is empty - never as a stand-in for a body that
+     *       was authorized but never actually recorded.
+     * </ul>
+     */
+    private static void validateLoopIterationNode(
+            RecordedExecutionNodeV2 iterationNode,
+            String loopStepId,
+            List<WorkflowPlanNode> bodyPlan,
+            int depth,
+            String iterationSuffix) {
+        RecordedWorkflowStepV2 step = iterationNode.step();
+        if (step.stepType() != WorkflowStepType.LOOP_ITERATION) {
+            throw new IllegalArgumentException(
+                    "a LOOP node's recorded children must all be LOOP_ITERATION steps");
+        }
+        if (!step.stepId().value().equals(loopStepId + iterationSuffix)) {
+            throw new IllegalArgumentException(
+                    "recorded LOOP_ITERATION step ID does not match its expected iteration"
+                            + " qualification");
+        }
+        if (step.output().isPresent()) {
+            throw new IllegalArgumentException("a LOOP_ITERATION cannot carry a published output");
+        }
+        Optional<RecordedCondition> condition = step.condition();
+        Optional<WorkflowBranchSelection> selection = iterationNode.branchSelection();
+
+        if (condition.isEmpty()) {
+            if (selection.isPresent() || !iterationNode.children().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION with no captured condition outcome cannot carry a branch"
+                                + " selection or children");
+            }
+            return;
+        }
+
+        if (!condition.get().outcome()) {
+            if (selection.isEmpty() || selection.get() != WorkflowBranchSelection.NONE) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION with a false condition outcome must select NONE");
+            }
+            if (!iterationNode.children().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION that selected NONE must carry zero children");
+            }
+            if (step.status() == WorkflowStepStatus.FAILED) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION with a false condition outcome is never FAILED");
+            }
+            return;
+        }
+
+        if (selection.isEmpty()) {
+            boolean isBoundExceeded =
+                    step.status() == WorkflowStepStatus.FAILED
+                            && step.failure().isPresent()
+                            && step.failure().get().type()
+                                    == WorkflowFailureType.LOOP_ITERATION_LIMIT_EXCEEDED;
+            if (!isBoundExceeded) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION with a true condition outcome and no branch selection"
+                                + " must be the bound-exceeded failure");
+            }
+            if (!iterationNode.children().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "a bound-exceeded LOOP_ITERATION must carry zero children");
+            }
+            return;
+        }
+        if (selection.get() != WorkflowBranchSelection.THEN) {
+            throw new IllegalArgumentException(
+                    "a LOOP_ITERATION with a true condition outcome can only select THEN or carry"
+                            + " no selection at all");
+        }
+        boolean interruptedBeforeBody = isInterruptedBeforeBody(step);
+        if (iterationNode.children().isEmpty()) {
+            if (!bodyPlan.isEmpty() && !interruptedBeforeBody) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION that selected THEN for a non-empty loop body must carry"
+                                + " that body's own recorded children - WorkflowEngine only ever"
+                                + " leaves a THEN iteration's children empty for a genuinely empty"
+                                + " declared body, or when interrupted before the body could"
+                                + " start");
+            }
+            return;
+        }
+        if (interruptedBeforeBody) {
+            throw new IllegalArgumentException(
+                    "a LOOP_ITERATION recorded as interrupted before its body started must carry"
+                            + " zero children");
+        }
+        validateLevel(iterationNode.children(), bodyPlan, depth, iterationSuffix);
+    }
+
+    /**
+     * True exactly for the one {@code true}-outcome, {@code THEN}-selected state {@code
+     * WorkflowEngine.Session#executeLoopStepInto} can produce with zero children despite a
+     * non-empty declared body: the executing thread was interrupted after the continuation decision
+     * was captured but before {@code runSteps} was ever invoked for the body, so the iteration's
+     * own result carries {@link WorkflowFailureType#LOOP_STEP_INTERRUPTED} directly (via {@code
+     * addInterrupted}) rather than deferring to a child step's failure the way every other
+     * loop-body failure does.
+     */
+    private static boolean isInterruptedBeforeBody(RecordedWorkflowStepV2 step) {
+        return step.status() == WorkflowStepStatus.FAILED
+                && step.failure().isPresent()
+                && step.failure().get().type() == WorkflowFailureType.LOOP_STEP_INTERRUPTED;
     }
 
     /**

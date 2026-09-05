@@ -21,7 +21,9 @@ import java.util.Optional;
  *
  * @param step the step's own recorded outcome
  * @param branchSelection which branch this step's own decision selected, present only for a {@code
- *     CONDITIONAL} step
+ *     CONDITIONAL} step or a {@code LOOP_ITERATION}'s own continuation decision - never for the
+ *     enclosing {@code LOOP} step itself, which represents no single decision (see {@code
+ *     WorkflowStepType#LOOP_ITERATION})
  */
 public record ReplayedStep(
         RecordedWorkflowStepV2 step, Optional<WorkflowBranchSelection> branchSelection) {
@@ -30,9 +32,12 @@ public record ReplayedStep(
     public ReplayedStep {
         Objects.requireNonNull(step, "step");
         branchSelection = Objects.requireNonNull(branchSelection, "branchSelection");
-        if (step.stepType() != WorkflowStepType.CONDITIONAL && branchSelection.isPresent()) {
+        boolean canCarrySelection =
+                step.stepType() == WorkflowStepType.CONDITIONAL
+                        || step.stepType() == WorkflowStepType.LOOP_ITERATION;
+        if (!canCarrySelection && branchSelection.isPresent()) {
             throw new IllegalArgumentException(
-                    "only a CONDITIONAL step may carry a branch selection");
+                    "only a CONDITIONAL or LOOP_ITERATION step may carry a branch selection");
         }
     }
 }

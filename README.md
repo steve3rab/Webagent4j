@@ -113,7 +113,7 @@ Then use one version property for the BOM:
 The authoritative supported-artifact list is maintained in
 [`docs/api-stability.md`](docs/api-stability.md).
 
-## Browser example
+## Quick start
 
 ```java
 import static io.webagent4j.verification.Verifications.urlContains;
@@ -147,7 +147,115 @@ try (IBrowser browser =
 ```
 
 Use try-with-resources for browsers. The creating caller owns the browser unless a more specific API
-explicitly transfers ownership.
+explicitly transfers ownership. This one governed click is the smallest unit of what WebAgent4J
+does; the next section shows the whole architecture working together.
+
+## Browser workflow example
+
+WebAgent4J is not just a Playwright wrapper with nicer locators - `webagent4j-workflow` and
+`webagent4j-recording` add typed data flow, deterministic control flow, pre-execution validation
+and planning, post-execution introspection, and a versioned, replayable recording format on top of
+the governed action pipeline above. The walkthrough below exercises essentially all of it in one
+coherent scenario: browsing a small paginated catalog, applying a discount only for premium
+customers, and stopping once the last page is reached - never guessing, never looping forever.
+
+The full runnable source is
+[`webagent4j-examples/.../BoundedBrowserWorkflowShowcaseExample.java`](webagent4j-examples/src/main/java/io/webagent4j/examples/BoundedBrowserWorkflowShowcaseExample.java);
+it compiles and is exercised as part of this repository's own build. It runs against a tiny local
+HTTP fixture started inline in `main()` (omitted below for brevity, along with the small helper
+methods) - never a public website - so the whole example stays deterministic and Internet-free.
+
+```java
+// Typed inputs: a live page, a boolean flag, a secret API key never printed or logged
+// in the clear - and a conditional branch that runs a governed click only when true.
+Workflow.Builder builder =
+        Workflow.builder("catalog-browse")
+                .requiredInput(PAGE)
+                .requiredInput(API_KEY)
+                .requiredInput(PREMIUM_CUSTOMER)
+                .step(
+                        WorkflowSteps.ifThen(
+                                "apply-discount-if-premium",
+                                WorkflowConditions.isTrue(PREMIUM_CUSTOMER),
+                                List.of(clickStep("Apply Discount"))))
+                .step(
+                        WorkflowSteps.loop(
+                                "paginate",
+                                pageIndicatorNotAtLastPage(),
+                                5, // maxIterations - no hidden infinite loop, ever
+                                List.of(clickStep("Next"), readPageIndicatorStep())));
+
+// Validate before ever touching the browser - structural only, zero side effects.
+var report = builder.validate();
+System.out.println("Valid: " + report.valid() + ", steps=" + report.stepCount());
+
+Workflow workflow = builder.build();
+
+// Inspect the side-effect-free execution plan: the loop appears once, as LOOP{BODY},
+// never unrolled into 5 copies.
+WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+System.out.println("Plan top-level steps: " + plan.nodes().size());
+
+WorkflowInputs inputs =
+        WorkflowInputs.builder()
+                .put(PAGE, page)
+                .put(API_KEY, "sk_demo_51fddc2c_not_real")
+                .put(PREMIUM_CUSTOMER, true)
+                .build();
+
+// Execute the bounded pagination loop through the real action pipeline.
+WorkflowExecution execution = new WorkflowEngine().executeWithTree(workflow, inputs);
+execution.result().throwIfFailed();
+
+// Inspect the actual execution tree: exactly the iterations that ran.
+var loopNode = execution.tree().nodes().get(1);
+System.out.println("Loop iterations recorded: " + loopNode.children().size());
+
+// Capture Recording V2 and encode it to canonical JSON.
+WorkflowRecorderV2 recorder = new WorkflowRecorderV2();
+WorkflowRecordingV2 recording =
+        recorder.record(
+                new RecordingId("catalog-run-1"), Instant.now(), plan, execution);
+String encoded = new JsonWorkflowRecordingV2Codec().encode(recording);
+System.out.println("Recording encoded: " + encoded.length() + " bytes");
+
+// Deterministic Replay: structural/decision replay only - it reproduces the recorded
+// decisions and iteration count, but never re-clicks or re-visits the browser.
+ReplayValidator.validate(recording, workflow)
+        .ifPresentOrElse(
+                failure -> System.out.println("Replay incompatible: " + failure.type()),
+                () -> {
+                    IReplayOutcome outcome =
+                            WorkflowReplayer.replay(recording, workflow);
+                    System.out.println("Replay outcome: " + outcome);
+                });
+```
+
+**What this example guarantees:**
+
+- The loop is bounded - `maxIterations = 5` is visible in the source, and reaching it while the
+  continuation condition is still true would fail the workflow closed, never loop forever.
+- The continuation condition is evaluated exactly once per iteration attempt, per `WorkflowEngine`'s
+  own semantics - never re-evaluated while an iteration's body runs.
+- Only the selected branch of `apply-discount-if-premium` ever runs - the discount click never
+  happens for a non-premium customer, and there is no fallback or speculative execution.
+- Every workflow variable is typed (`WorkflowVariable<T>`); `API_KEY` is a secret variable and is
+  never exposed by any diagnostic rendering, the execution tree, or the recording.
+- Every click is a governed, exact-target action - the click pipeline atomically reproves its
+  physical target immediately before the backend call, exactly as it does outside a loop.
+- `builder.validate()` inspects the definition before any browser is touched - zero side effects.
+- `WorkflowPlanner.plan(workflow)` is a real, side-effect-free structural plan - the loop is
+  represented once, never unrolled into five copies.
+- The execution tree (`execution.tree()`) reflects exactly what ran: the actual iteration count,
+  never a placeholder for an iteration that never started.
+- Recording V2 captures only the actually-executed path, in exact order.
+- Deterministic Replay reproduces the recorded decisions and iteration count without ever
+  re-evaluating a condition or touching the browser - it is structural/decision replay only, never
+  "browser replay."
+- There is no hidden retry anywhere in this example: a failed click fails the workflow, once.
+
+See [Workflows](docs/workflow.md) and [Recording](docs/recording.md) for the complete model behind
+every step above.
 
 ## Main capabilities
 
@@ -164,8 +272,8 @@ explicitly transfers ownership.
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
 | HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
 | Browser crawler | `webagent4j-browser-crawler` | Single-lane crawling of JavaScript-rendered pages |
-| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, validation, static planning, and structured execution results |
-| Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison |
+| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, bounded loops (`1.3`, in progress), validation, static planning, and structured execution results |
+| Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison; Recording V2 and Deterministic Replay (`io.webagent4j.recording.replay`) for `1.3`, in progress |
 | Plugins | `webagent4j-plugin-api` | Explicit trusted custom locator strategies |
 | CLI | `webagent4j-cli` | Small command-line application |
 
@@ -183,6 +291,12 @@ assignments:
 - **Deterministic branching** — `WorkflowSteps.ifElse`/`ifThen` evaluate a condition exactly once
   and run exactly one branch; the branch not selected produces zero step executions, zero action
   calls, and zero backend invocations. There is no speculative or fallback branch execution.
+- **Bounded loops** (`1.3`, in progress) — `WorkflowSteps.loop` adds an explicitly-bounded repetition
+  step: a mandatory `maxIterations` checked against a framework-wide maximum, a continuation
+  condition evaluated exactly once per iteration attempt, and fail-closed behavior if the bound is
+  reached while the condition is still true — never a disguised repeat-until-success mechanism.
+  Parallel iterations and arbitrary mutable inter-iteration state are explicitly out of scope. See
+  [Workflows](docs/workflow.md#bounded-loops).
 - **Three deliberately separate introspection views**, never merged or toggled between:
 
   ```text
@@ -196,7 +310,12 @@ assignments:
   runs the workflow exactly once and returns the same result as `execute(...)`, plus a hierarchical
   view of the path actually taken.
 
-See [`docs/workflow.md`](docs/workflow.md) for the complete model.
+`webagent4j-recording`'s Recording V2 format (`1.3`, in progress) captures the Execution Plan
+together with a tree mirroring the Execution Tree above, and `io.webagent4j.recording.replay`
+validates a recording's compatibility with a live workflow and deterministically replays its
+recorded decision path — structural/decision replay only, never a re-invocation of an action factory
+or a backend. See [`docs/workflow.md`](docs/workflow.md) and
+[`docs/recording.md`](docs/recording.md#recording-v2) for the complete model.
 
 ## Browser support
 
@@ -309,7 +428,18 @@ must not be inferred from Java serialization or Java object identity.
 - adversarial hardening of cross-module contracts.
 
 `1.1.x` (final release: `1.1.1`) is the previous stable line. Development for the next release
-continues on `develop`.
+continues on `develop` (`1.3.0-SNAPSHOT`), currently in progress:
+
+- **Recording V2 and Deterministic Replay** — a tree-shaped recording format capturing an Execution
+  Plan plus a tree mirroring the Execution Tree, with typed, secret-classified published outputs, and
+  a new `io.webagent4j.recording.replay` package validating and deterministically replaying a
+  recording's decision path. Structural/decision replay only; real side-effect replay remains out of
+  scope for now.
+- **Bounded Workflow Loops** — `WorkflowSteps.loop` adds an explicitly-bounded repetition step
+  integrated across validation, the Execution Plan (`LOOP { BODY }`, never unrolled), the Execution
+  Tree (only actually-executed iterations recorded), and Recording V2/Deterministic Replay.
+
+See [Roadmap](docs/roadmap.md) for the complete, non-normative direction.
 
 ## Contributing
 

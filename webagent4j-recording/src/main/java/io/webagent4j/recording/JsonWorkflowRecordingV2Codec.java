@@ -243,14 +243,32 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
             throw new IllegalArgumentException("recording exceeds maximum encodable node count");
         }
         validateEncodableStep(node.step());
-        if (node.branchSelection().isPresent()
-                && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {
+        boolean introducesDepth = nodeIntroducesDepth(node);
+        if (introducesDepth && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {
             throw new IllegalArgumentException("recording exceeds maximum encodable nesting depth");
         }
-        int childDepth = node.branchSelection().isPresent() ? depth + 1 : depth;
+        int childDepth = introducesDepth ? depth + 1 : depth;
         for (RecordedExecutionNodeV2 child : node.children()) {
             validateEncodableNode(child, counter, childDepth);
         }
+    }
+
+    /**
+     * Returns whether {@code node}'s children sit one control-flow nesting level deeper than {@code
+     * node} itself - {@code true} for a {@code CONDITIONAL} node that captured a branch selection,
+     * and for a {@code LOOP} node's own transition into its {@code LOOP_ITERATION} children (even
+     * though a {@code LOOP} node never itself carries a {@code branchSelection} - see {@link
+     * RecordedExecutionNodeV2}). A {@code LOOP_ITERATION} node's own transition into its body
+     * children is deliberately {@code false}: the single nesting level a loop contributes is
+     * already consumed between the {@code LOOP} node and its iterations, exactly mirroring {@link
+     * RecordingV2PlanTreeValidator#validateLoopNode}/{@code validateLoopIterationNode}'s identical
+     * depth bookkeeping, so encode/decode and validation can never disagree on what counts as one
+     * level.
+     */
+    private static boolean nodeIntroducesDepth(RecordedExecutionNodeV2 node) {
+        return node.step().stepType() == WorkflowStepType.LOOP
+                || (node.step().stepType() == WorkflowStepType.CONDITIONAL
+                        && node.branchSelection().isPresent());
     }
 
     private static void validateEncodableStep(RecordedWorkflowStepV2 step) {
@@ -594,10 +612,17 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
                         "branchSelection",
                         path + ".branchSelection");
         ArrayNode childrenArray = requireArray(node, "children", path + ".children");
-        if (branchSelection.isPresent() && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {
+        // See JsonWorkflowRecordingV2Codec#nodeIntroducesDepth: a LOOP node's transition into its
+        // LOOP_ITERATION children consumes one nesting level even though it never itself carries a
+        // branchSelection, while a LOOP_ITERATION's own transition into its body does not.
+        boolean introducesDepth =
+                step.stepType() == WorkflowStepType.LOOP
+                        || (step.stepType() == WorkflowStepType.CONDITIONAL
+                                && branchSelection.isPresent());
+        if (introducesDepth && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {
             throw new RecordingFormatException("recording exceeds maximum nesting depth");
         }
-        int childDepth = branchSelection.isPresent() ? depth + 1 : depth;
+        int childDepth = introducesDepth ? depth + 1 : depth;
         List<RecordedExecutionNodeV2> children =
                 decodeExecutionNodes(childrenArray, path + ".children", childDepth, counter);
         return new RecordedExecutionNodeV2(step, branchSelection, children);

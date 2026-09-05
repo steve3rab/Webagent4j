@@ -72,6 +72,19 @@ import java.util.function.Function;
  */
 public final class WorkflowEngine {
 
+    /**
+     * Maximum cumulative number of step-node execution attempts (every {@code ACTION}/{@code
+     * ASSIGN}/{@code CONDITIONAL}/{@code LOOP} step position reached, plus every {@code
+     * LOOP_ITERATION} continuation check attempted) a single {@link #execute} call may perform -
+     * added in 1.3.0. A workflow with no {@link WorkflowStepType#LOOP} steps can never approach
+     * this, since its total step count is already fixed by its definition; it exists specifically
+     * to guard against a nested-loop structure that is locally within every individual {@code
+     * maxIterations} bound yet combinatorially explosive once multiplied together (see {@code
+     * docs/workflow.md#bounded-loops}). Reaching it fails closed with {@link
+     * WorkflowFailureType#EXECUTED_NODE_BUDGET_EXCEEDED} - never a silent truncation.
+     */
+    static final int MAX_EXECUTED_WORKFLOW_NODES = 100_000;
+
     /** Creates a reusable, stateless engine. */
     public WorkflowEngine() {}
 
@@ -199,6 +212,7 @@ public final class WorkflowEngine {
         private final Map<String, VariableEntry> variables = new LinkedHashMap<>();
         private final List<String> activeSecrets = new ArrayList<>();
         private final WorkflowOutputs.Builder outputs = new WorkflowOutputs.Builder();
+        private int executedNodeCount;
 
         private final IWorkflowVariables variablesView =
                 new IWorkflowVariables() {
@@ -241,7 +255,7 @@ public final class WorkflowEngine {
             List<PendingStepResult> pendingResults = new ArrayList<>();
             List<PendingExecutionNode> pendingNodes = new ArrayList<>();
             Optional<WorkflowFailure> overallFailure =
-                    runSteps(workflow.steps(), pendingResults, pendingNodes);
+                    runSteps(workflow.steps(), "", pendingResults, pendingNodes);
 
             WorkflowStatus status =
                     overallFailure.isPresent() ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
@@ -282,14 +296,15 @@ public final class WorkflowEngine {
          */
         private Optional<WorkflowFailure> runSteps(
                 List<IWorkflowStep> steps,
+                String idSuffix,
                 List<PendingStepResult> accumulator,
                 List<PendingExecutionNode> nodeAccumulator) {
             for (int i = 0; i < steps.size(); i++) {
                 Optional<WorkflowFailure> failure =
-                        executeStepInto(steps.get(i), accumulator, nodeAccumulator);
+                        executeStepInto(steps.get(i), idSuffix, accumulator, nodeAccumulator);
                 if (failure.isPresent()) {
                     for (int j = i + 1; j < steps.size(); j++) {
-                        PendingStepResult notRunResult = notRun(steps.get(j));
+                        PendingStepResult notRunResult = notRun(steps.get(j), idSuffix);
                         accumulator.add(notRunResult);
                         nodeAccumulator.add(
                                 new PendingExecutionNode(
@@ -309,19 +324,65 @@ public final class WorkflowEngine {
          */
         private Optional<WorkflowFailure> executeStepInto(
                 IWorkflowStep step,
+                String idSuffix,
                 List<PendingStepResult> accumulator,
                 List<PendingExecutionNode> nodeAccumulator) {
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
             AWorkflowStep concreteStep = (AWorkflowStep) step;
-            if (concreteStep instanceof ConditionalWorkflowStep conditional) {
-                return executeConditionalStepInto(conditional, accumulator, nodeAccumulator);
+            Optional<PendingStepResult> budgetExceeded =
+                    budgetExceededResult(qualify(step.id(), idSuffix), concreteStep.stepType());
+            if (budgetExceeded.isPresent()) {
+                PendingStepResult pending = budgetExceeded.get();
+                accumulator.add(pending);
+                nodeAccumulator.add(new PendingExecutionNode(pending, Optional.empty(), List.of()));
+                return pending.failure();
             }
-            PendingStepResult pending = executeStep(step);
+            if (concreteStep instanceof ConditionalWorkflowStep conditional) {
+                return executeConditionalStepInto(
+                        conditional, idSuffix, accumulator, nodeAccumulator);
+            }
+            if (concreteStep instanceof LoopWorkflowStep loop) {
+                return executeLoopStepInto(loop, idSuffix, accumulator, nodeAccumulator);
+            }
+            PendingStepResult pending = executeStep(step, idSuffix);
             accumulator.add(pending);
             nodeAccumulator.add(new PendingExecutionNode(pending, Optional.empty(), List.of()));
             return pending.status() == WorkflowStepStatus.FAILED
                     ? pending.failure()
                     : Optional.empty();
+        }
+
+        /**
+         * Returns {@code original} qualified by {@code idSuffix}, or {@code original} unchanged.
+         */
+        private static WorkflowStepId qualify(WorkflowStepId original, String idSuffix) {
+            return idSuffix.isEmpty() ? original : new WorkflowStepId(original.value() + idSuffix);
+        }
+
+        /**
+         * Consumes one unit of {@link #MAX_EXECUTED_WORKFLOW_NODES} and returns a ready-to-append
+         * {@link PendingStepResult} failing with {@link
+         * WorkflowFailureType#EXECUTED_NODE_BUDGET_EXCEEDED} if the budget is now exceeded, or
+         * empty if execution may proceed.
+         */
+        private Optional<PendingStepResult> budgetExceededResult(
+                WorkflowStepId resultId, WorkflowStepType stepType) {
+            executedNodeCount++;
+            if (executedNodeCount <= MAX_EXECUTED_WORKFLOW_NODES) {
+                return Optional.empty();
+            }
+            return Optional.of(
+                    failedResult(
+                            resultId,
+                            stepType,
+                            Optional.empty(),
+                            WorkflowFailureType.EXECUTED_NODE_BUDGET_EXCEEDED,
+                            "execution stopped: reached the maximum supported cumulative"
+                                    + " executed-step-node budget of "
+                                    + MAX_EXECUTED_WORKFLOW_NODES,
+                            null,
+                            null,
+                            null));
         }
 
         /**
@@ -339,11 +400,15 @@ public final class WorkflowEngine {
          */
         private Optional<WorkflowFailure> executeConditionalStepInto(
                 ConditionalWorkflowStep step,
+                String idSuffix,
                 List<PendingStepResult> accumulator,
                 List<PendingExecutionNode> nodeAccumulator) {
+            WorkflowStepId resultId = qualify(step.id(), idSuffix);
             if (Thread.currentThread().isInterrupted()) {
                 return addInterrupted(
-                        step,
+                        resultId,
+                        WorkflowStepType.CONDITIONAL,
+                        WorkflowFailureType.CONDITIONAL_STEP_INTERRUPTED,
                         Optional.empty(),
                         Optional.empty(),
                         "the executing thread was interrupted before the branch condition could"
@@ -356,7 +421,7 @@ public final class WorkflowEngine {
             if (evaluation.failed()) {
                 PendingStepResult pending =
                         failedResult(
-                                step,
+                                resultId,
                                 WorkflowStepType.CONDITIONAL,
                                 Optional.empty(),
                                 WorkflowFailureType.CONDITION_EVALUATION_FAILED,
@@ -373,7 +438,9 @@ public final class WorkflowEngine {
 
             if (Thread.currentThread().isInterrupted()) {
                 return addInterrupted(
-                        step,
+                        resultId,
+                        WorkflowStepType.CONDITIONAL,
+                        WorkflowFailureType.CONDITIONAL_STEP_INTERRUPTED,
                         conditionResult,
                         Optional.of(selection),
                         "the executing thread was interrupted after the branch decision was"
@@ -386,7 +453,7 @@ public final class WorkflowEngine {
                     evaluation.outcome() ? step.thenSteps() : step.elseSteps().orElse(List.of());
             PendingStepResult conditionalResult =
                     new PendingStepResult(
-                            step.id(),
+                            resultId,
                             WorkflowStepType.CONDITIONAL,
                             WorkflowStepStatus.SUCCEEDED,
                             conditionResult,
@@ -396,7 +463,7 @@ public final class WorkflowEngine {
             accumulator.add(conditionalResult);
             List<PendingExecutionNode> branchChildren = new ArrayList<>();
             Optional<WorkflowFailure> failure =
-                    runSteps(selectedBranch, accumulator, branchChildren);
+                    runSteps(selectedBranch, idSuffix, accumulator, branchChildren);
             nodeAccumulator.add(
                     new PendingExecutionNode(
                             conditionalResult,
@@ -422,8 +489,19 @@ public final class WorkflowEngine {
                     : WorkflowBranchSelection.NONE;
         }
 
+        /**
+         * Shared interruption-boundary handler for a {@link ConditionalWorkflowStep} ({@code
+         * failureType} {@link WorkflowFailureType#CONDITIONAL_STEP_INTERRUPTED}, {@code stepType}
+         * {@link WorkflowStepType#CONDITIONAL}) and a {@link LoopWorkflowStep} iteration ({@code
+         * failureType} {@link WorkflowFailureType#LOOP_STEP_INTERRUPTED}, {@code stepType} {@link
+         * WorkflowStepType#LOOP_ITERATION}) - both observe the executing thread's interrupt flag at
+         * the identical two evaluate/select boundaries (see {@link #executeConditionalStepInto} and
+         * {@link #executeLoopStepInto}).
+         */
         private Optional<WorkflowFailure> addInterrupted(
-                ConditionalWorkflowStep step,
+                WorkflowStepId resultId,
+                WorkflowStepType stepType,
+                WorkflowFailureType failureType,
                 Optional<PendingConditionResult> conditionResult,
                 Optional<WorkflowBranchSelection> branchSelection,
                 String message,
@@ -431,10 +509,10 @@ public final class WorkflowEngine {
                 List<PendingExecutionNode> nodeAccumulator) {
             PendingStepResult pending =
                     failedResult(
-                            step,
-                            WorkflowStepType.CONDITIONAL,
+                            resultId,
+                            stepType,
                             conditionResult,
-                            WorkflowFailureType.CONDITIONAL_STEP_INTERRUPTED,
+                            failureType,
                             message,
                             null,
                             null,
@@ -442,6 +520,196 @@ public final class WorkflowEngine {
             accumulator.add(pending);
             nodeAccumulator.add(new PendingExecutionNode(pending, branchSelection, List.of()));
             return pending.failure();
+        }
+
+        /**
+         * Executes one {@link LoopWorkflowStep}: repeatedly, up to {@code maxIterations} times,
+         * evaluates {@link LoopWorkflowStep#continueCondition()} exactly once per iteration attempt
+         * and - on {@code true} - runs exactly that one iteration's {@link LoopWorkflowStep#body()}
+         * in full before ever re-evaluating the condition; a {@code false} result stops the loop as
+         * a successful no-op for the iteration under consideration. Mirrors {@link
+         * #executeConditionalStepInto}'s interruption boundaries (before the condition is
+         * evaluated, and after the decision is captured but before the body starts) at every
+         * iteration attempt, and shares its "never retry, never re-evaluate" contract: a body
+         * failure stops the whole loop (and workflow) immediately, exactly like any other failure.
+         *
+         * <p>Reaching {@code maxIterations} while the condition still evaluates {@code true} fails
+         * closed with {@link WorkflowFailureType#LOOP_ITERATION_LIMIT_EXCEEDED} - the {@code
+         * (maxIterations + 1)}-th continuation check is where this is discovered, never a {@code
+         * (maxIterations + 1)}-th body run.
+         *
+         * <p>Every flat {@link PendingStepResult} this produces - the loop's own wrapper entry and
+         * each iteration's {@link WorkflowStepType#LOOP_ITERATION} decision (plus, for a started
+         * iteration, its body's own entries) - carries an {@code idSuffix}-qualified {@link
+         * WorkflowStepId} via {@link #qualify}: the wrapper reuses {@code idSuffix} unchanged, and
+         * iteration {@code n}'s decision (and its body) additionally appends {@code "#n"} - so a
+         * declared step ID reused across iterations, or across a nested loop's own iterations, is
+         * always unique in the flat, globally-unique {@code WorkflowResult#steps()} list. The
+         * wrapper's own result is always {@link WorkflowStepStatus#SUCCEEDED}: like a {@code
+         * CONDITIONAL} step's own decision entry, it never itself reports a nested failure - the
+         * iteration or body entry that actually failed does, exactly once, and that single failure
+         * propagates up unchanged.
+         */
+        private Optional<WorkflowFailure> executeLoopStepInto(
+                LoopWorkflowStep step,
+                String idSuffix,
+                List<PendingStepResult> accumulator,
+                List<PendingExecutionNode> nodeAccumulator) {
+            WorkflowStepId wrapperId = qualify(step.id(), idSuffix);
+            PendingStepResult wrapperResult =
+                    new PendingStepResult(
+                            wrapperId,
+                            WorkflowStepType.LOOP,
+                            WorkflowStepStatus.SUCCEEDED,
+                            Optional.empty(),
+                            Optional.empty(),
+                            Optional.empty(),
+                            Optional.empty());
+            accumulator.add(wrapperResult);
+
+            List<PendingExecutionNode> iterationNodes = new ArrayList<>();
+            Optional<WorkflowFailure> failure = Optional.empty();
+            for (int iteration = 0; ; iteration++) {
+                String iterationSuffix = idSuffix + "#" + iteration;
+                WorkflowStepId decisionId = qualify(step.id(), iterationSuffix);
+
+                if (Thread.currentThread().isInterrupted()) {
+                    failure =
+                            addInterrupted(
+                                    decisionId,
+                                    WorkflowStepType.LOOP_ITERATION,
+                                    WorkflowFailureType.LOOP_STEP_INTERRUPTED,
+                                    Optional.empty(),
+                                    Optional.empty(),
+                                    "the executing thread was interrupted before iteration "
+                                            + iteration
+                                            + "'s continuation condition could be evaluated",
+                                    accumulator,
+                                    iterationNodes);
+                    break;
+                }
+
+                Optional<PendingStepResult> budgetExceeded =
+                        budgetExceededResult(decisionId, WorkflowStepType.LOOP_ITERATION);
+                if (budgetExceeded.isPresent()) {
+                    PendingStepResult pending = budgetExceeded.get();
+                    accumulator.add(pending);
+                    iterationNodes.add(
+                            new PendingExecutionNode(pending, Optional.empty(), List.of()));
+                    failure = pending.failure();
+                    break;
+                }
+
+                ConditionEvaluationResult evaluation =
+                        evaluateConditionSafely(step.continueCondition());
+                if (evaluation.failed()) {
+                    PendingStepResult pending =
+                            failedResult(
+                                    decisionId,
+                                    WorkflowStepType.LOOP_ITERATION,
+                                    Optional.empty(),
+                                    WorkflowFailureType.CONDITION_EVALUATION_FAILED,
+                                    evaluation.failureMessage(),
+                                    evaluation.underlyingTypeName(),
+                                    null,
+                                    null);
+                    accumulator.add(pending);
+                    iterationNodes.add(
+                            new PendingExecutionNode(pending, Optional.empty(), List.of()));
+                    failure = pending.failure();
+                    break;
+                }
+
+                Optional<PendingConditionResult> conditionResult =
+                        Optional.of(evaluation.pending());
+                if (!evaluation.outcome()) {
+                    PendingStepResult pending =
+                            new PendingStepResult(
+                                    decisionId,
+                                    WorkflowStepType.LOOP_ITERATION,
+                                    WorkflowStepStatus.SUCCEEDED,
+                                    conditionResult,
+                                    Optional.empty(),
+                                    Optional.empty(),
+                                    Optional.empty());
+                    accumulator.add(pending);
+                    iterationNodes.add(
+                            new PendingExecutionNode(
+                                    pending, Optional.of(WorkflowBranchSelection.NONE), List.of()));
+                    break;
+                }
+
+                if (iteration >= step.maxIterations()) {
+                    PendingStepResult pending =
+                            failedResult(
+                                    decisionId,
+                                    WorkflowStepType.LOOP_ITERATION,
+                                    conditionResult,
+                                    WorkflowFailureType.LOOP_ITERATION_LIMIT_EXCEEDED,
+                                    "loop '"
+                                            + step.id()
+                                            + "' reached its maxIterations bound of "
+                                            + step.maxIterations()
+                                            + " while its continuation condition still evaluated"
+                                            + " true",
+                                    null,
+                                    null,
+                                    null);
+                    accumulator.add(pending);
+                    // No branch selection: a true outcome refused at the bound is a distinct third
+                    // state from THEN (body authorized) or NONE (a false outcome's normal stop) -
+                    // see RecordingV2PlanTreeValidator#validateLoopIterationNode.
+                    iterationNodes.add(
+                            new PendingExecutionNode(pending, Optional.empty(), List.of()));
+                    failure = pending.failure();
+                    break;
+                }
+
+                if (Thread.currentThread().isInterrupted()) {
+                    failure =
+                            addInterrupted(
+                                    decisionId,
+                                    WorkflowStepType.LOOP_ITERATION,
+                                    WorkflowFailureType.LOOP_STEP_INTERRUPTED,
+                                    conditionResult,
+                                    Optional.of(WorkflowBranchSelection.THEN),
+                                    "the executing thread was interrupted after iteration "
+                                            + iteration
+                                            + "'s continuation decision was captured but before its"
+                                            + " body could start",
+                                    accumulator,
+                                    iterationNodes);
+                    break;
+                }
+
+                PendingStepResult decisionPending =
+                        new PendingStepResult(
+                                decisionId,
+                                WorkflowStepType.LOOP_ITERATION,
+                                WorkflowStepStatus.SUCCEEDED,
+                                conditionResult,
+                                Optional.empty(),
+                                Optional.empty(),
+                                Optional.empty());
+                accumulator.add(decisionPending);
+                List<PendingExecutionNode> bodyChildren = new ArrayList<>();
+                Optional<WorkflowFailure> bodyFailure =
+                        runSteps(step.body(), iterationSuffix, accumulator, bodyChildren);
+                iterationNodes.add(
+                        new PendingExecutionNode(
+                                decisionPending,
+                                Optional.of(WorkflowBranchSelection.THEN),
+                                List.copyOf(bodyChildren)));
+                if (bodyFailure.isPresent()) {
+                    failure = bodyFailure;
+                    break;
+                }
+            }
+
+            nodeAccumulator.add(
+                    new PendingExecutionNode(
+                            wrapperResult, Optional.empty(), List.copyOf(iterationNodes)));
+            return failure;
         }
 
         /**
@@ -578,7 +846,7 @@ public final class WorkflowEngine {
             List<PendingStepResult> notRunSteps = new ArrayList<>();
             List<PendingExecutionNode> notRunNodes = new ArrayList<>();
             for (IWorkflowStep step : workflow.steps()) {
-                PendingStepResult pending = notRun(step);
+                PendingStepResult pending = notRun(step, "");
                 notRunSteps.add(pending);
                 notRunNodes.add(new PendingExecutionNode(pending, Optional.empty(), List.of()));
             }
@@ -596,10 +864,10 @@ public final class WorkflowEngine {
             return new WorkflowExecution(result, tree);
         }
 
-        private static PendingStepResult notRun(IWorkflowStep step) {
+        private static PendingStepResult notRun(IWorkflowStep step, String idSuffix) {
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
             return new PendingStepResult(
-                    step.id(),
+                    qualify(step.id(), idSuffix),
                     ((AWorkflowStep) step).stepType(),
                     WorkflowStepStatus.NOT_RUN,
                     Optional.empty(),
@@ -704,9 +972,10 @@ public final class WorkflowEngine {
             return ConditionEvaluationResult.success(outcome, pending);
         }
 
-        private PendingStepResult executeStep(IWorkflowStep step) {
+        private PendingStepResult executeStep(IWorkflowStep step, String idSuffix) {
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
             AWorkflowStep concreteStep = (AWorkflowStep) step;
+            WorkflowStepId resultId = qualify(step.id(), idSuffix);
             Optional<PendingConditionResult> conditionResult = Optional.empty();
 
             if (step.condition().isPresent()) {
@@ -714,7 +983,7 @@ public final class WorkflowEngine {
                         evaluateConditionSafely(step.condition().get());
                 if (evaluation.failed()) {
                     return failedResult(
-                            step,
+                            resultId,
                             concreteStep.stepType(),
                             Optional.empty(),
                             WorkflowFailureType.CONDITION_EVALUATION_FAILED,
@@ -726,7 +995,7 @@ public final class WorkflowEngine {
                 conditionResult = Optional.of(evaluation.pending());
                 if (!evaluation.outcome()) {
                     return new PendingStepResult(
-                            step.id(),
+                            resultId,
                             concreteStep.stepType(),
                             WorkflowStepStatus.SKIPPED,
                             conditionResult,
@@ -741,7 +1010,7 @@ public final class WorkflowEngine {
                 outcome = concreteStep.run(variablesView);
             } catch (RuntimeException e) {
                 return failedResult(
-                        step,
+                        resultId,
                         concreteStep.stepType(),
                         conditionResult,
                         WorkflowFailureType.STEP_EXCEPTION,
@@ -753,7 +1022,7 @@ public final class WorkflowEngine {
 
             if (!outcome.success()) {
                 return failedResult(
-                        step,
+                        resultId,
                         concreteStep.stepType(),
                         conditionResult,
                         outcome.failureType(),
@@ -772,7 +1041,7 @@ public final class WorkflowEngine {
             }
 
             return new PendingStepResult(
-                    step.id(),
+                    resultId,
                     concreteStep.stepType(),
                     WorkflowStepStatus.SUCCEEDED,
                     conditionResult,
@@ -782,7 +1051,7 @@ public final class WorkflowEngine {
         }
 
         private PendingStepResult failedResult(
-                IWorkflowStep step,
+                WorkflowStepId resultId,
                 WorkflowStepType stepType,
                 Optional<PendingConditionResult> conditionResult,
                 WorkflowFailureType type,
@@ -794,11 +1063,11 @@ public final class WorkflowEngine {
                     new WorkflowFailure(
                             type,
                             redact(message),
-                            Optional.of(step.id()),
+                            Optional.of(resultId),
                             Optional.ofNullable(underlyingTypeName),
                             Optional.ofNullable(actionFailureType));
             return new PendingStepResult(
-                    step.id(),
+                    resultId,
                     stepType,
                     WorkflowStepStatus.FAILED,
                     conditionResult,

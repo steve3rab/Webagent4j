@@ -78,6 +78,32 @@ public final class Workflow {
     static final int MAX_CONDITIONAL_NESTING_DEPTH = 64;
 
     /**
+     * Maximum accepted <b>combined</b> control-flow nesting depth of a workflow definition - added
+     * in 1.3.0, generalizing {@link #MAX_CONDITIONAL_NESTING_DEPTH} (kept as its own name and value
+     * for a {@code CONDITIONAL} step, and for every existing test that names it) to also cover a
+     * {@link WorkflowStepType#LOOP} step: the two share one counter and one bound, exactly equal in
+     * value, rather than two independently-tracked limits. A top-level {@code ifElse}/{@code
+     * ifThen} or {@code loop} step is depth 1; one of either kind nested inside it is depth 2; and
+     * so on - a {@code loop} nested inside a conditional branch, or a conditional nested inside a
+     * loop body, contributes to the exact same running depth. See {@link
+     * #MAX_CONDITIONAL_NESTING_DEPTH}'s Javadoc for why a single {@link Builder#build()}-time check
+     * here is sufficient to keep both {@link WorkflowEngine}'s and {@link WorkflowPlanner}'s
+     * recursive traversals within a normal JVM stack, with no independent runtime depth check
+     * needed in either.
+     */
+    static final int MAX_CONTROL_FLOW_NESTING_DEPTH = MAX_CONDITIONAL_NESTING_DEPTH;
+
+    /**
+     * Maximum accepted {@code maxIterations} for a {@link WorkflowStepType#LOOP} step - added in
+     * 1.3.0. A bounded loop is an explicit, framework-enforced control structure, never an
+     * unbounded or disguised repeat-until-success mechanism: even a workflow author who declares an
+     * excessive bound cannot obtain one, and {@link WorkflowEngine} never needs a second,
+     * independent runtime cap layered on top of this single definition-time one (see {@code
+     * docs/workflow.md#bounded-loops}).
+     */
+    static final int MAX_LOOP_ITERATIONS = 10_000;
+
+    /**
      * Maximum number of diagnostics {@link Builder#validate()} accumulates before setting {@link
      * WorkflowValidationReport#diagnosticsTruncated()} and discarding the rest - a
      * caller-controlled definition could otherwise force unbounded retention of diagnostic text
@@ -125,6 +151,54 @@ public final class Workflow {
     /** Returns every step, in execution order - for {@link WorkflowEngine}. */
     List<IWorkflowStep> steps() {
         return steps;
+    }
+
+    /**
+     * Returns the declared {@code maxIterations} bound for the {@link WorkflowStepType#LOOP} step
+     * identified by {@code stepId}, if this workflow declares one with that ID at any nesting depth
+     * (inside any conditional branch or loop body) - added in 1.3.0. Empty if no such step exists,
+     * or if {@code stepId} identifies a step of a different type.
+     *
+     * <p>This is the single piece of a {@code LoopWorkflowStep}'s otherwise package-private
+     * structure this module exposes across the module boundary: {@code
+     * io.webagent4j.recording.replay.ReplayValidator} uses it to reject a recording whose recorded
+     * iteration count for a loop exceeds what the live workflow actually authorizes - a check the
+     * recording's own structural plan cannot make on its own, since a {@link WorkflowExecutionPlan}
+     * deliberately never encodes {@code maxIterations} (see {@code
+     * docs/workflow.md#bounded-loops}).
+     */
+    public Optional<Integer> loopMaxIterations(WorkflowStepId stepId) {
+        Objects.requireNonNull(stepId, "stepId");
+        return findLoopMaxIterations(steps, stepId);
+    }
+
+    private static Optional<Integer> findLoopMaxIterations(
+            List<IWorkflowStep> steps, WorkflowStepId stepId) {
+        for (IWorkflowStep step : steps) {
+            // Safe: IWorkflowStep is sealed and permits only AWorkflowStep.
+            AWorkflowStep concreteStep = (AWorkflowStep) step;
+            if (concreteStep instanceof LoopWorkflowStep loop) {
+                if (step.id().equals(stepId)) {
+                    return Optional.of(loop.maxIterations());
+                }
+                Optional<Integer> nested = findLoopMaxIterations(loop.body(), stepId);
+                if (nested.isPresent()) {
+                    return nested;
+                }
+            } else if (concreteStep instanceof ConditionalWorkflowStep conditional) {
+                Optional<Integer> thenMatch =
+                        findLoopMaxIterations(conditional.thenSteps(), stepId);
+                if (thenMatch.isPresent()) {
+                    return thenMatch;
+                }
+                Optional<Integer> elseMatch =
+                        findLoopMaxIterations(conditional.elseSteps().orElse(List.of()), stepId);
+                if (elseMatch.isPresent()) {
+                    return elseMatch;
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     /**
@@ -492,6 +566,55 @@ public final class Workflow {
                 mergeBranchDeclarations(
                         byName, declared, thenResult.declared(), elseResult.declared(), analysis);
                 mergeBranchDefinite(definite, thenResult.definite(), elseResult.definite());
+                return;
+            }
+            if (concreteStep instanceof LoopWorkflowStep loop) {
+                int nestedDepth = conditionalDepth + 1;
+                analysis.observeDepth(nestedDepth);
+                if (nestedDepth > MAX_CONTROL_FLOW_NESTING_DEPTH) {
+                    analysis.report(
+                            WorkflowValidationCode.LOOP_NESTING_DEPTH_EXCEEDED,
+                            step.id(),
+                            null,
+                            "step '"
+                                    + step.id()
+                                    + "' exceeds the maximum supported control-flow nesting depth"
+                                    + " of "
+                                    + MAX_CONTROL_FLOW_NESTING_DEPTH);
+                    return;
+                }
+                if (loop.maxIterations() < 1 || loop.maxIterations() > MAX_LOOP_ITERATIONS) {
+                    analysis.report(
+                            WorkflowValidationCode.LOOP_INVALID_MAX_ITERATIONS,
+                            step.id(),
+                            null,
+                            "step '"
+                                    + step.id()
+                                    + "' declares maxIterations="
+                                    + loop.maxIterations()
+                                    + ", which must be between 1 and "
+                                    + MAX_LOOP_ITERATIONS
+                                    + " (inclusive)");
+                    return;
+                }
+                validateCondition(step, loop.continueCondition(), definite, analysis);
+                // The loop's body is validated exactly like a single ifThen branch with no else:
+                // its own newly-declared outputs join the outer, guard-independent `declared` set
+                // (so a sibling step can never redeclare one of them), but never `definite` - the
+                // loop may run zero iterations, so nothing it might produce can ever be statically
+                // guaranteed to a later step, exactly like a guarded producer's output (see
+                // WorkflowSteps#loop's Javadoc).
+                BranchResult bodyResult =
+                        validateBranch(
+                                loop.body(),
+                                byName,
+                                declared,
+                                definite,
+                                seenStepIds,
+                                nestedDepth,
+                                analysis);
+                mergeOneBranchDeclaration(byName, declared, bodyResult.declared(), analysis);
+                mergeBranchDefinite(definite, bodyResult.definite(), definite);
                 return;
             }
             concreteStep
