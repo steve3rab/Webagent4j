@@ -4,6 +4,7 @@ import io.webagent4j.workflow.WorkflowBranchSelection;
 import io.webagent4j.workflow.WorkflowPlanBranch;
 import io.webagent4j.workflow.WorkflowPlanNode;
 import io.webagent4j.workflow.WorkflowPlanOutput;
+import io.webagent4j.workflow.WorkflowStepStatus;
 import io.webagent4j.workflow.WorkflowStepType;
 import java.util.List;
 import java.util.Optional;
@@ -22,6 +23,18 @@ import java.util.Optional;
  * already proven consistent with its own plan - Deterministic Replay's {@code ReplayValidator} then
  * only has to additionally check the plan itself against the live workflow, never the tree against
  * the plan.
+ *
+ * <p><b>A {@code CONDITIONAL} node's captured decision must be one {@code WorkflowEngine} can
+ * actually produce</b> (see {@link #validateConditionalDecision}): {@link
+ * RecordedWorkflowStepV2#condition()} and the node's {@code branchSelection} are always both
+ * present or both absent - never one without the other - a {@code SUCCEEDED} conditional always has
+ * both, and a present outcome always agrees with the selection it implies ({@code true} only ever
+ * pairs with {@code THEN}, {@code false} only ever pairs with a non-{@code THEN} branch this plan
+ * node actually declares). A conditional step is never {@code SKIPPED} - {@code
+ * ConditionalWorkflowStep} does not support the generic {@code when(...)} guard other step types
+ * do, precisely because its one condition slot already carries the mandatory branch-selector
+ * meaning - so a decision that merely says a condition succeeded without ever recording what it
+ * selected is exactly the ambiguous, unreplayable state this check exists to reject.
  *
  * <p><b>Matching is strictly positional, with no fallback lookup:</b> the node at index {@code i}
  * of a level is checked only against the plan node at index {@code i} of the same level - never
@@ -113,6 +126,7 @@ final class RecordingV2PlanTreeValidator {
         if (planNode.stepType() != WorkflowStepType.CONDITIONAL) {
             return;
         }
+        validateConditionalDecision(step, node.branchSelection());
         if (node.branchSelection().isEmpty()) {
             return;
         }
@@ -129,6 +143,45 @@ final class RecordingV2PlanTreeValidator {
                     "recorded execution tree exceeds the maximum supported nesting depth");
         }
         validateLevel(node.children(), matchingBranch.nodes(), childDepth);
+    }
+
+    /**
+     * Validates that a {@code CONDITIONAL} step's captured decision - {@link
+     * RecordedWorkflowStepV2#condition()} and the enclosing node's {@code branchSelection} -
+     * matches exactly one of the states {@code WorkflowEngine} can actually produce (see {@code
+     * WorkflowEngine.Session#executeConditionalStepInto}): the condition and the branch selection
+     * are always captured together or not at all - never one without the other - a {@code
+     * SUCCEEDED} step always has both, and whichever selection is present always agrees with the
+     * captured outcome ({@code true} only ever selects {@code THEN}; {@code false} only ever
+     * selects a non-{@code THEN} branch, which of the two is checked separately, against the plan's
+     * actual branch shape, by {@link #validateNode}'s caller).
+     */
+    private static void validateConditionalDecision(
+            RecordedWorkflowStepV2 step, Optional<WorkflowBranchSelection> branchSelection) {
+        Optional<RecordedCondition> condition = step.condition();
+        if (condition.isPresent() != branchSelection.isPresent()) {
+            throw new IllegalArgumentException(
+                    "a recorded CONDITIONAL step's condition outcome and branch selection must be"
+                            + " captured together or not at all");
+        }
+        if (step.status() == WorkflowStepStatus.SUCCEEDED && condition.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "a SUCCEEDED CONDITIONAL step must carry the branch decision it captured");
+        }
+        if (condition.isEmpty()) {
+            return;
+        }
+        boolean outcome = condition.get().outcome();
+        WorkflowBranchSelection selection = branchSelection.get();
+        boolean consistentWithOutcome =
+                outcome
+                        ? selection == WorkflowBranchSelection.THEN
+                        : selection != WorkflowBranchSelection.THEN;
+        if (!consistentWithOutcome) {
+            throw new IllegalArgumentException(
+                    "recorded branch selection is not consistent with the recorded condition"
+                            + " outcome");
+        }
     }
 
     private static void validateOutput(

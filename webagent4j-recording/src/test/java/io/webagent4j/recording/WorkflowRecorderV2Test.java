@@ -336,6 +336,50 @@ class WorkflowRecorderV2Test {
         assertThat(decoded).isEqualTo(recording);
     }
 
+    /**
+     * DECISION-014: an {@code ifThen} whose condition evaluates {@code false} records the
+     * structural {@code NONE} decision (a no-op success, never {@code ELSE}, which does not exist
+     * for this step) with zero children - the real, engine-produced counterpart to {@link
+     * RecordingV2ConditionalDecisionTest#decision007FalseOutcomeWithNoneOnAnIfThenIsAccepted()}'s
+     * hand-built fixture.
+     */
+    @Test
+    void capturesAnIfThenFalseDecisionAsNone() {
+        WorkflowVariable<Boolean> flag = WorkflowVariable.publicValue("flag", Boolean.class);
+        Workflow workflow =
+                Workflow.builder("wf-v2-ifthen-none")
+                        .requiredInput(flag)
+                        .step(
+                                WorkflowSteps.ifThen(
+                                        "branch",
+                                        WorkflowConditions.isTrue(flag),
+                                        List.of(
+                                                WorkflowSteps.assign(
+                                                        "then",
+                                                        WorkflowVariable.publicValue(
+                                                                "out", String.class),
+                                                        "then-val"))))
+                        .build();
+        WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+        WorkflowExecution execution =
+                engine.executeWithTree(workflow, WorkflowInputs.builder().put(flag, false).build());
+        assertThat(execution.result().completed()).isTrue();
+
+        WorkflowRecordingV2 recording =
+                recorder.record(
+                        new RecordingId("rec-v2-ifthen-none"),
+                        Instant.parse("2026-01-01T00:00:00Z"),
+                        plan,
+                        execution);
+
+        RecordedExecutionNodeV2 conditionalNode = recording.nodes().get(0);
+        assertThat(conditionalNode.branchSelection()).contains(WorkflowBranchSelection.NONE);
+        assertThat(conditionalNode.children()).isEmpty();
+
+        WorkflowRecordingV2 decoded = codec.decode(codec.encode(recording));
+        assertThat(decoded).isEqualTo(recording);
+    }
+
     @Test
     void rejectsAPlanThatDoesNotDeclareAnOutputTheExecutionPublished() {
         WorkflowVariable<String> output = WorkflowVariable.publicValue("out", String.class);

@@ -386,26 +386,27 @@ class RecordingV2PlanTreeValidatorTest {
 
     /**
      * DEPTH-REC2-003: a plan nested to exactly the maximum depth is accepted even when the recorded
-     * tree never selects into it (top-level conditional recorded with no selection) - proving the
-     * plan's own depth is checked independently of which branch, if any, the tree actually
-     * traverses.
+     * tree never selects into it - a genuine, engine-possible {@code ifElse} deciding {@code false}
+     * and selecting the empty {@code ELSE} branch, while the plan's {@code THEN} branch (never
+     * entered by this execution) is nested to the limit - proving the plan's own depth is checked
+     * independently of which branch, if any, the tree actually traverses. (Superseded fixture note:
+     * an earlier version of this test paired a {@code SUCCEEDED} condition with an absent branch
+     * selection to represent "unselected" - an impossible state {@code WorkflowEngine} can never
+     * produce and that {@link RecordingV2PlanTreeValidator} now rejects; see the DECISION-* tests.)
      */
     @Test
     void depthRec2003PlanDepthAtLimitIsAcceptedWithAnUnselectedTree() {
-        int depth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH;
-        WorkflowExecutionPlan plan = RecordingV2Fixtures.nestedConditionalPlan("wf", depth);
-        RecordedExecutionNodeV2 unselected =
-                new RecordedExecutionNodeV2(
-                        RecordingV2Fixtures.conditionalStep("c0", true),
-                        Optional.empty(),
-                        List.of());
+        int thenDepth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH - 1;
+        WorkflowExecutionPlan plan =
+                RecordingV2Fixtures.rootSelectsElseWithDeepThenPlan("wf", thenDepth);
+        RecordedExecutionNodeV2 selectedElse = RecordingV2Fixtures.rootSelectsElseNode();
 
         WorkflowRecordingV2 recording =
                 RecordingV2Fixtures.recordingWith(
                         "wf",
                         plan,
                         WorkflowStatus.COMPLETED,
-                        List.of(unselected),
+                        List.of(selectedElse),
                         Optional.empty());
 
         assertThat(recording.nodes()).hasSize(1);
@@ -413,18 +414,16 @@ class RecordingV2PlanTreeValidatorTest {
 
     /**
      * DEPTH-REC2-004: a plan nested one level past the maximum depth is rejected even though the
-     * recorded tree never selects into it - the plan's own excessive depth, hidden entirely in a
-     * branch nothing selected, is still caught by the independent whole-plan depth walk.
+     * recorded tree never selects into it - the plan's own excessive depth, hidden entirely in the
+     * {@code THEN} branch a real {@code false}/{@code ELSE} decision never entered, is still caught
+     * by the independent whole-plan depth walk.
      */
     @Test
     void depthRec2004PlanDepthOneOverLimitIsRejectedEvenWithAnUnselectedTree() {
-        int depth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH + 1;
-        WorkflowExecutionPlan plan = RecordingV2Fixtures.nestedConditionalPlan("wf", depth);
-        RecordedExecutionNodeV2 unselected =
-                new RecordedExecutionNodeV2(
-                        RecordingV2Fixtures.conditionalStep("c0", true),
-                        Optional.empty(),
-                        List.of());
+        int thenDepth = RecordingV2PlanTreeValidator.MAX_TREE_DEPTH;
+        WorkflowExecutionPlan plan =
+                RecordingV2Fixtures.rootSelectsElseWithDeepThenPlan("wf", thenDepth);
+        RecordedExecutionNodeV2 selectedElse = RecordingV2Fixtures.rootSelectsElseNode();
 
         assertThatThrownBy(
                         () ->
@@ -432,7 +431,7 @@ class RecordingV2PlanTreeValidatorTest {
                                         "wf",
                                         plan,
                                         WorkflowStatus.COMPLETED,
-                                        List.of(unselected),
+                                        List.of(selectedElse),
                                         Optional.empty()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("recorded plan exceeds the maximum supported nesting depth");

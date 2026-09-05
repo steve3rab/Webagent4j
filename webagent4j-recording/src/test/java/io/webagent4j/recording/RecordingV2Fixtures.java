@@ -111,6 +111,22 @@ final class RecordingV2Fixtures {
                 Optional.empty());
     }
 
+    /**
+     * A {@code SUCCEEDED} CONDITIONAL step with no captured condition at all - an engine-impossible
+     * shape {@code RecordingV2PlanTreeValidator} rejects, since a succeeded decision is never made
+     * without capturing what it decided.
+     */
+    static RecordedWorkflowStepV2 conditionalStepWithoutCondition(String stepId) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.CONDITIONAL,
+                WorkflowStepStatus.SUCCEEDED,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
     static RecordedWorkflowStepV2 actionStepFailedWithSummary(
             String stepId,
             RecordedFailure failure,
@@ -305,5 +321,40 @@ final class RecordingV2Fixtures {
                         : List.of(nestedConditionalExecutionNode(stepId + "c", depth - 1));
         return new RecordedExecutionNodeV2(
                 conditionalStep(stepId, true), Optional.of(WorkflowBranchSelection.THEN), children);
+    }
+
+    /**
+     * A root {@code ifElse}-shaped CONDITIONAL plan node ("root") whose ELSE branch is empty and
+     * whose THEN branch holds a conditional chain nested {@code thenDepth} levels deep - a genuine,
+     * engine-producible shape for exercising the plan's own depth bound in a branch a real
+     * execution selecting ELSE never enters. The root itself is depth 1, so the deepest node in the
+     * THEN chain sits at overall depth {@code thenDepth + 1}.
+     */
+    static WorkflowExecutionPlan rootSelectsElseWithDeepThenPlan(String workflowId, int thenDepth) {
+        WorkflowPlanNode deepThen = nestedConditionalPlanNode("deep", thenDepth);
+        return new WorkflowExecutionPlan(
+                new WorkflowId(workflowId),
+                List.of(
+                        new WorkflowPlanNode(
+                                new WorkflowStepId("root"),
+                                WorkflowStepType.CONDITIONAL,
+                                false,
+                                Optional.empty(),
+                                List.of(
+                                        new WorkflowPlanBranch(
+                                                WorkflowBranchSelection.THEN, List.of(deepThen)),
+                                        new WorkflowPlanBranch(
+                                                WorkflowBranchSelection.ELSE, List.of())))));
+    }
+
+    /**
+     * The execution-tree counterpart of {@link #rootSelectsElseWithDeepThenPlan}: a real,
+     * engine-possible {@code false}-outcome {@code ELSE} decision with zero children, matching that
+     * plan's empty {@code ELSE} branch - the deeply nested {@code THEN} branch is never entered,
+     * exactly like a real execution's non-selected branch.
+     */
+    static RecordedExecutionNodeV2 rootSelectsElseNode() {
+        return conditionalNode(
+                conditionalStep("root", false), WorkflowBranchSelection.ELSE, List.of());
     }
 }
