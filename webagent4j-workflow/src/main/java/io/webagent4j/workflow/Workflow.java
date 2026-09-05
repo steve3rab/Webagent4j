@@ -532,11 +532,15 @@ public final class Workflow {
          * <p>{@code insideParallel} is {@code true} for every step reachable from inside any {@link
          * WorkflowStepType#PARALLEL} branch, at any nesting depth (including a further conditional,
          * loop, or nested parallel step's own contents) - added in 1.3.0, see {@link
-         * #validateParallelBranches}. When {@code true}, an {@link ActionWorkflowStep} whose
-         * factory is not provably parallel-safe is reported with {@link
-         * WorkflowValidationCode#PARALLEL_BRANCH_UNSAFE_STEP}; this step's own output, guard, and
-         * (for a container step) its branches are still analyzed normally afterward, exactly like
-         * every other non-fatal violation this method reports.
+         * #validateParallelBranches}. When {@code true}, any {@link ActionWorkflowStep} found is
+         * unconditionally reported with {@link WorkflowValidationCode#PARALLEL_BRANCH_UNSAFE_STEP}:
+         * a {@code PARALLEL} branch may never contain a Workflow {@code ACTION} step in this
+         * version, since this framework has no way to mechanically verify that an arbitrary
+         * caller-supplied {@link IWorkflowActionFactory}'s prepared action never mutates page
+         * state, navigates, or performs any other observable side effect - fail-closed, with no
+         * caller-side escape hatch (see {@code docs/workflow.md#parallel}). This step's own output,
+         * guard, and (for a container step) its branches are still analyzed normally afterward,
+         * exactly like every other non-fatal violation this method reports.
          */
         private static void validateStep(
                 IWorkflowStep step,
@@ -563,19 +567,19 @@ public final class Workflow {
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep (see its Javadoc), so
             // every instance reachable here is guaranteed to be one.
             AWorkflowStep concreteStep = (AWorkflowStep) step;
-            if (insideParallel && concreteStep instanceof ActionWorkflowStep<?> action) {
-                if (!isDeclaredParallelSafe(action.factory())) {
-                    analysis.report(
-                            WorkflowValidationCode.PARALLEL_BRANCH_UNSAFE_STEP,
-                            step.id(),
-                            null,
-                            "step '"
-                                    + step.id()
-                                    + "' is inside a PARALLEL branch but its action factory does"
-                                    + " not declare itself parallel-safe (see"
-                                    + " IWorkflowActionFactory#isParallelSafe) - no ACTION step is"
-                                    + " ever treated as safe to run concurrently by default");
-                }
+            if (insideParallel && concreteStep instanceof ActionWorkflowStep<?>) {
+                analysis.report(
+                        WorkflowValidationCode.PARALLEL_BRANCH_UNSAFE_STEP,
+                        step.id(),
+                        null,
+                        "step '"
+                                + step.id()
+                                + "' is an ACTION step inside a PARALLEL branch - a Workflow ACTION"
+                                + " step is never permitted inside a PARALLEL branch in this"
+                                + " version, since this framework cannot mechanically verify that an"
+                                + " arbitrary caller-supplied action factory's prepared action never"
+                                + " mutates page state, navigates, or performs any other observable"
+                                + " side effect");
             }
             if (concreteStep instanceof ConditionalWorkflowStep conditional) {
                 analysis.conditionalCount++;
@@ -828,20 +832,6 @@ public final class Workflow {
                 if (!parallelGuarded) {
                     definite.addAll(branchResult.definite());
                 }
-            }
-        }
-
-        /**
-         * Calls {@code factory.isParallelSafe()} defensively: a thrown {@link RuntimeException} is
-         * treated as {@code false} (fail-closed), exactly like {@link #validateCondition} treats a
-         * malformed {@code referencedVariables()} as untrustworthy rather than propagating the
-         * exception.
-         */
-        private static boolean isDeclaredParallelSafe(IWorkflowActionFactory<?> factory) {
-            try {
-                return factory.isParallelSafe();
-            } catch (RuntimeException e) {
-                return false;
             }
         }
 

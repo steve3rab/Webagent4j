@@ -179,8 +179,13 @@ public final class WorkflowSteps {
      * that would publish the same output name (even identically - unlike {@code ifElse}'s two
      * mutually exclusive branches, every {@code PARALLEL} branch genuinely runs, so two branches
      * racing to publish the same name is always a collision, never a safe redeclaration), and any
-     * branch containing a step this framework cannot prove is read-only (see {@code
-     * docs/workflow.md#parallel} and {@link IWorkflowActionFactory#isParallelSafe()}).
+     * branch containing a Workflow {@code ACTION} step - never permitted inside a {@code PARALLEL}
+     * branch in this version, since this framework cannot mechanically verify that an arbitrary
+     * caller-supplied {@link IWorkflowActionFactory}'s prepared action never performs an observable
+     * side effect (see {@code docs/workflow.md#parallel}). A caller-supplied {@link
+     * IWorkflowCondition} or {@link #assign}'s literal value remains subject to its own existing
+     * side-effect-free contract - this framework makes no claim that arbitrary caller Java code is
+     * mechanically pure.
      *
      * <p>If any branch fails, the whole {@code PARALLEL} step fails: the reported failure is
      * whichever failed branch has the <b>lowest definition index</b> among every branch that failed

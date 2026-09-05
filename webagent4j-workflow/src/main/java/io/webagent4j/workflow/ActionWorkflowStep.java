@@ -39,11 +39,6 @@ final class ActionWorkflowStep<R> extends AWorkflowStep {
         this.outputVariable = outputVariable;
     }
 
-    /** Returns this step's own factory - for {@link Workflow.Builder}'s parallel-safety check. */
-    IWorkflowActionFactory<R> factory() {
-        return factory;
-    }
-
     @Override
     WorkflowStepType stepType() {
         return WorkflowStepType.ACTION;

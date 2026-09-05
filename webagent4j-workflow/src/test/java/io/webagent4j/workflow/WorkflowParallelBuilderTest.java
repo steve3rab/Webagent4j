@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Build-time validation matrix for {@link WorkflowStepType#PARALLEL}: branch-count bounds, nesting
- * depth, the fail-closed parallel-safety check, and cross-branch output-collision rejection. See
- * {@code docs/workflow.md#parallel}.
+ * depth, and cross-branch output-collision rejection. See {@code docs/workflow.md#parallel} and
+ * {@link WorkflowParallelActionSafetyTest} for the fail-closed ACTION-in-PARALLEL rejection matrix.
  */
 class WorkflowParallelBuilderTest {
 
@@ -20,38 +20,23 @@ class WorkflowParallelBuilderTest {
     private static final WorkflowVariable<String> OUT_B =
             WorkflowVariable.publicValue("outB", String.class);
 
-    private static IWorkflowStep safeAction(String id, WorkflowVariable<String> output) {
-        return WorkflowSteps.action(
-                id,
-                new ParallelSafeActionFactory<String>(
-                        variables ->
-                                new FakePreparedAction<>(
-                                        ActionResults.success("v"),
-                                        new java.util.concurrent.atomic.AtomicInteger())),
-                output);
-    }
-
-    private static IWorkflowStep unsafeAction(String id) {
-        return WorkflowSteps.action(
-                id,
-                variables ->
-                        new FakePreparedAction<>(
-                                ActionResults.success("v"),
-                                new java.util.concurrent.atomic.AtomicInteger()));
+    /** A deterministic, framework-owned literal assignment - always permitted inside PARALLEL. */
+    private static IWorkflowStep publish(String id, WorkflowVariable<String> output) {
+        return WorkflowSteps.assign(id, output, id + "-value");
     }
 
     // --- PAR-001: a minimal, valid two-branch parallel builds cleanly ----------------------
 
     @Test
-    void par001TwoSafeBranchesBuildCleanly() {
+    void par001TwoBranchesBuildCleanly() {
         Workflow workflow =
                 Workflow.builder("wf")
                         .step(
                                 WorkflowSteps.parallel(
                                         "par",
                                         List.of(
-                                                List.of(safeAction("a", OUT_A)),
-                                                List.of(safeAction("b", OUT_B)))))
+                                                List.of(publish("a", OUT_A)),
+                                                List.of(publish("b", OUT_B)))))
                         .build();
 
         assertThat(workflow.steps()).hasSize(1);
@@ -63,9 +48,7 @@ class WorkflowParallelBuilderTest {
     void par002SingleBranchRejected() {
         Workflow.Builder builder =
                 Workflow.builder("wf")
-                        .step(
-                                WorkflowSteps.parallel(
-                                        "par", List.of(List.of(safeAction("a", OUT_A)))));
+                        .step(WorkflowSteps.parallel("par", List.of(List.of(publish("a", OUT_A)))));
 
         assertThatThrownBy(builder::build)
                 .isInstanceOf(IllegalArgumentException.class)
@@ -87,7 +70,7 @@ class WorkflowParallelBuilderTest {
     void par003TooManyBranchesRejected() {
         List<List<IWorkflowStep>> branches = new ArrayList<>();
         for (int i = 0; i < 9; i++) {
-            branches.add(List.of(unsafeActionAllowedOutsideParallelCheck("b" + i)));
+            branches.add(List.of(assignFiller("b" + i)));
         }
         Workflow.Builder builder =
                 Workflow.builder("wf").step(WorkflowSteps.parallel("par", branches));
@@ -102,7 +85,7 @@ class WorkflowParallelBuilderTest {
                                                         .PARALLEL_INVALID_BRANCH_COUNT));
     }
 
-    private static IWorkflowStep unsafeActionAllowedOutsideParallelCheck(String id) {
+    private static IWorkflowStep assignFiller(String id) {
         return WorkflowSteps.assign(
                 id, WorkflowVariable.publicValue(id + "Var", String.class), "x");
     }
@@ -114,109 +97,8 @@ class WorkflowParallelBuilderTest {
         assertThatThrownBy(
                         () ->
                                 WorkflowSteps.parallel(
-                                        "par", List.of(List.of(safeAction("a", OUT_A)), List.of())))
+                                        "par", List.of(List.of(publish("a", OUT_A)), List.of())))
                 .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    // --- PAR-005: an ACTION step whose factory is not declared parallel-safe is rejected ----
-
-    @Test
-    void par005UnsafeActionInsideBranchRejected() {
-        Workflow.Builder builder =
-                Workflow.builder("wf")
-                        .step(
-                                WorkflowSteps.parallel(
-                                        "par",
-                                        List.of(
-                                                List.of(unsafeAction("a")),
-                                                List.of(safeAction("b", OUT_B)))));
-
-        assertThatThrownBy(builder::build)
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("a");
-
-        assertThat(builder.validate().diagnostics())
-                .anySatisfy(
-                        d ->
-                                assertThat(d.code())
-                                        .isEqualTo(
-                                                WorkflowValidationCode
-                                                        .PARALLEL_BRANCH_UNSAFE_STEP));
-    }
-
-    // --- PAR-006: a parallel-safe ACTION step is accepted -----------------------------------
-
-    @Test
-    void par006SafeActionInsideBranchAccepted() {
-        Workflow workflow =
-                Workflow.builder("wf")
-                        .step(
-                                WorkflowSteps.parallel(
-                                        "par",
-                                        List.of(
-                                                List.of(safeAction("a", OUT_A)),
-                                                List.of(safeAction("b", OUT_B)))))
-                        .build();
-        assertThat(workflow.steps()).hasSize(1);
-    }
-
-    // --- PAR-007: a factory whose isParallelSafe() throws is treated as unsafe (fail-closed) -
-
-    @Test
-    void par007ThrowingIsParallelSafeTreatedAsUnsafe() {
-        IWorkflowActionFactory<String> throwingFactory =
-                new IWorkflowActionFactory<>() {
-                    @Override
-                    public io.webagent4j.action.IPreparedAction<String> prepare(
-                            IWorkflowVariables variables) {
-                        return new FakePreparedAction<>(
-                                ActionResults.success("v"),
-                                new java.util.concurrent.atomic.AtomicInteger());
-                    }
-
-                    @Override
-                    public boolean isParallelSafe() {
-                        throw new RuntimeException("boom");
-                    }
-                };
-        Workflow.Builder builder =
-                Workflow.builder("wf")
-                        .step(
-                                WorkflowSteps.parallel(
-                                        "par",
-                                        List.of(
-                                                List.of(WorkflowSteps.action("a", throwingFactory)),
-                                                List.of(safeAction("b", OUT_B)))));
-
-        assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
-    }
-
-    // --- PAR-008: an unsafe ACTION nested inside a conditional inside a branch is rejected --
-
-    @Test
-    void par008UnsafeActionNestedInsideConditionalInsideBranchRejected() {
-        IWorkflowCondition alwaysTrue = alwaysTrueCondition();
-        Workflow.Builder builder =
-                Workflow.builder("wf")
-                        .step(
-                                WorkflowSteps.parallel(
-                                        "par",
-                                        List.of(
-                                                List.of(
-                                                        WorkflowSteps.ifThen(
-                                                                "inner",
-                                                                alwaysTrue,
-                                                                List.of(unsafeAction("a")))),
-                                                List.of(safeAction("b", OUT_B)))));
-
-        assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
-        assertThat(builder.validate().diagnostics())
-                .anySatisfy(
-                        d ->
-                                assertThat(d.code())
-                                        .isEqualTo(
-                                                WorkflowValidationCode
-                                                        .PARALLEL_BRANCH_UNSAFE_STEP));
     }
 
     // --- PAR-009: ASSIGN is always safe, even nested inside a loop inside a branch ----------
@@ -244,7 +126,7 @@ class WorkflowParallelBuilderTest {
                                                                                                 String
                                                                                                         .class),
                                                                                 "x")))),
-                                                List.of(safeAction("b", OUT_B)))))
+                                                List.of(publish("b", OUT_B)))))
                         .build();
         assertThat(workflow.steps()).hasSize(1);
     }
@@ -259,8 +141,8 @@ class WorkflowParallelBuilderTest {
                                 WorkflowSteps.parallel(
                                         "par",
                                         List.of(
-                                                List.of(safeAction("a", OUT_A)),
-                                                List.of(safeAction("b", OUT_A)))));
+                                                List.of(publish("a", OUT_A)),
+                                                List.of(publish("b", OUT_A)))));
 
         assertThatThrownBy(builder::build).isInstanceOf(IllegalArgumentException.class);
         assertThat(builder.validate().diagnostics())
@@ -274,9 +156,9 @@ class WorkflowParallelBuilderTest {
 
     @Test
     void par011ExcessiveNestingDepthRejected() {
-        List<IWorkflowStep> innermost = List.of(safeAction("leaf", OUT_A));
+        List<IWorkflowStep> innermost = List.of(publish("leaf", OUT_A));
         IWorkflowStep nested =
-                WorkflowSteps.parallel("p0", List.of(innermost, List.of(safeAction("b0", OUT_B))));
+                WorkflowSteps.parallel("p0", List.of(innermost, List.of(publish("b0", OUT_B))));
         for (int depth = 1; depth <= 65; depth++) {
             IWorkflowStep finalNested = nested;
             nested =
@@ -284,7 +166,7 @@ class WorkflowParallelBuilderTest {
                             "p" + depth,
                             List.of(
                                     List.of(finalNested),
-                                    List.of(safeAction("filler" + depth, OUT_B))));
+                                    List.of(publish("filler" + depth, OUT_B))));
         }
         Workflow.Builder builder = Workflow.builder("wf").step(nested);
 
@@ -325,14 +207,14 @@ class WorkflowParallelBuilderTest {
                                 WorkflowSteps.parallel(
                                         "par",
                                         List.of(
-                                                List.of(safeAction("a", OUT_A)),
-                                                List.of(safeAction("b", OUT_B)))))
+                                                List.of(publish("a", OUT_A)),
+                                                List.of(publish("b", OUT_B)))))
                         .step(
                                 WorkflowSteps.ifThen(
                                         "afterwards",
                                         referencesOutA,
                                         List.of(
-                                                safeAction(
+                                                publish(
                                                         "c",
                                                         WorkflowVariable.publicValue(
                                                                 "outC", String.class)))))
@@ -368,15 +250,15 @@ class WorkflowParallelBuilderTest {
                                 WorkflowSteps.parallel(
                                                 "par",
                                                 List.of(
-                                                        List.of(safeAction("a", OUT_A)),
-                                                        List.of(safeAction("b", OUT_B))))
+                                                        List.of(publish("a", OUT_A)),
+                                                        List.of(publish("b", OUT_B))))
                                         .when(alwaysTrue))
                         .step(
                                 WorkflowSteps.ifThen(
                                         "afterwards",
                                         referencesOutA,
                                         List.of(
-                                                safeAction(
+                                                publish(
                                                         "c",
                                                         WorkflowVariable.publicValue(
                                                                 "outC", String.class)))));
@@ -398,9 +280,7 @@ class WorkflowParallelBuilderTest {
         IWorkflowStep guarded =
                 WorkflowSteps.parallel(
                                 "par",
-                                List.of(
-                                        List.of(safeAction("a", OUT_A)),
-                                        List.of(safeAction("b", OUT_B))))
+                                List.of(List.of(publish("a", OUT_A)), List.of(publish("b", OUT_B))))
                         .when(alwaysTrueCondition());
         assertThat(guarded.condition()).isPresent();
     }

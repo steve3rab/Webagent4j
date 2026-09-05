@@ -61,13 +61,14 @@ public enum WorkflowValidationCode {
     PARALLEL_NESTING_DEPTH_EXCEEDED,
 
     /**
-     * A {@link WorkflowStepType#PARALLEL} branch contains a step this framework cannot prove is
-     * safe to run concurrently with its sibling branches - added in 1.3.0: an {@link
-     * WorkflowStepType#ACTION} step whose {@link IWorkflowActionFactory#isParallelSafe()} returns
-     * {@code false} (the default) or throws, found anywhere inside the branch, including nested
-     * inside a further {@code ifElse}/{@code ifThen}/{@code loop}/{@code parallel} step.
-     * Fail-closed: no step is ever treated as parallel-safe by default (see {@code
-     * docs/workflow.md#parallel}).
+     * A {@link WorkflowStepType#PARALLEL} branch contains a {@link WorkflowStepType#ACTION} step -
+     * added in 1.3.0. A Workflow {@code ACTION} step is never permitted inside a {@code PARALLEL}
+     * branch in this version, found anywhere inside the branch, including nested inside a further
+     * {@code ifElse}/{@code ifThen}/{@code loop}/{@code parallel} step: this framework has no way
+     * to mechanically verify that an arbitrary caller-supplied {@link IWorkflowActionFactory}'s
+     * prepared action never mutates page state, navigates, or performs any other observable side
+     * effect, so this is an unconditional, fail-closed rejection rather than a caller-declarable
+     * exception (see {@code docs/workflow.md#parallel}).
      */
     PARALLEL_BRANCH_UNSAFE_STEP,
 
