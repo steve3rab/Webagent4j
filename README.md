@@ -273,9 +273,10 @@ all run once the step is reached, joined deterministically:
 
 - The branch count is checked against `Workflow.MIN_PARALLEL_BRANCHES`/`MAX_PARALLEL_BRANCHES` (2-8)
   at build time - never unbounded, never a single implicit branch.
-- Every action step inside a branch must come from a factory that explicitly overrides
-  `IWorkflowActionFactory#isParallelSafe()` to `true`; anything the framework cannot prove
-  side-effect-free is rejected at validation time - fail closed, not fail open.
+- Every Workflow `ACTION` step is unconditionally forbidden inside a branch - there is no
+  caller-declarable exception; the framework has no way to mechanically verify that an arbitrary
+  action factory's prepared action never performs an observable side effect, so this is rejected
+  at validation time, fail closed, not fail open.
 - Branches join in declaration order, not real completion order: if branch 0 fails, branch 1's
   result - even if it finished first - is discarded and reported `NOT_RUN`, preserving the same
   "exactly one failure, ordered before/after" guarantee that every other step type already provides.
@@ -332,9 +333,10 @@ assignments:
   joined in deterministic branch-definition order regardless of real completion order; a bounded,
   per-step thread pool executes them with isolated per-branch state, deterministic output merge and
   failure-selection rules, and reactive cancellation of branches that can no longer affect the
-  result. This first version is restricted to read-only/observational branches only — a branch's
-  action steps must be explicitly declared safe by their factory (`isParallelSafe()`), and the
-  framework fails closed on anything it cannot prove safe. Concurrent browser side effects (clicks,
+  result. This first version is restricted to read-only/observational branches only — a Workflow
+  `ACTION` step is unconditionally forbidden inside a branch, with no caller-declarable exception,
+  since the framework cannot mechanically verify that an arbitrary action factory's prepared
+  action never performs an observable side effect. Concurrent browser side effects (clicks,
   typing, navigation) are explicitly out of scope for this version. See
   [Workflows](docs/workflow.md#bounded-parallelism).
 - **Three deliberately separate introspection views**, never merged or toggled between:
@@ -481,8 +483,8 @@ continues on `develop` (`1.3.0-SNAPSHOT`), currently in progress:
 - **Deterministic Bounded Workflow Parallelism** — `WorkflowSteps.parallel` adds a fixed set of
   2-8 declared, always-run-once branches, executed through a bounded per-step thread pool with
   isolated per-branch state, deterministic definition-order join and failure-selection semantics,
-  and fail-closed read-only/observational branch-safety validation
-  (`IWorkflowActionFactory#isParallelSafe()`); integrated across validation, the Execution Plan, the
+  and fail-closed read-only/observational branch-safety validation - a Workflow `ACTION` step is
+  unconditionally forbidden inside a branch; integrated across validation, the Execution Plan, the
   Execution Tree, and Recording V2/Deterministic Replay. Concurrent browser side effects remain out
   of scope for this version.
 

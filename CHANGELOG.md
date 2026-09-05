@@ -15,14 +15,15 @@ not imply a published compatibility line.
   and a new framework-wide `MAX_PARALLEL_BRANCHES` (8) declared branches, launched concurrently on
   a small executor `WorkflowEngine` creates, owns, and always shuts down before the step's own
   result is produced, and joined strictly in **branch-definition order**, never the order branches
-  actually finished. Phase 1 scope is read-only/observational branches only: no `IWorkflowStep` is
-  ever treated as safe to run inside a branch by default, since `WorkflowEngine` cannot inspect
-  what an arbitrary `IWorkflowActionFactory` closure actually does - an `ACTION` step is rejected at
-  build time (new `PARALLEL_BRANCH_UNSAFE_STEP`) unless its factory explicitly opts in via the new
-  `IWorkflowActionFactory#isParallelSafe()` default method, a caller's own auditable assertion that
-  it never mutates page state, navigates, or performs anything beyond a side-effect-free read;
-  parallel governed side effects (clicks, typing, navigation) remain out of scope, reserved for a
-  future, separate capability. Each branch runs against its own isolated fork of the
+  actually finished. Phase 1 scope is read-only/observational branches only: a Workflow `ACTION`
+  step is unconditionally forbidden inside a branch, at any nesting depth, with no
+  caller-declarable exception (new `PARALLEL_BRANCH_UNSAFE_STEP`), since `WorkflowEngine` has no way
+  to mechanically verify that an arbitrary `IWorkflowActionFactory` closure never mutates page
+  state, navigates, or performs any other observable side effect; a caller-supplied
+  `IWorkflowCondition` or `WorkflowSteps#assign`'s literal value remains a trusted, unverified
+  extension point subject to its own existing side-effect-free contract. Parallel governed side
+  effects (clicks, typing, navigation) remain out of scope, reserved for a future, separate
+  capability. Each branch runs against its own isolated fork of the
   variables/secrets known immediately before the step - never a shared mutable map - merged back
   into the real session state sequentially, in definition order, only once every branch has
   finished. Two branches may never publish the same output name, even identically, unlike `ifElse`'s
@@ -41,7 +42,14 @@ not imply a published compatibility line.
   never permitted an observable side effect in the first place. Cancellation of a branch positioned
   after a confirmed failure is best-effort and cooperative, never a forced kill; a branch at or
   before the eventual reported failure's own index is never cancelled by this engine's own logic,
-  guaranteeing its genuine outcome always appears in the result. Secrets remain classified/redacted
+  guaranteeing its genuine outcome always appears in the result. The calling thread's own
+  interruption while joining an already-launched step's branches is handled as a separate, bounded,
+  terminal signal distinct from an ordinary branch failure: every still-active branch is cancelled,
+  the step fails closed as `PARALLEL_STEP_INTERRUPTED` (unless a branch failure was already
+  irreversibly decided first, which then takes precedence), no late-arriving branch result is ever
+  merged, the engine never waits longer than a fixed internal grace period for its own executor to
+  shut down, and the interrupt flag is always restored on return - regardless of whether any branch
+  cooperates with its own cancellation. Secrets remain classified/redacted
   regardless of which branch produced them or completion order: a kept branch's own failure message
   is re-redacted, once, against the fully-merged secret set of every kept branch after the join, so
   a secret an earlier-declared sibling branch discovered concurrently still masks a later branch's

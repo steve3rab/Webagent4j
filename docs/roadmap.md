@@ -113,10 +113,15 @@ stable line (`1.2.x`) until a future release supersedes it. In progress:
   failure, ordered before/after" invariant every other step type already guarantees. Each branch
   observes an isolated fork of workflow state (variables, secrets, outputs) that is merged back only
   after every branch has finished, in branch order - no branch can observe another's in-flight
-  contribution. This first version is restricted to read-only/observational branches only: an
-  action step inside a branch is rejected at validation time unless its factory explicitly asserts
-  `IWorkflowActionFactory#isParallelSafe()`, a fail-closed caller assertion the framework cannot
-  itself verify against an arbitrary closure. Concurrent browser side effects (clicks, typing,
+  contribution. This first version is restricted to read-only/observational branches only: a
+  Workflow `ACTION` step is never permitted inside a branch, unconditionally - a fail-closed
+  structural rule the framework itself enforces, with no caller-declarable escape hatch, since it
+  has no way to mechanically verify that an arbitrary caller-supplied action factory's prepared
+  action never performs an observable side effect. The calling thread's own interruption while
+  joining an already-launched step's branches is a bounded, terminal signal: every branch is
+  cancelled, the engine never waits longer than a fixed internal grace period for its own executor
+  to shut down, and the interrupt flag is always restored - regardless of whether any branch
+  cooperates with its own cancellation. Concurrent browser side effects (clicks, typing,
   navigation) are explicitly out of scope for this version and reserved for a future, separately
   decided chantier. It integrates across the full stack already established for loops: the
   Execution Plan, the Execution Tree, and Recording V2/Deterministic Replay all extend additively to
