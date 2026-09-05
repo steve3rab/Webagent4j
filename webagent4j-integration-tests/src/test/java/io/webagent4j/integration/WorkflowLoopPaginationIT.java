@@ -295,10 +295,24 @@ class WorkflowLoopPaginationIT {
                                     .filter(s -> s.stepId().value().startsWith("read-current-page"))
                                     .count())
                     .isZero();
+            // Two independently-counted oracles, mirroring ActionPolicyTargetIdentityIT's own
+            // rationale: the original "next" button and its replacement fire to distinct counter
+            // names, so a click that lands on either one is separately observable - never
+            // conflated the way a single shared counter/id would (which is also why the
+            // replacement below is a freshly created element, not a clone of the original).
             assertThat(support.clickCount("next")).isZero();
+            assertThat(support.clickCount("next-replacement")).isZero();
         }
     }
 
+    /**
+     * The replacement is a freshly created element with its own id and its own click counter -
+     * never a {@code cloneNode} of the original - so a click landing on either one is independently
+     * observable, exactly mirroring {@code ActionPolicyTargetIdentityIT}'s own {@code
+     * replaceFirstWithReplacementSameLocator}-style fixtures. A clone sharing the original's id and
+     * {@code onclick} would make the two indistinguishable to any oracle keyed by that shared
+     * identity.
+     */
     private static IWorkflowStep clickNextWithTargetReplaced(IPage page) {
         return WorkflowSteps.action(
                 "click-next",
@@ -309,8 +323,16 @@ class WorkflowLoopPaginationIT {
                             .policy(
                                     ctx -> {
                                         page.evaluate(
-                                                "var n = document.getElementById('next');"
-                                                        + " n.replaceWith(n.cloneNode(true));");
+                                                "var old = document.getElementById('next');"
+                                                        + " var replacement ="
+                                                        + " document.createElement('button');"
+                                                        + " replacement.id = 'next-replacement';"
+                                                        + " replacement.setAttribute('aria-label',"
+                                                        + " 'Next');"
+                                                        + " replacement.textContent = 'Next';"
+                                                        + " replacement.onclick = function() {"
+                                                        + " fetch('/count-click/next-replacement'); };"
+                                                        + " old.replaceWith(replacement);");
                                         return PolicyDecision.allow(
                                                 "test.workflow.loop.target-changed");
                                     });
