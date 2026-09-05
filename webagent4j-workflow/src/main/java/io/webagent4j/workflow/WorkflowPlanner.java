@@ -67,6 +67,16 @@ public final class WorkflowPlanner {
                                     WorkflowBranchSelection.THEN, planNodes(loop.body())));
             return new WorkflowPlanNode(step.id(), stepType, false, Optional.empty(), branches);
         }
+        if (concreteStep instanceof ParallelWorkflowStep parallel) {
+            List<WorkflowPlanBranch> branches = new ArrayList<>(parallel.branches().size());
+            for (List<IWorkflowStep> branch : parallel.branches()) {
+                branches.add(
+                        new WorkflowPlanBranch(WorkflowBranchSelection.THEN, planNodes(branch)));
+            }
+            boolean parallelGuarded = step.condition().isPresent();
+            return new WorkflowPlanNode(
+                    step.id(), stepType, parallelGuarded, Optional.empty(), List.copyOf(branches));
+        }
         boolean guarded = step.condition().isPresent();
         Optional<WorkflowPlanOutput> declaredOutput =
                 concreteStep.outputVariable().map(WorkflowPlanner::toPlanOutput);

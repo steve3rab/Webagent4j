@@ -80,6 +80,31 @@ public final class WorkflowOutputs {
         }
 
         /**
+         * Returns an independent copy of this builder - added in 1.3.0, for {@code WorkflowEngine}
+         * to fork a {@link WorkflowStepType#PARALLEL} branch's own isolated output accumulation
+         * from the state known immediately before that step, without either one observing the
+         * other's further mutations.
+         */
+        Builder copy() {
+            Builder copy = new Builder();
+            copy.values.putAll(this.values);
+            return copy;
+        }
+
+        /**
+         * Merges {@code other}'s entries into this builder, in {@code other}'s own insertion order,
+         * appended after this builder's existing entries - added in 1.3.0, for {@code
+         * WorkflowEngine} to fold a completed {@link WorkflowStepType#PARALLEL} branch's own
+         * newly-published outputs back into the shared state once that step's join barrier is
+         * reached. Both builders must declare no output under the same name once merged - already
+         * independently guaranteed by {@link Workflow.Builder#build()}'s parallel-branch
+         * output-collision check, not re-checked here.
+         */
+        void mergeFrom(Builder other) {
+            this.values.putAll(other.values);
+        }
+
+        /**
          * Builds an immutable, insertion-order-preserving {@link WorkflowOutputs}, computing each
          * public output's safe preview by redacting every value in {@code activeSecrets} - every
          * secret known to the execution up to this point, not only this container's own secret

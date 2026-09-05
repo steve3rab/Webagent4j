@@ -10,6 +10,64 @@ not imply a published compatibility line.
 
 ### Added
 
+- Deterministic Bounded Workflow Parallelism: `WorkflowSteps.parallel(id, branches)` adds a
+  deterministic, strictly bounded fan-out control-flow step to `webagent4j-workflow` - between two
+  and a new framework-wide `MAX_PARALLEL_BRANCHES` (8) declared branches, launched concurrently on
+  a small executor `WorkflowEngine` creates, owns, and always shuts down before the step's own
+  result is produced, and joined strictly in **branch-definition order**, never the order branches
+  actually finished. Phase 1 scope is read-only/observational branches only: a Workflow `ACTION`
+  step is unconditionally forbidden inside a branch, at any nesting depth, with no
+  caller-declarable exception (new `PARALLEL_BRANCH_UNSAFE_STEP`), since `WorkflowEngine` has no way
+  to mechanically verify that an arbitrary `IWorkflowActionFactory` closure never mutates page
+  state, navigates, or performs any other observable side effect; a caller-supplied
+  `IWorkflowCondition` or `WorkflowSteps#assign`'s literal value remains a trusted, unverified
+  extension point subject to its own existing side-effect-free contract. Parallel governed side
+  effects (clicks, typing, navigation) remain out of scope, reserved for a future, separate
+  capability. Each branch runs against its own isolated fork of the
+  variables/secrets known immediately before the step - never a shared mutable map - merged back
+  into the real session state sequentially, in definition order, only once every branch has
+  finished. Two branches may never publish the same output name, even identically, unlike `ifElse`'s
+  two mutually exclusive branches (new build-time collision check, reusing the existing
+  `OUTPUT_COLLISION`/`OUTPUT_TYPE_MISMATCH`/`OUTPUT_SECRET_CLASSIFICATION_MISMATCH` diagnostics); an
+  unguarded branch output becomes definitely available afterward by union across every branch
+  (never the intersection `ifElse` computes, and never the "may run zero times" exclusion a loop
+  body gets), provided the `PARALLEL` step itself is also unguarded - unlike `ifElse`/`loop`, a
+  `PARALLEL` step supports the ordinary optional `when(...)` guard, since it makes no decision of
+  its own. If any branch fails, the reported failure is whichever failed branch has the lowest
+  definition index - never whichever branch failed first in wall-clock time - and every branch
+  after it is represented as `NOT_RUN`, its real, already-computed work (success or failure alike)
+  discarded unseen even if it finished first, which is what lets `WorkflowResult`'s existing
+  "exactly one `FAILED` step, strictly ordered before/after" invariant hold for `PARALLEL` exactly
+  as it already does for every other step type - safe specifically because a `PARALLEL` branch is
+  never permitted an observable side effect in the first place. Cancellation of a branch positioned
+  after a confirmed failure is best-effort and cooperative, never a forced kill; a branch at or
+  before the eventual reported failure's own index is never cancelled by this engine's own logic,
+  guaranteeing its genuine outcome always appears in the result. The calling thread's own
+  interruption while joining an already-launched step's branches is handled as a separate, bounded,
+  terminal signal distinct from an ordinary branch failure: every still-active branch is cancelled,
+  the step fails closed as `PARALLEL_STEP_INTERRUPTED` (unless a branch failure was already
+  irreversibly decided first, which then takes precedence), no late-arriving branch result is ever
+  merged, the engine never waits longer than a fixed internal grace period for its own executor to
+  shut down, and the interrupt flag is always restored on return - regardless of whether any branch
+  cooperates with its own cancellation. Secrets remain classified/redacted
+  regardless of which branch produced them or completion order: a kept branch's own failure message
+  is re-redacted, once, against the fully-merged secret set of every kept branch after the join, so
+  a secret an earlier-declared sibling branch discovered concurrently still masks a later branch's
+  own failure text. `PARALLEL` nesting shares the existing combined `MAX_CONTROL_FLOW_NESTING_DEPTH`
+  bound with `ifElse`/`loop` (new `PARALLEL_NESTING_DEPTH_EXCEEDED`), and the existing cumulative
+  `MAX_EXECUTED_WORKFLOW_NODES` budget is now a single counter shared atomically across every
+  concurrently running branch. The Execution Plan represents a `PARALLEL` step structurally as one
+  `THEN` branch per declared branch (reusing `WorkflowPlanBranch`/`WorkflowBranchSelection` rather
+  than adding a new public record component, so this stays additive against the frozen `1.0.0`
+  Revapi baseline); the Execution Tree adds `WorkflowStepType.PARALLEL`/`PARALLEL_BRANCH`, mirroring
+  `LOOP`/`LOOP_ITERATION`'s own established shape. Recording V2 and Deterministic Replay are
+  extended the same way: a recorded `PARALLEL` step captures its branches as `PARALLEL_BRANCH`
+  entries in definition order with the same structural, positional, engine-producible-shapes-only
+  validation `LOOP`/`LOOP_ITERATION` already has, and `ReplayValidator` resolves a loop nested
+  inside any `PARALLEL` branch's own declared `maxIterations` bound structurally, at any depth. See
+  [Workflows](docs/workflow.md#bounded-parallelism), [Recording](docs/recording.md#bounded-parallelism),
+  and [Limitations](docs/limitations.md#workflows).
+
 - Bounded Workflow Loops: `WorkflowSteps.loop(id, continueCondition, maxIterations, body)` adds a
   deterministic, explicitly-bounded repetition control-flow step to `webagent4j-workflow` - a
   mandatory `maxIterations` (checked against a new framework-wide `MAX_LOOP_ITERATIONS` maximum),

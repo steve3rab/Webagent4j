@@ -167,4 +167,63 @@ public final class WorkflowSteps {
         return new LoopWorkflowStep(
                 new WorkflowStepId(stepId), continueCondition, maxIterations, body);
     }
+
+    /**
+     * A deterministic, strictly bounded parallel step - added in 1.3.0: {@link WorkflowEngine}
+     * launches every one of {@code branches}, concurrently, on its own internal, bounded executor
+     * (never a shared or unbounded one), waits for every branch to reach a terminal outcome, and
+     * joins them in <b>branch-definition order</b> - never the order branches actually finished.
+     * {@code branches} must declare between two and {@link Workflow#MAX_PARALLEL_BRANCHES} branches
+     * (inclusive); {@link Workflow.Builder#build()} rejects an out-of-range count, an empty branch,
+     * a branch nested deeper than {@link Workflow#MAX_CONTROL_FLOW_NESTING_DEPTH}, two branches
+     * that would publish the same output name (even identically - unlike {@code ifElse}'s two
+     * mutually exclusive branches, every {@code PARALLEL} branch genuinely runs, so two branches
+     * racing to publish the same name is always a collision, never a safe redeclaration), and any
+     * branch containing a Workflow {@code ACTION} step - never permitted inside a {@code PARALLEL}
+     * branch in this version, since this framework cannot mechanically verify that an arbitrary
+     * caller-supplied {@link IWorkflowActionFactory}'s prepared action never performs an observable
+     * side effect (see {@code docs/workflow.md#parallel}). A caller-supplied {@link
+     * IWorkflowCondition} or {@link #assign}'s literal value remains subject to its own existing
+     * side-effect-free contract - this framework makes no claim that arbitrary caller Java code is
+     * mechanically pure.
+     *
+     * <p>If any branch fails, the whole {@code PARALLEL} step fails: the reported failure is
+     * whichever failed branch has the <b>lowest definition index</b> among every branch that failed
+     * - never whichever branch happened to fail first in wall-clock time - and every branch
+     * declared after it is represented as {@link WorkflowStepStatus#NOT_RUN}, regardless of what
+     * that branch may have already computed in the background, since a {@code PARALLEL} branch is
+     * never permitted to perform an observable side effect in the first place (see {@code
+     * docs/workflow.md#parallel}). {@code WorkflowEngine} never retries a failed or cancelled
+     * branch, never runs more branches concurrently than {@code branches} declares, and always
+     * shuts down its internal executor - with no orphaned task and no leaked thread - before this
+     * step's own result is produced, whether it succeeds, fails, or is interrupted.
+     *
+     * <p>A branch's own newly-declared outputs join the outer, guard-independent {@code declared}
+     * set structurally (so a sibling step, or another branch, can never redeclare one of them), and
+     * become <b>definite</b> for whatever structurally follows this step only when both this {@code
+     * PARALLEL} step itself and that specific producing step are unguarded - unlike a loop body
+     * (which may run zero iterations, so nothing in it is ever definite), every declared {@code
+     * PARALLEL} branch unconditionally runs whenever the step itself is reached and its own guard
+     * (if any) evaluates {@code true} (see {@code docs/workflow.md#definition-validation}).
+     *
+     * <p>Unlike {@link WorkflowSteps#ifElse}/{@link WorkflowSteps#ifThen}/{@link
+     * WorkflowSteps#loop}, the returned step <em>does</em> support {@link IWorkflowStep#when}: a
+     * {@code PARALLEL} step has no decision of its own to make, so an optional skip-guard works
+     * exactly as it does for {@link #action}/{@link #assign} - a {@code false} guard skips the
+     * whole step, launching zero branches.
+     *
+     * @throws IllegalArgumentException if {@code branches} or any one of its own branches is empty
+     */
+    public static IWorkflowStep parallel(String stepId, List<List<IWorkflowStep>> branches) {
+        Objects.requireNonNull(branches, "branches");
+        if (branches.isEmpty()) {
+            throw new IllegalArgumentException("branches must contain at least one branch");
+        }
+        List<List<IWorkflowStep>> copied = new java.util.ArrayList<>(branches.size());
+        for (List<IWorkflowStep> branch : branches) {
+            requireNonEmptyBranch(branch, "branch");
+            copied.add(List.copyOf(branch));
+        }
+        return new ParallelWorkflowStep(new WorkflowStepId(stepId), copied);
+    }
 }

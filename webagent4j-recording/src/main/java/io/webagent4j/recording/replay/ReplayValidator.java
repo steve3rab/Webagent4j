@@ -130,6 +130,46 @@ public final class ReplayValidator {
                         return nested;
                     }
                 }
+                continue;
+            }
+            if (planNode.stepType() == WorkflowStepType.PARALLEL) {
+                Optional<ReplayValidationFailure> nested =
+                        checkParallelBranchesLoopIterationBounds(
+                                node.children(), planNode.branches(), workflow);
+                if (nested.isPresent()) {
+                    return nested;
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Recurses {@link #checkLoopIterationBounds} into every one of a recorded {@link
+     * io.webagent4j.workflow.WorkflowStepType#PARALLEL} node's own {@code PARALLEL_BRANCH}
+     * children, added in 1.3.0 - unlike a {@code CONDITIONAL} step's single selected branch, every
+     * declared {@code PARALLEL} branch structurally always runs, so a loop nested inside any one of
+     * them must be checked, not just one. A branch recorded as {@code NOT_RUN} (never launched -
+     * see {@code WorkflowEngine.Session#joinParallelBranches}) carries zero children and is
+     * naturally skipped: there is nothing to recurse into. This resolves each nested loop's bound
+     * against the positionally-aligned <em>plan</em> branch's own nodes, never the recorded tree's
+     * own runtime-qualified step IDs - see {@link #checkLoopIterationBounds}'s own Javadoc for why
+     * that discipline matters at any nesting depth, {@code PARALLEL} branches included.
+     */
+    private static Optional<ReplayValidationFailure> checkParallelBranchesLoopIterationBounds(
+            List<RecordedExecutionNodeV2> branchNodes,
+            List<WorkflowPlanBranch> branchPlans,
+            Workflow workflow) {
+        for (int i = 0; i < branchNodes.size(); i++) {
+            RecordedExecutionNodeV2 branchNode = branchNodes.get(i);
+            if (branchNode.children().isEmpty()) {
+                continue;
+            }
+            Optional<ReplayValidationFailure> nested =
+                    checkLoopIterationBounds(
+                            branchNode.children(), branchPlans.get(i).nodes(), workflow);
+            if (nested.isPresent()) {
+                return nested;
             }
         }
         return Optional.empty();

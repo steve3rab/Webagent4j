@@ -9,13 +9,17 @@ import java.util.Optional;
  *
  * <p>This class is {@code sealed} and package-private together with {@link IWorkflowStep}: since
  * {@code IWorkflowStep permits AWorkflowStep} and only {@link ActionWorkflowStep}, {@link
- * AssignWorkflowStep}, {@link ConditionalWorkflowStep}, and {@link LoopWorkflowStep} may extend it,
- * {@link WorkflowEngine} can downcast any {@code IWorkflowStep} it receives to {@code
- * AWorkflowStep} with the guarantee - enforced by the compiler and the JVM, not by convention -
- * that the cast can never fail.
+ * AssignWorkflowStep}, {@link ConditionalWorkflowStep}, {@link LoopWorkflowStep}, and {@link
+ * ParallelWorkflowStep} may extend it, {@link WorkflowEngine} can downcast any {@code
+ * IWorkflowStep} it receives to {@code AWorkflowStep} with the guarantee - enforced by the compiler
+ * and the JVM, not by convention - that the cast can never fail.
  */
 abstract sealed class AWorkflowStep implements IWorkflowStep
-        permits ActionWorkflowStep, AssignWorkflowStep, ConditionalWorkflowStep, LoopWorkflowStep {
+        permits ActionWorkflowStep,
+                AssignWorkflowStep,
+                ConditionalWorkflowStep,
+                LoopWorkflowStep,
+                ParallelWorkflowStep {
 
     private final WorkflowStepId id;
     private final IWorkflowCondition condition;

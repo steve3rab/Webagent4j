@@ -109,6 +109,16 @@ public final class WorkflowRecorderV2 {
             return new RecordedExecutionNodeV2(
                     step, node.branchSelection(), recordIterations(node.children(), bodyPlan));
         }
+        if (node.result().stepType() == WorkflowStepType.PARALLEL) {
+            // planNode carries one THEN branch per declared branch, in definition order; node's own
+            // children are either empty (skipped/failed before launch) or exactly one
+            // PARALLEL_BRANCH per declared branch, in that same order - never fewer, never more.
+            List<RecordedExecutionNodeV2> branches =
+                    node.children().isEmpty()
+                            ? List.of()
+                            : recordParallelBranches(node.children(), planNode.branches());
+            return new RecordedExecutionNodeV2(step, node.branchSelection(), branches);
+        }
         if (node.children().isEmpty()) {
             return new RecordedExecutionNodeV2(step, node.branchSelection(), List.of());
         }
@@ -138,6 +148,32 @@ public final class WorkflowRecorderV2 {
             recorded.add(
                     new RecordedExecutionNodeV2(
                             iterationStep, iterationNode.branchSelection(), bodyChildren));
+        }
+        return recorded;
+    }
+
+    /**
+     * Records each of a {@link WorkflowStepType#PARALLEL}'s {@code PARALLEL_BRANCH} nodes - itself
+     * not a plan node, since the plan never labels branches individually - matched positionally
+     * against {@code branches}, one recorded plan branch per declared branch, in the exact same
+     * definition order {@code node.children()} already preserves (see {@code
+     * WorkflowEngine.Session#joinParallelBranches}). A {@code NOT_RUN} branch's own children are
+     * always empty (it was never launched); a launched branch's children are matched against its
+     * own branch plan exactly like {@link #recordNodes} would.
+     */
+    private static List<RecordedExecutionNodeV2> recordParallelBranches(
+            List<WorkflowExecutionNode> branchNodes, List<WorkflowPlanBranch> branches) {
+        List<RecordedExecutionNodeV2> recorded = new ArrayList<>(branchNodes.size());
+        for (int i = 0; i < branchNodes.size(); i++) {
+            WorkflowExecutionNode branchNode = branchNodes.get(i);
+            RecordedWorkflowStepV2 branchStep = recordStep(branchNode.result(), Optional.empty());
+            List<RecordedExecutionNodeV2> children =
+                    branchNode.children().isEmpty()
+                            ? List.of()
+                            : recordNodes(branchNode.children(), branches.get(i).nodes());
+            recorded.add(
+                    new RecordedExecutionNodeV2(
+                            branchStep, branchNode.branchSelection(), children));
         }
         return recorded;
     }

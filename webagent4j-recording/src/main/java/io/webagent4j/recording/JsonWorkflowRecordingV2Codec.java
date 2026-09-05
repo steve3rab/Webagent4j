@@ -256,17 +256,21 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
     /**
      * Returns whether {@code node}'s children sit one control-flow nesting level deeper than {@code
      * node} itself - {@code true} for a {@code CONDITIONAL} node that captured a branch selection,
-     * and for a {@code LOOP} node's own transition into its {@code LOOP_ITERATION} children (even
-     * though a {@code LOOP} node never itself carries a {@code branchSelection} - see {@link
-     * RecordedExecutionNodeV2}). A {@code LOOP_ITERATION} node's own transition into its body
-     * children is deliberately {@code false}: the single nesting level a loop contributes is
-     * already consumed between the {@code LOOP} node and its iterations, exactly mirroring {@link
-     * RecordingV2PlanTreeValidator#validateLoopNode}/{@code validateLoopIterationNode}'s identical
-     * depth bookkeeping, so encode/decode and validation can never disagree on what counts as one
-     * level.
+     * for a {@code LOOP} node's own transition into its {@code LOOP_ITERATION} children, and for a
+     * {@code PARALLEL} node's own transition into its {@code PARALLEL_BRANCH} children - added in
+     * 1.3.0 - even though neither a {@code LOOP} nor a {@code PARALLEL} node ever itself carries a
+     * {@code branchSelection} (see {@link RecordedExecutionNodeV2}). A {@code LOOP_ITERATION}'s own
+     * transition into its body children, and a {@code PARALLEL_BRANCH}'s own transition into its
+     * branch's own children, are both deliberately {@code false}: the single nesting level the
+     * enclosing {@code LOOP}/{@code PARALLEL} contributes is already consumed between it and its
+     * children, exactly mirroring {@link RecordingV2PlanTreeValidator#validateLoopNode}/{@code
+     * validateLoopIterationNode}/{@code validateParallelNode}/{@code validateParallelBranchNode}'s
+     * identical depth bookkeeping, so encode/decode and validation can never disagree on what
+     * counts as one level.
      */
     private static boolean nodeIntroducesDepth(RecordedExecutionNodeV2 node) {
         return node.step().stepType() == WorkflowStepType.LOOP
+                || node.step().stepType() == WorkflowStepType.PARALLEL
                 || (node.step().stepType() == WorkflowStepType.CONDITIONAL
                         && node.branchSelection().isPresent());
     }
@@ -613,10 +617,13 @@ public final class JsonWorkflowRecordingV2Codec implements IWorkflowRecordingV2C
                         path + ".branchSelection");
         ArrayNode childrenArray = requireArray(node, "children", path + ".children");
         // See JsonWorkflowRecordingV2Codec#nodeIntroducesDepth: a LOOP node's transition into its
-        // LOOP_ITERATION children consumes one nesting level even though it never itself carries a
-        // branchSelection, while a LOOP_ITERATION's own transition into its body does not.
+        // LOOP_ITERATION children, and a PARALLEL node's transition into its PARALLEL_BRANCH
+        // children, each consume one nesting level even though neither ever itself carries a
+        // branchSelection, while a LOOP_ITERATION's or PARALLEL_BRANCH's own transition into its
+        // own body/branch children does not.
         boolean introducesDepth =
                 step.stepType() == WorkflowStepType.LOOP
+                        || step.stepType() == WorkflowStepType.PARALLEL
                         || (step.stepType() == WorkflowStepType.CONDITIONAL
                                 && branchSelection.isPresent());
         if (introducesDepth && depth >= RecordingV2PlanTreeValidator.MAX_TREE_DEPTH) {

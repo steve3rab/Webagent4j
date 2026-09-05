@@ -157,6 +157,38 @@ public record WorkflowStepResult(
         if (stepType == WorkflowStepType.ASSIGN && actionSummary.isPresent()) {
             throw new IllegalArgumentException("an ASSIGN step cannot carry an action summary");
         }
+        if (stepType == WorkflowStepType.PARALLEL) {
+            if (outputVariableName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a PARALLEL step cannot carry a published output variable name");
+            }
+            if (actionSummary.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a PARALLEL step cannot carry an action summary");
+            }
+        }
+        if (stepType == WorkflowStepType.PARALLEL_BRANCH) {
+            if (condition.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a PARALLEL_BRANCH result never carries a condition outcome - it"
+                                + " represents no decision of its own");
+            }
+            if (outputVariableName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a PARALLEL_BRANCH result cannot carry a published output variable name -"
+                                + " a branch's own steps carry their own outputs");
+            }
+            if (actionSummary.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a PARALLEL_BRANCH result cannot carry an action summary");
+            }
+            if (status != WorkflowStepStatus.SUCCEEDED && status != WorkflowStepStatus.NOT_RUN) {
+                throw new IllegalArgumentException(
+                        "a PARALLEL_BRANCH result's own status must be SUCCEEDED (the branch was"
+                                + " launched - its own outcome, success or failure, is carried by"
+                                + " its children) or NOT_RUN (the branch was never launched)");
+            }
+        }
         if (stepType == WorkflowStepType.ACTION && status == WorkflowStepStatus.SUCCEEDED) {
             if (actionSummary.isEmpty()) {
                 throw new IllegalArgumentException(
@@ -212,6 +244,13 @@ public record WorkflowStepResult(
             }
             case EXECUTED_NODE_BUDGET_EXCEEDED ->
                     requireNoActionSummary(actionSummary, failureType);
+            case PARALLEL_STEP_INTERRUPTED -> {
+                if (stepType != WorkflowStepType.PARALLEL) {
+                    throw new IllegalArgumentException(
+                            failureType + " can only occur on a PARALLEL step");
+                }
+                requireNoActionSummary(actionSummary, failureType);
+            }
         }
     }
 

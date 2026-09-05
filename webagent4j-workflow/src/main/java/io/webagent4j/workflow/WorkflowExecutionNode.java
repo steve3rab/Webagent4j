@@ -43,12 +43,17 @@ public record WorkflowExecutionNode(
         branchSelection = Objects.requireNonNull(branchSelection, "branchSelection");
         children = List.copyOf(Objects.requireNonNull(children, "children"));
         WorkflowStepType stepType = result.stepType();
-        if (stepType == WorkflowStepType.LOOP) {
+        if (stepType == WorkflowStepType.LOOP
+                || stepType == WorkflowStepType.PARALLEL
+                || stepType == WorkflowStepType.PARALLEL_BRANCH) {
             if (branchSelection.isPresent()) {
                 throw new IllegalArgumentException(
-                        "a LOOP execution node never carries a branch selection - see"
-                                + " WorkflowStepType#LOOP_ITERATION for each iteration's own"
-                                + " decision");
+                        "a "
+                                + stepType
+                                + " execution node never carries a branch selection - see"
+                                + " WorkflowStepType#LOOP_ITERATION for each loop iteration's own"
+                                + " decision, and WorkflowStepType#PARALLEL_BRANCH's own Javadoc"
+                                + " for how a PARALLEL branch's outcome is represented instead");
             }
         } else if (stepType == WorkflowStepType.CONDITIONAL
                 || stepType == WorkflowStepType.LOOP_ITERATION) {

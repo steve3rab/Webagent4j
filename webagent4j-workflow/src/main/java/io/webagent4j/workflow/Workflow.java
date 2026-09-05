@@ -104,6 +104,28 @@ public final class Workflow {
     static final int MAX_LOOP_ITERATIONS = 10_000;
 
     /**
+     * Minimum accepted number of branches for a {@link WorkflowStepType#PARALLEL} step - added in
+     * 1.3.0. A single-branch "parallel" step would run no differently from that one branch's steps
+     * appearing directly in sequence, so {@link Builder#build()} rejects it rather than accept a
+     * vacuous use of the primitive.
+     */
+    static final int MIN_PARALLEL_BRANCHES = 2;
+
+    /**
+     * Maximum accepted number of branches for a {@link WorkflowStepType#PARALLEL} step - added in
+     * 1.3.0. {@code WorkflowEngine} dedicates one worker thread per branch of a single {@code
+     * PARALLEL} step to a freshly created, internally owned, bounded executor (see {@code
+     * docs/workflow.md#parallel}), so this bound doubles as the maximum number of concurrent worker
+     * threads any single {@code PARALLEL} step can ever create. Chosen generously relative to a
+     * realistic observational fan-out (reading a handful of independent page regions or
+     * already-open tabs concurrently) while keeping that thread count, and the structural size of
+     * the resulting plan/tree/recording, small and predictable - a workflow author who genuinely
+     * needs more independent concurrent reads than this should reconsider the workflow's shape
+     * rather than obtain an ever-larger single fan-out.
+     */
+    static final int MAX_PARALLEL_BRANCHES = 8;
+
+    /**
      * Maximum number of diagnostics {@link Builder#validate()} accumulates before setting {@link
      * WorkflowValidationReport#diagnosticsTruncated()} and discarding the rest - a
      * caller-controlled definition could otherwise force unbounded retention of diagnostic text
@@ -195,6 +217,13 @@ public final class Workflow {
                         findLoopMaxIterations(conditional.elseSteps().orElse(List.of()), stepId);
                 if (elseMatch.isPresent()) {
                     return elseMatch;
+                }
+            } else if (concreteStep instanceof ParallelWorkflowStep parallel) {
+                for (List<IWorkflowStep> branch : parallel.branches()) {
+                    Optional<Integer> branchMatch = findLoopMaxIterations(branch, stepId);
+                    if (branchMatch.isPresent()) {
+                        return branchMatch;
+                    }
                 }
             }
         }
@@ -373,6 +402,7 @@ public final class Workflow {
                         analysis.definite,
                         seenStepIds,
                         0,
+                        false,
                         analysis);
             }
             return analysis;
@@ -498,6 +528,19 @@ public final class Workflow {
          * either invariant is violated; the walk still continues with whatever structurally follows
          * this step. Every other violation site below documents its own, narrower continuation
          * rule.
+         *
+         * <p>{@code insideParallel} is {@code true} for every step reachable from inside any {@link
+         * WorkflowStepType#PARALLEL} branch, at any nesting depth (including a further conditional,
+         * loop, or nested parallel step's own contents) - added in 1.3.0, see {@link
+         * #validateParallelBranches}. When {@code true}, any {@link ActionWorkflowStep} found is
+         * unconditionally reported with {@link WorkflowValidationCode#PARALLEL_BRANCH_UNSAFE_STEP}:
+         * a {@code PARALLEL} branch may never contain a Workflow {@code ACTION} step in this
+         * version, since this framework has no way to mechanically verify that an arbitrary
+         * caller-supplied {@link IWorkflowActionFactory}'s prepared action never mutates page
+         * state, navigates, or performs any other observable side effect - fail-closed, with no
+         * caller-side escape hatch (see {@code docs/workflow.md#parallel}). This step's own output,
+         * guard, and (for a container step) its branches are still analyzed normally afterward,
+         * exactly like every other non-fatal violation this method reports.
          */
         private static void validateStep(
                 IWorkflowStep step,
@@ -506,6 +549,7 @@ public final class Workflow {
                 Set<WorkflowVariable<?>> definite,
                 Set<WorkflowStepId> seenStepIds,
                 int conditionalDepth,
+                boolean insideParallel,
                 Analysis analysis) {
             if (!seenStepIds.add(step.id())) {
                 analysis.report(
@@ -523,6 +567,20 @@ public final class Workflow {
             // Safe: IWorkflowStep is sealed and permits only AWorkflowStep (see its Javadoc), so
             // every instance reachable here is guaranteed to be one.
             AWorkflowStep concreteStep = (AWorkflowStep) step;
+            if (insideParallel && concreteStep instanceof ActionWorkflowStep<?>) {
+                analysis.report(
+                        WorkflowValidationCode.PARALLEL_BRANCH_UNSAFE_STEP,
+                        step.id(),
+                        null,
+                        "step '"
+                                + step.id()
+                                + "' is an ACTION step inside a PARALLEL branch - a Workflow ACTION"
+                                + " step is never permitted inside a PARALLEL branch in this"
+                                + " version, since this framework cannot mechanically verify that an"
+                                + " arbitrary caller-supplied action factory's prepared action never"
+                                + " mutates page state, navigates, or performs any other observable"
+                                + " side effect");
+            }
             if (concreteStep instanceof ConditionalWorkflowStep conditional) {
                 analysis.conditionalCount++;
                 int nestedDepth = conditionalDepth + 1;
@@ -553,6 +611,7 @@ public final class Workflow {
                                 definite,
                                 seenStepIds,
                                 nestedDepth,
+                                insideParallel,
                                 analysis);
                 BranchResult elseResult =
                         validateBranch(
@@ -562,6 +621,7 @@ public final class Workflow {
                                 definite,
                                 seenStepIds,
                                 nestedDepth,
+                                insideParallel,
                                 analysis);
                 mergeBranchDeclarations(
                         byName, declared, thenResult.declared(), elseResult.declared(), analysis);
@@ -612,9 +672,54 @@ public final class Workflow {
                                 definite,
                                 seenStepIds,
                                 nestedDepth,
+                                insideParallel,
                                 analysis);
                 mergeOneBranchDeclaration(byName, declared, bodyResult.declared(), analysis);
                 mergeBranchDefinite(definite, bodyResult.definite(), definite);
+                return;
+            }
+            if (concreteStep instanceof ParallelWorkflowStep parallel) {
+                int nestedDepth = conditionalDepth + 1;
+                analysis.observeDepth(nestedDepth);
+                if (nestedDepth > MAX_CONTROL_FLOW_NESTING_DEPTH) {
+                    analysis.report(
+                            WorkflowValidationCode.PARALLEL_NESTING_DEPTH_EXCEEDED,
+                            step.id(),
+                            null,
+                            "step '"
+                                    + step.id()
+                                    + "' exceeds the maximum supported control-flow nesting depth"
+                                    + " of "
+                                    + MAX_CONTROL_FLOW_NESTING_DEPTH);
+                    return;
+                }
+                List<List<IWorkflowStep>> branches = parallel.branches();
+                if (branches.size() < MIN_PARALLEL_BRANCHES
+                        || branches.size() > MAX_PARALLEL_BRANCHES) {
+                    analysis.report(
+                            WorkflowValidationCode.PARALLEL_INVALID_BRANCH_COUNT,
+                            step.id(),
+                            null,
+                            "step '"
+                                    + step.id()
+                                    + "' declares "
+                                    + branches.size()
+                                    + " branches, which must be between "
+                                    + MIN_PARALLEL_BRANCHES
+                                    + " and "
+                                    + MAX_PARALLEL_BRANCHES
+                                    + " (inclusive)");
+                    return;
+                }
+                validateParallelBranches(
+                        branches,
+                        byName,
+                        declared,
+                        definite,
+                        seenStepIds,
+                        nestedDepth,
+                        guard.isPresent(),
+                        analysis);
                 return;
             }
             concreteStep
@@ -644,7 +749,9 @@ public final class Workflow {
          * mutating any of them - and returns the branch's own resulting {@code declared}/{@code
          * definite} sets for the caller to merge back once both branches have been validated (see
          * {@link #validateStep}). {@code conditionalDepth} is the depth every step directly in
-         * {@code branchSteps} starts at - see {@link #validateStep}.
+         * {@code branchSteps} starts at - see {@link #validateStep}. {@code insideParallel} is
+         * simply threaded through to every step in {@code branchSteps} unchanged - see {@link
+         * #validateStep}'s Javadoc.
          */
         private static BranchResult validateBranch(
                 List<IWorkflowStep> branchSteps,
@@ -653,6 +760,7 @@ public final class Workflow {
                 Set<WorkflowVariable<?>> definite,
                 Set<WorkflowStepId> seenStepIds,
                 int conditionalDepth,
+                boolean insideParallel,
                 Analysis analysis) {
             Map<String, WorkflowVariable<?>> branchByName = new LinkedHashMap<>(byName);
             Set<WorkflowVariable<?>> branchDeclared = new LinkedHashSet<>(declared);
@@ -665,9 +773,66 @@ public final class Workflow {
                         branchDefinite,
                         seenStepIds,
                         conditionalDepth,
+                        insideParallel,
                         analysis);
             }
             return new BranchResult(branchDeclared, branchDefinite);
+        }
+
+        /**
+         * Validates every branch of one {@link WorkflowStepType#PARALLEL} step, in definition
+         * order, committing each branch's own contribution to the shared {@code byName}/{@code
+         * declared}/{@code definite} sets immediately after that branch is validated - before the
+         * next branch is validated - rather than deferring every branch's merge to the end the way
+         * {@link #validateStep}'s {@code CONDITIONAL} handling does for its two mutually exclusive
+         * branches.
+         *
+         * <p>This sequential-commit order is exactly what makes cross-branch output collisions fail
+         * closed automatically, using the exact same mechanism (and the exact same {@link
+         * WorkflowValidationCode#OUTPUT_COLLISION}/{@link
+         * WorkflowValidationCode#OUTPUT_TYPE_MISMATCH}/ {@link
+         * WorkflowValidationCode#OUTPUT_SECRET_CLASSIFICATION_MISMATCH} diagnostics) already used
+         * for a single step's own output: since every {@code PARALLEL} branch genuinely executes
+         * (unlike {@code ifElse}'s two mutually exclusive branches), branch 1 is validated against
+         * a {@code declared}/{@code byName} baseline that already includes branch 0's committed
+         * outputs - so branch 1 attempting to redeclare one of them, even identically, is caught by
+         * {@link #registerStepOutput} during branch 1's own validation exactly like any other
+         * collision, never silently treated as a safe redeclaration the way two conditional
+         * branches may be.
+         *
+         * <p>{@code definite} is folded by <b>union</b>, not the intersection {@link
+         * #mergeBranchDefinite} computes for a conditional's two mutually exclusive branches: every
+         * declared {@code PARALLEL} branch unconditionally runs once this step is reached and its
+         * own optional guard (if any) evaluates {@code true} - there is no "only one branch
+         * actually runs" exclusivity to intersect over, and no "may run zero times" loop-body
+         * caveat either. Nothing becomes definite when {@code parallelGuarded} is {@code true}: the
+         * whole step, and therefore every one of its branches, may be skipped entirely.
+         */
+        private static void validateParallelBranches(
+                List<List<IWorkflowStep>> branches,
+                Map<String, WorkflowVariable<?>> byName,
+                Set<WorkflowVariable<?>> declared,
+                Set<WorkflowVariable<?>> definite,
+                Set<WorkflowStepId> seenStepIds,
+                int nestedDepth,
+                boolean parallelGuarded,
+                Analysis analysis) {
+            for (List<IWorkflowStep> branch : branches) {
+                BranchResult branchResult =
+                        validateBranch(
+                                branch,
+                                byName,
+                                declared,
+                                definite,
+                                seenStepIds,
+                                nestedDepth,
+                                true,
+                                analysis);
+                mergeOneBranchDeclaration(byName, declared, branchResult.declared(), analysis);
+                if (!parallelGuarded) {
+                    definite.addAll(branchResult.definite());
+                }
+            }
         }
 
         /**

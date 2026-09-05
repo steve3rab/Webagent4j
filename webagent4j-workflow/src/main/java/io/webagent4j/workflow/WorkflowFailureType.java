@@ -48,5 +48,17 @@ public enum WorkflowFailureType {
      * workflow with no {@link WorkflowStepType#LOOP} steps, since a purely sequential or
      * conditional definition's total executed-node count is already bounded by its own step count.
      */
-    EXECUTED_NODE_BUDGET_EXCEEDED
+    EXECUTED_NODE_BUDGET_EXCEEDED,
+
+    /**
+     * A {@link WorkflowStepType#PARALLEL} step observed the executing thread's interrupt flag set
+     * before any of its branches could be launched - added in 1.3.0, mirroring {@link
+     * #CONDITIONAL_STEP_INTERRUPTED} for the single interruption boundary a {@code PARALLEL} step
+     * has before committing to launch every declared branch. A branch's own internal interruption,
+     * if any, surfaces instead as whichever ordinary failure type its own steps would already
+     * produce (for example {@link #CONDITIONAL_STEP_INTERRUPTED} or {@link #LOOP_STEP_INTERRUPTED}
+     * on one of the branch's own nested steps) - this type exists only for the outer step's own,
+     * single pre-launch boundary.
+     */
+    PARALLEL_STEP_INTERRUPTED
 }

@@ -102,6 +102,31 @@ stable line (`1.2.x`) until a future release supersedes it. In progress:
   iterations than the live workflow's own declared bound authorizes. Parallel loop iterations and
   arbitrary mutable inter-iteration state remain explicitly out of scope. See
   [Workflows](workflow.md#bounded-loops) and [Recording](recording.md#bounded-loops).
+- **Deterministic Bounded Workflow Parallelism** - `WorkflowSteps.parallel` adds a new,
+  explicitly-bounded control-flow step distinct from the loop above: a fixed set of 2-8 declared
+  branches (`Workflow.MIN_PARALLEL_BRANCHES`/`MAX_PARALLEL_BRANCHES`), each of which structurally
+  always runs exactly once the step is reached, executed through a bounded, per-step thread pool
+  that is always created fresh and always shut down before the step completes - never a shared or
+  unbounded executor. Branches join in deterministic definition order regardless of real completion
+  order: if an earlier-declared branch fails, every later branch's outcome - even one that finished
+  first in wall-clock time - is discarded and reported `NOT_RUN`, preserving the same "exactly one
+  failure, ordered before/after" invariant every other step type already guarantees. Each branch
+  observes an isolated fork of workflow state (variables, secrets, outputs) that is merged back only
+  after every branch has finished, in branch order - no branch can observe another's in-flight
+  contribution. This first version is restricted to read-only/observational branches only: a
+  Workflow `ACTION` step is never permitted inside a branch, unconditionally - a fail-closed
+  structural rule the framework itself enforces, with no caller-declarable escape hatch, since it
+  has no way to mechanically verify that an arbitrary caller-supplied action factory's prepared
+  action never performs an observable side effect. The calling thread's own interruption while
+  joining an already-launched step's branches is a bounded, terminal signal: every branch is
+  cancelled, the engine never waits longer than a fixed internal grace period for its own executor
+  to shut down, and the interrupt flag is always restored - regardless of whether any branch
+  cooperates with its own cancellation. Concurrent browser side effects (clicks, typing,
+  navigation) are explicitly out of scope for this version and reserved for a future, separately
+  decided chantier. It integrates across the full stack already established for loops: the
+  Execution Plan, the Execution Tree, and Recording V2/Deterministic Replay all extend additively to
+  represent and reproduce parallel branches. See [Workflows](workflow.md#bounded-parallelism) and
+  [Recording](recording.md#bounded-parallelism).
 
 ## Post-1.2 candidates
 
@@ -114,7 +139,10 @@ These are candidates only. None is implied by the 1.0 API contract or by the `1.
 is a commitment to a `1.3.0` scope, and any optional decision/AI layer must consume the same
 fail-closed public contracts rather than bypassing them. Real governed-target side-effect replay
 (actually re-invoking a recorded action against a freshly re-verified target) and workflow
-parallelism (concurrent branches or concurrent loop iterations) remain undecided and are not
-committed by this roadmap - see [Recording](recording.md#deterministic-replay) for the
-side-effect-replay scope decision already made for 1.3, and see "1.3: active development" above for
-Bounded Workflow Loops, which are decided and in progress rather than an open candidate.
+parallelism with concurrent, governed browser side effects (parallel branches that click, type, or
+navigate, rather than only read) remain undecided and are not committed by this roadmap - see
+[Recording](recording.md#deterministic-replay) for the side-effect-replay scope decision already
+made for 1.3, and see "1.3: active development" above for Bounded Workflow Loops and Deterministic
+Bounded Workflow Parallelism, both of which are decided and in progress rather than open candidates
+- the latter strictly for read-only/observational branches, with concurrent browser side effects
+reserved as a distinct, separately decided future chantier.

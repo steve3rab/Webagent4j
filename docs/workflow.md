@@ -115,6 +115,118 @@ iteration count >= maxIterations? --- yes --> LOOP_ITERATION_LIMIT_EXCEEDED (fai
 - **Result shape:** a loop produces one wrapper `WorkflowStepResult` (`WorkflowStepType.LOOP`, always `SUCCEEDED` when reached - it never itself reports a nested failure, exactly like a conditional's own decision node) followed by one `WorkflowStepType.LOOP_ITERATION` result per continuation check actually performed. Each `LOOP_ITERATION` is structurally identical to an `ifThen` decision: a `true` outcome selects `WorkflowBranchSelection.THEN` and carries that iteration's own body steps as children; a `false` outcome selects `NONE` as a no-op stop with zero children. `WorkflowResult.steps()` stays one flat, execution-ordered list exactly as before.
 - **Conditions stay pure:** the continuation condition is the same `IWorkflowCondition` used everywhere else - deterministic and side-effect-free. A loop does not let a condition perform a side-effecting action, and nothing about looping changes what a condition is allowed to do.
 
+## Bounded parallelism
+
+`WorkflowSteps.parallel(id, branches)` adds one deterministic, strictly bounded fan-out step: between two and `Workflow.MAX_PARALLEL_BRANCHES` (8) declared branches run concurrently, each on its own dedicated worker thread drawn from a small executor `WorkflowEngine` creates, owns, and always shuts down before the step's own result is produced - joined in **branch-definition order**, never the order branches actually finish:
+
+```text
+reach parallel step
+      |
+optional when(...) guard evaluated at most once  (ordinary guard, not a mandatory selector)
+      |
+   false? --- yes --> SKIPPED, zero branches launched
+      |
+     true/absent
+      |
+      v
+every declared branch launched concurrently, each on its own isolated fork of the
+variables/secrets known immediately before this step
+      |
+      v
+calling thread interrupted while waiting? --- yes --> see "Caller interruption" below
+      |
+      no: every branch reaches its own terminal state (success or failure) - always
+      waited for, never abandoned
+      |
+      v
+joined strictly in branch-definition order:
+  - no branch failed  -> step SUCCEEDED, every branch's real result kept
+  - branch f failed   -> step FAILED with branch f's own failure (f = lowest definition
+                          index among every branch that failed - never whichever branch
+                          happened to fail first in wall-clock time); every branch after f
+                          is represented as NOT_RUN, whatever it may have already computed
+                          in the background discarded unseen
+```
+
+**Phase 1 scope - Workflow ACTION steps are never permitted inside a PARALLEL branch.** This is a
+fail-closed, unconditional structural rule, not a caller-declarable exception: `Workflow.Builder#build()`
+rejects any `ACTION` step found anywhere inside a `PARALLEL` branch (`PARALLEL_BRANCH_UNSAFE_STEP`),
+including nested inside a further `ifElse`/`ifThen`/`loop`/`parallel` step at any depth, since this
+framework has no way to mechanically verify that an arbitrary caller-supplied `IWorkflowActionFactory`'s
+prepared action never mutates page state, navigates, or performs any other observable side effect.
+There is no caller-side override: an earlier design considered a self-declared
+`IWorkflowActionFactory#isParallelSafe()` escape hatch, but that method does not exist on this
+interface - a caller-declared boolean is forgeable by construction and cannot be a real security
+boundary. `ASSIGN`'s own literal assignment is always permitted (it is a deterministic,
+framework-owned value baked into the workflow definition, with no caller-supplied closure at all);
+a caller-supplied `IWorkflowCondition` remains a **trusted extension point**, subject to its own
+existing side-effect-free contract, exactly as it already is outside `PARALLEL` - this framework
+makes no claim that arbitrary caller Java code is mechanically pure. The structurally impossible
+result: no Workflow `ACTION` node can ever be dispatched from a `PARALLEL` worker thread. Parallel
+governed side effects (clicks, typing, navigation) remain explicitly out of scope for this version
+and reserved for a future, separate capability with its own, real safety mechanism.
+
+- **Bounded branch count:** `Workflow.MIN_PARALLEL_BRANCHES` (2) to `Workflow.MAX_PARALLEL_BRANCHES` (8), checked at build time (`PARALLEL_INVALID_BRANCH_COUNT`). A single-branch "parallel" step would behave no differently from that one branch's steps in plain sequence, so it is rejected rather than accepted as a vacuous use of the primitive. This bound also doubles as the maximum number of concurrent worker threads any one `PARALLEL` step can create.
+- **Isolation - no shared mutable state between branches:** each branch runs against its own isolated fork of the variables/secrets known immediately before the step, seeded once, before any branch starts. A branch never observes another branch's in-flight variables, secrets, or outputs, regardless of real completion order. Kept branches' forks are merged back into the real session state sequentially, in definition order, only after every branch has already finished running - so a kept branch's own condition or action can never actually have observed a sibling's contribution mid-flight.
+- **Output collision, not last-writer-wins:** two branches may never publish the same output name, even identically - unlike `ifElse`'s two mutually exclusive branches (where an identical redeclaration in both is safe, since at most one ever runs), every `PARALLEL` branch genuinely executes, so a same-named redeclaration in a later branch is rejected exactly like any other output collision (`OUTPUT_COLLISION`/`OUTPUT_TYPE_MISMATCH`/`OUTPUT_SECRET_CLASSIFICATION_MISMATCH`).
+- **Definite assignment - union across branches, not intersection:** an output declared by an unguarded step inside a branch becomes definitely available to whatever structurally follows the `PARALLEL` step, provided the `PARALLEL` step itself is also unguarded - unlike `ifElse` (an intersection, since only one branch ever runs) or a loop body (never definite, since it may run zero times), every declared `PARALLEL` branch unconditionally runs whenever the step itself is reached and its own guard, if any, evaluates `true`, so the union of every branch's own unguarded outputs is safe to guarantee.
+- **Determinism under real concurrency:** every branch that reaches a genuine terminal state normally (no caller interruption) is folded into the flat result and execution tree strictly in branch-definition order, never completion order. Cancellation of a branch positioned after a confirmed failure is best-effort and cooperative (`Future.cancel(true)`, never a forced kill): a branch already past its own last interruption checkpoint (or containing none at all) may simply run to its own natural completion, and whatever it computes is safely discarded if it turns out not to be needed. A branch at or before the eventual reported failure's own definition index is never cancelled by this engine's own logic, at any point - such a branch is certain to end up kept no matter what any other branch does, so its own real, genuine outcome (success or failure) always appears in the result.
+- **No hidden retry, no speculative execution:** a failed or cancelled branch is never relaunched or re-created.
+- **Secret propagation across concurrent branches:** secrets remain classified/redacted regardless of which branch produced them or completion order. A kept branch's own failure message is redacted, once, against the fully-merged secret set of every kept branch - not merely its own isolated fork's secrets - so a secret an earlier-declared sibling branch discovered while running concurrently with it still masks that later branch's own failure text.
+
+**Caller interruption is a bounded, terminal signal - never an unbounded wait.** Before this
+version, a caller interrupted while `WorkflowEngine` was joining an already-launched `PARALLEL`
+step's branches had no effect at all: the join kept waiting, unboundedly, for every branch's own
+genuine outcome regardless of the interruption, and the executor shutdown that followed used an
+unbounded `awaitTermination` retry loop - together, a real, reproducible hang. This is fixed:
+
+- The moment the calling thread's own interruption is observed while waiting for branches, every
+  branch's `Future` is cancelled (`Future.cancel(true)`) regardless of its own index - unlike the
+  narrower, index-aware cancellation an ordinary branch failure uses - and the engine stops waiting
+  for further outcomes: it never again calls an unbounded wait once this happens.
+- The step's own reported failure is resolved once, deterministically: if a branch failure was
+  already **irreversibly decided** - every branch at or before the lowest failed definition index
+  had already reported its own outcome, so no branch still unresolved could ever lower it - that
+  branch failure is preserved exactly as if no interruption had occurred. Otherwise, the
+  interruption itself becomes this step's own reported failure, as `PARALLEL_STEP_INTERRUPTED`.
+- When the interruption itself is the reported failure, every branch - received or not before the
+  interruption arrived - is represented as `NOT_RUN` with zero children, uniformly. This is not
+  because the engine forgot what a branch actually did: `WorkflowResult`'s own pre-existing global
+  invariant (every step after a `FAILED` one must be `NOT_RUN`) makes any other representation
+  structurally impossible once the wrapper itself is `FAILED` - the same trade-off an ordinary
+  branch failure already makes for a branch discarded after it (see "Determinism under real
+  concurrency" above), extended here uniformly since none of them can ever be kept once the
+  reported outcome is the interruption itself, regardless of real-time completion order.
+- The engine then shuts its own executor down through a **bounded** grace period (a fixed internal
+  constant, not caller-configurable) rather than the unbounded retry loop the normal,
+  non-interrupted completion path still uses - so `WorkflowEngine#execute`/`#executeWithTree`
+  always returns within a bounded time of the calling thread's own interruption, regardless of how
+  any branch's own task behaves. The calling thread's own interrupt flag is always restored before
+  returning, in either case, never silently swallowed.
+- **Honest limits of cooperative cancellation:** `Future.cancel(true)` is a request, not a forced
+  kill - the JVM has no safe way to forcibly terminate a running thread. A branch task that
+  deliberately ignores its own interruption (catches and discards `InterruptedException` without
+  restoring the flag or otherwise stopping) may still be running on its own daemon worker thread
+  after `execute()` has already returned; its eventual result, whatever it turns out to be, is
+  never retried, waited on again, or merged into the already-returned execution. This engine does
+  not - and cannot - promise that every branch thread has actually terminated by the time it
+  returns; it promises only that it never waits for one indefinitely, and never observes one's
+  result again once it has moved on. See [limitations.md](limitations.md) for this contract stated
+  in full.
+- **Defense in depth against a branch that swallows its own interruption:** a session-wide flag is
+  set the first time any `PARALLEL` step's join observes the calling thread's own interruption, and
+  every other `CONDITIONAL`/`LOOP`/`PARALLEL` interruption boundary in the same execution - at any
+  nesting depth, on any thread - checks it in addition to the physical interrupt flag. This closes
+  the gap where a hostile branch's own code clears its physical interrupt flag: even then, that
+  branch (and any sibling control-flow boundary) will observe the session-wide signal and refuse to
+  start new work, rather than the physical flag alone being the only signal a swallowed interrupt
+  could defeat.
+- **Combined control-flow nesting depth:** a `PARALLEL` step nested inside a conditional branch or loop body, or containing one, counts toward the same shared `Workflow.MAX_CONTROL_FLOW_NESTING_DEPTH` bound as `ifElse`/`loop` (`PARALLEL_NESTING_DEPTH_EXCEEDED`) - never a third, independently-tracked limit.
+- **Shared executed-node budget:** `MAX_EXECUTED_WORKFLOW_NODES` is enforced by a single counter shared, atomically, across every concurrently running branch of the same execution - the bound always reflects the true cumulative total, never merely one branch's own local count.
+- **Supports `when(...)`, unlike `ifElse`/`loop`:** a `PARALLEL` step has no decision of its own to make, so its condition slot is an ordinary optional skip-guard exactly like `action`/`assign` - a `false` guard produces `SKIPPED` with zero branches launched.
+- **Result shape:** a `PARALLEL` step produces one wrapper `WorkflowStepResult` (`WorkflowStepType.PARALLEL`, `SUCCEEDED` once it commits to launching branches - it never itself reports a nested failure, exactly like a conditional's or loop's own wrapper) followed by one `WorkflowStepType.PARALLEL_BRANCH` result per declared branch, always in definition order. `SUCCEEDED` means the branch was launched and its own children carry its real outcome; `NOT_RUN` means it was never launched (an earlier-declared sibling branch's failure, or the step itself never starting) and carries zero children. `WorkflowResult.steps()` stays one flat, execution-ordered list exactly as before.
+- **Conditions stay pure:** the step's own optional guard is the same `IWorkflowCondition` used everywhere else - deterministic and side-effect-free.
+
 ## Execution tree
 
 `WorkflowEngine#executeWithTree(workflow, inputs)` runs the exact same single execution as `execute(workflow, inputs)`, additionally returning a `WorkflowExecutionTree` - a hierarchical view of the control-flow path that actually executed, alongside the existing flat `WorkflowResult` (bundled together as `WorkflowExecution`):
@@ -147,6 +259,8 @@ This is a structural companion to `WorkflowResult.steps()`, not a replacement fo
 
 **Loops:** a `WorkflowStepType.LOOP` node's children are its own `LOOP_ITERATION` nodes, one per continuation check actually performed - never a branch selection of its own, since it represents no single decision. Each `LOOP_ITERATION` node follows the identical shape a `CONDITIONAL` node already has (see "Bounded loops" above): `THEN` with that iteration's own body as children, or `NONE` with zero children for the final, non-continuing check. An iteration that never started (the bound was hit, or execution stopped first) contributes nothing - never a placeholder up to `maxIterations`.
 
+**Bounded parallelism:** a `WorkflowStepType.PARALLEL` node's children are its own `PARALLEL_BRANCH` nodes, one per declared branch, always in definition order regardless of the order branches actually finished - never a branch selection of its own. A `PARALLEL_BRANCH` node carries no selection either; `SUCCEEDED` means the branch was launched, with its own children carrying its real outcome (success or failure), and `NOT_RUN` means it was never launched, with zero children. See "Bounded parallelism" above.
+
 ## Execution plan
 
 `WorkflowPlanner.plan(workflow)` builds a `WorkflowExecutionPlan` - a deterministic, backend-neutral description of what a `Workflow` is structurally capable of executing, entirely from its already-validated definition:
@@ -178,6 +292,8 @@ Workflow
 
 **Loops:** a `LOOP` plan node carries exactly one `THEN` branch, describing `body` structurally once - never unrolled into `maxIterations` copies, regardless of how large the declared bound is. Planning stays `O(definition nodes)` even for a deeply nested loop; the bound itself is not part of the plan (see "Bounded loops" above for why), only the body's own structure.
 
+**Bounded parallelism:** a `PARALLEL` plan node carries one `THEN` branch per declared branch, in definition order - reusing `THEN`'s existing "the branch that runs" meaning, now shared across all three control-flow step types, since every `PARALLEL` branch, like a loop's body, structurally always runs once the step is reached. A branch's own position in this list, not any label, identifies it; there is no fourth `WorkflowBranchSelection` value for "branch 2 of 5."
+
 **Determinism:** two plans built from the same `Workflow` are always logically equal - no random UUID, timestamp, or hash-order-dependent iteration is ever part of a plan's shape.
 
 **Not a new recording format:** Recording V1 is entirely unaffected; `WorkflowExecutionPlan` is never serialized into a `WorkflowRecording`. Planning is not a dry run, a replay, or an execution-plan preview of a specific future execution's outcome - it is a static structural description only.
@@ -206,7 +322,7 @@ WorkflowValidationReport
 
 **Definite assignment, exactly as build-time:** the report distinguishes a *declared* output from one that is *definitely available* - guaranteed to have been published by the time execution reaches whatever structurally follows its producer. A guarded (`when(...)`) producer's output is declared but never definite. An `ifElse` output is definite only when both branches unconditionally guarantee it (an intersection, never a union); an `ifThen` output is never definite afterward, since its `thenSteps` may not have run at all. These are the identical rules [Definition validation](#definition-validation) and [Branching](#branching) already document - `validate()` does not reinterpret them.
 
-**Structured diagnostics:** each `WorkflowValidationDiagnostic` carries a stable `WorkflowValidationCode` (`EMPTY_STEP_LIST`, `DUPLICATE_INPUT_DECLARATION`, `DUPLICATE_STEP_ID`, `CONDITIONAL_DEPTH_EXCEEDED`, `CONDITION_METADATA_INVALID`, `OUTPUT_NOT_DEFINITELY_AVAILABLE`, `OUTPUT_COLLISION`, `OUTPUT_TYPE_MISMATCH`, `OUTPUT_SECRET_CLASSIFICATION_MISMATCH`, `LOOP_INVALID_MAX_ITERATIONS`, `LOOP_NESTING_DEPTH_EXCEEDED`), a `WorkflowValidationSeverity` (`ERROR` only in this version - every diagnostic corresponds to an invariant `build()` already enforces as fail-closed, so there is no separate warning/informational tier), the step ID and/or variable name it concerns when applicable, and a safe message. Diagnostic order is deterministic: definition-traversal order, never `HashMap`/`HashSet` iteration order.
+**Structured diagnostics:** each `WorkflowValidationDiagnostic` carries a stable `WorkflowValidationCode` (`EMPTY_STEP_LIST`, `DUPLICATE_INPUT_DECLARATION`, `DUPLICATE_STEP_ID`, `CONDITIONAL_DEPTH_EXCEEDED`, `CONDITION_METADATA_INVALID`, `OUTPUT_NOT_DEFINITELY_AVAILABLE`, `OUTPUT_COLLISION`, `OUTPUT_TYPE_MISMATCH`, `OUTPUT_SECRET_CLASSIFICATION_MISMATCH`, `LOOP_INVALID_MAX_ITERATIONS`, `LOOP_NESTING_DEPTH_EXCEEDED`, `PARALLEL_INVALID_BRANCH_COUNT`, `PARALLEL_NESTING_DEPTH_EXCEEDED`, `PARALLEL_BRANCH_UNSAFE_STEP`), a `WorkflowValidationSeverity` (`ERROR` only in this version - every diagnostic corresponds to an invariant `build()` already enforces as fail-closed, so there is no separate warning/informational tier), the step ID and/or variable name it concerns when applicable, and a safe message. Diagnostic order is deterministic: definition-traversal order, never `HashMap`/`HashSet` iteration order.
 
 **Resource bounds:** diagnostics are capped at `MAX_VALIDATION_DIAGNOSTICS` (256); once reached, `WorkflowValidationReport#diagnosticsTruncated()` is set and further diagnostics are discarded rather than retained without bound. `build()` never accumulates more than one diagnostic, since it throws on the first.
 
@@ -240,6 +356,8 @@ Rendering an arbitrary caller-supplied value for diagnostics is always crash-saf
 
 Workflow definitions are immutable/reusable. Each execution has isolated session state. Live pages/actions referenced by application factories remain application-owned and caller-confined; Workflow neither closes nor caches them.
 
+Outside a `PARALLEL` step, execution is strictly single-threaded: every step runs on the exact thread that calls `execute`/`executeWithTree`, with no `ExecutorService` and no `CompletableFuture` anywhere in the engine. A `PARALLEL` step is the one bounded exception (see "Bounded parallelism" above): it creates a small executor sized to exactly that step's own branch count, never shared across steps or executions, and always shuts it down - with no orphaned task and no leaked thread - before its own result is produced, whether it succeeds, fails, or is interrupted. `WorkflowEngine` owns that executor outright; it still owns nothing a caller supplied, and a `PARALLEL` branch's own action factory closing over a caller-owned resource (an `IPage`, for example) is only ever safe if that resource genuinely tolerates concurrent access from the branch's own dedicated thread - see [limitations.md](limitations.md) for the current, honestly-documented state of that question.
+
 ## Deliberate exclusions
 
-No recursion (over data - nested `ifElse`/`ifThen`/`loop` structure is not recursion), parallel branches or parallel iterations, DAG scheduler, transactions/sagas, persistence/checkpoints, timers/scheduling, external triggers, workflow-wide cancellation/timeout, YAML/JSON workflow DSL, arbitrary mutable inter-iteration loop state, or hidden retry. Deterministic if/else branching (`ifElse`/`ifThen`) and bounded, explicitly-limited repetition (`loop`, see "Bounded loops" above) are supported; `switch`/`case`, unbounded loops, and condition-driven exception handling are not.
+No recursion (over data - nested `ifElse`/`ifThen`/`loop`/`parallel` structure is not recursion), DAG scheduler, transactions/sagas, persistence/checkpoints, timers/scheduling, external triggers, workflow-wide cancellation/timeout, YAML/JSON workflow DSL, arbitrary mutable inter-iteration loop state, or hidden retry. Deterministic if/else branching (`ifElse`/`ifThen`), bounded, explicitly-limited repetition (`loop`, see "Bounded loops" above), and bounded, read-only/observational concurrency (`parallel`, see "Bounded parallelism" above) are supported; `switch`/`case`, unbounded loops, condition-driven exception handling, and - in this version - a `PARALLEL` branch performing a governed browser side effect (a click, a type, a navigation, a mutation) are not.
