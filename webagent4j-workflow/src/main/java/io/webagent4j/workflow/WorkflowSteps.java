@@ -8,9 +8,10 @@ import java.util.Objects;
  *
  * <p>There is no generic {@code Runnable}/{@code Consumer<Map<String,Object>>} step here - every
  * step is either backed by the real action pipeline ({@link #action}), a single deterministic
- * literal assignment ({@link #assign}), or a deterministic if/else branch ({@link #ifElse}, {@link
- * #ifThen}) over more steps of these same kinds - preserving type safety, structural validation,
- * and secret provenance (see {@code docs/workflow.md#steps}).
+ * literal assignment ({@link #assign}), a deterministic if/else branch ({@link #ifElse}, {@link
+ * #ifThen}), or a bounded, deterministic loop ({@link #loop}) over more steps of these same kinds -
+ * preserving type safety, structural validation, and secret provenance (see {@code
+ * docs/workflow.md#steps}).
  */
 public final class WorkflowSteps {
 
@@ -118,5 +119,52 @@ public final class WorkflowSteps {
         if (steps.isEmpty()) {
             throw new IllegalArgumentException(paramName + " must contain at least one step");
         }
+    }
+
+    /**
+     * A bounded, deterministic loop: before each iteration attempt (up to {@code maxIterations} of
+     * them), {@link WorkflowEngine} evaluates {@code continueCondition} exactly once; a {@code
+     * true} result authorizes exactly that one iteration's {@code body} to run in full (never
+     * re-evaluating the condition while the body runs), and a {@code false} result stops the loop
+     * as a successful no-op for whatever iteration was being considered - the loop step itself
+     * still counts as {@link WorkflowStepStatus#SUCCEEDED}. If {@code continueCondition} is still
+     * {@code true} once {@code maxIterations} iterations have already run, the loop fails closed
+     * with {@link WorkflowFailureType#LOOP_ITERATION_LIMIT_EXCEEDED} - reaching the bound while
+     * continuation is still requested is never silently treated as a successful stop (see {@code
+     * docs/workflow.md#bounded-loops}).
+     *
+     * <p>A failure inside {@code body} stops the whole workflow immediately, exactly like a failure
+     * anywhere else: {@code WorkflowEngine} never retries the failed iteration, never retries the
+     * continuation check, and never attempts a further iteration. A step inside {@code body} that
+     * declares an output publishes it again on every iteration that reaches it - the value visible
+     * after the loop is whichever iteration last published it - but that output is never treated as
+     * <b>definitely</b> available to a later step's condition, exactly like a guarded producer's
+     * output (see {@code docs/workflow.md#definition-validation}): the loop may run zero
+     * iterations, so nothing it might produce can ever be statically guaranteed.
+     *
+     * <p>{@code body} may itself contain {@code ifElse}/{@code ifThen}/further {@code loop} steps,
+     * up to {@link Workflow#MAX_CONTROL_FLOW_NESTING_DEPTH} combined levels of nesting - measured
+     * and enforced exactly like conditional nesting, and independently of any other branch or loop
+     * body's own depth. Every step ID across the whole workflow - including inside {@code body}, at
+     * every nesting depth - must still be unique; neither this nesting bound nor that uniqueness is
+     * checked by this factory method itself, since it builds one step in isolation without knowing
+     * where it will sit in a larger definition - {@link Workflow.Builder#build()} rejects a
+     * duplicate ID, an excessive nesting depth, or an out-of-range {@code maxIterations} once the
+     * whole definition is known.
+     *
+     * <p>Unlike {@link #action} and {@link #assign}, the returned step does not support {@link
+     * IWorkflowStep#when} - see {@link LoopWorkflowStep}'s Javadoc for why.
+     *
+     * @throws IllegalArgumentException if {@code body} is empty
+     */
+    public static IWorkflowStep loop(
+            String stepId,
+            IWorkflowCondition continueCondition,
+            int maxIterations,
+            List<IWorkflowStep> body) {
+        Objects.requireNonNull(continueCondition, "continueCondition");
+        requireNonEmptyBranch(body, "body");
+        return new LoopWorkflowStep(
+                new WorkflowStepId(stepId), continueCondition, maxIterations, body);
     }
 }

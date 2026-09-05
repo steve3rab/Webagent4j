@@ -31,5 +31,17 @@ public enum WorkflowValidationCode {
     /** Two producers of the same output name declared it with different runtime types. */
     OUTPUT_TYPE_MISMATCH,
     /** Two producers of the same output name disagreed on whether it is secret. */
-    OUTPUT_SECRET_CLASSIFICATION_MISMATCH
+    OUTPUT_SECRET_CLASSIFICATION_MISMATCH,
+    /**
+     * A {@link WorkflowStepType#LOOP}'s declared {@code maxIterations} is not a positive integer,
+     * or exceeds {@link Workflow#MAX_LOOP_ITERATIONS} - added in 1.3.0.
+     */
+    LOOP_INVALID_MAX_ITERATIONS,
+    /**
+     * A {@link WorkflowStepType#LOOP} or {@link WorkflowStepType#CONDITIONAL} step is nested deeper
+     * than {@link Workflow#MAX_CONTROL_FLOW_NESTING_DEPTH} - added in 1.3.0, generalizing {@link
+     * #CONDITIONAL_DEPTH_EXCEEDED} (kept unchanged for a {@code CONDITIONAL} step that is itself
+     * the one exceeding the shared bound) to a {@code LOOP} step exceeding that same shared bound.
+     */
+    LOOP_NESTING_DEPTH_EXCEEDED
 }

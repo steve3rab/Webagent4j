@@ -98,6 +98,7 @@ public record WorkflowStepResult(
             }
         }
         if (stepType != WorkflowStepType.CONDITIONAL
+                && stepType != WorkflowStepType.LOOP_ITERATION
                 && condition.isPresent()
                 && !condition.get().outcome()
                 && status != WorkflowStepStatus.SKIPPED) {
@@ -117,6 +118,40 @@ public record WorkflowStepResult(
                 throw new IllegalArgumentException(
                         "a CONDITIONAL step's own branch decision is never SKIPPED - see"
                                 + " WorkflowSteps#ifElse/ifThen");
+            }
+        }
+        if (stepType == WorkflowStepType.LOOP) {
+            if (condition.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a LOOP step's own result never carries a condition outcome - each"
+                                + " iteration's continuation check is its own LOOP_ITERATION result");
+            }
+            if (outputVariableName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a LOOP step cannot carry a published output variable name");
+            }
+            if (actionSummary.isPresent()) {
+                throw new IllegalArgumentException("a LOOP step cannot carry an action summary");
+            }
+            if (status == WorkflowStepStatus.SKIPPED) {
+                throw new IllegalArgumentException(
+                        "a LOOP step's own result is never SKIPPED - see WorkflowSteps#loop");
+            }
+        }
+        if (stepType == WorkflowStepType.LOOP_ITERATION) {
+            if (outputVariableName.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION result cannot carry a published output variable name -"
+                                + " an iteration's body steps carry their own outputs");
+            }
+            if (actionSummary.isPresent()) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION result cannot carry an action summary");
+            }
+            if (status == WorkflowStepStatus.SKIPPED) {
+                throw new IllegalArgumentException(
+                        "a LOOP_ITERATION's own continuation decision is never SKIPPED - see"
+                                + " WorkflowSteps#loop");
             }
         }
         if (stepType == WorkflowStepType.ASSIGN && actionSummary.isPresent()) {
@@ -168,6 +203,15 @@ public record WorkflowStepResult(
                 }
                 requireNoActionSummary(actionSummary, failureType);
             }
+            case LOOP_ITERATION_LIMIT_EXCEEDED, LOOP_STEP_INTERRUPTED -> {
+                if (stepType != WorkflowStepType.LOOP_ITERATION) {
+                    throw new IllegalArgumentException(
+                            failureType + " can only occur on a LOOP_ITERATION step");
+                }
+                requireNoActionSummary(actionSummary, failureType);
+            }
+            case EXECUTED_NODE_BUDGET_EXCEEDED ->
+                    requireNoActionSummary(actionSummary, failureType);
         }
     }
 
