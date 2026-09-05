@@ -503,6 +503,32 @@ final class RecordingV2Fixtures {
                 Optional.empty());
     }
 
+    /**
+     * A {@code FAILED}/{@code PARALLEL_STEP_INTERRUPTED} PARALLEL step - the calling thread's own
+     * interruption while joining an already-launched step's branches, as opposed to the same
+     * failure type's pre-launch boundary (see {@link #parallelInterruptedFailure}).
+     */
+    static RecordedWorkflowStepV2 interruptedParallelStep(String stepId) {
+        return new RecordedWorkflowStepV2(
+                new WorkflowStepId(stepId),
+                WorkflowStepType.PARALLEL,
+                WorkflowStepStatus.FAILED,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.of(parallelInterruptedFailure(stepId)),
+                Optional.empty());
+    }
+
+    /** {@code PARALLEL_STEP_INTERRUPTED}: carries the interrupted PARALLEL step's own stepId. */
+    static RecordedFailure parallelInterruptedFailure(String stepId) {
+        return new RecordedFailure(
+                WorkflowFailureType.PARALLEL_STEP_INTERRUPTED,
+                "safe message",
+                Optional.of(new WorkflowStepId(stepId)),
+                Optional.empty(),
+                Optional.empty());
+    }
+
     static RecordedWorkflowStepV2 parallelBranchStep(String stepId) {
         return new RecordedWorkflowStepV2(
                 new WorkflowStepId(stepId),

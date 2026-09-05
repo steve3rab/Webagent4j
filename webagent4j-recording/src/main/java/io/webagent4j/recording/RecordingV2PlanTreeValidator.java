@@ -337,12 +337,28 @@ final class RecordingV2PlanTreeValidator {
     /**
      * Validates a recorded {@link WorkflowStepType#PARALLEL} node - added in 1.3.0: it never itself
      * carries a branch selection (see {@link RecordedExecutionNodeV2}'s own invariant). A status
-     * other than {@link WorkflowStepStatus#SUCCEEDED} (skipped by its own optional guard, failed
-     * before any branch launched, or never reached) must carry zero children - no branch is ever
-     * launched in any of those cases. A {@code SUCCEEDED} node must carry exactly one {@link
-     * WorkflowStepType#PARALLEL_BRANCH} child per branch this plan node declares, positionally
-     * matched (never a different count - {@code Workflow.MIN_PARALLEL_BRANCHES} guarantees the plan
-     * itself always declares at least two).
+     * other than {@link WorkflowStepStatus#SUCCEEDED} or the one {@code FAILED} exception below
+     * (skipped by its own optional guard, failed before any branch launched, or never reached) must
+     * carry zero children - no branch is ever launched in any of those cases.
+     *
+     * <p>A node may also carry branches while {@code FAILED} with {@link
+     * WorkflowFailureType#PARALLEL_STEP_INTERRUPTED} - added in 1.3.0 for the calling thread's own
+     * interruption while joining an already-launched step's branches (as opposed to the same
+     * failure type's other, pre-launch boundary, which carries zero children exactly like any other
+     * pre-launch failure): {@link WorkflowResult}'s own pre-existing global invariant (every step
+     * after a {@code FAILED} one must be {@code NOT_RUN}) means none of those branches can ever be
+     * {@code SUCCEEDED} - {@code WorkflowEngine} represents every one of them as {@link
+     * WorkflowStepStatus#NOT_RUN} with zero children, unconditionally, regardless of how much of
+     * any branch's own work had actually completed before the interruption arrived (see {@code
+     * WorkflowEngine.Session#joinInterruptedParallelBranches}). This method enforces that narrower
+     * shape specifically for a {@code FAILED} node - see the {@code SUCCEEDED} check below - rather
+     * than merely reusing the same per-branch count/shape check a {@code SUCCEEDED} node's own
+     * launched branches are held to.
+     *
+     * <p>Either accepted shape must carry exactly one {@link WorkflowStepType#PARALLEL_BRANCH}
+     * child per branch this plan node declares, positionally matched (never a different count -
+     * {@code Workflow.MIN_PARALLEL_BRANCHES} guarantees the plan itself always declares at least
+     * two).
      */
     private static void validateParallelNode(
             RecordedExecutionNodeV2 node, WorkflowPlanNode planNode, int depth, String idSuffix) {
@@ -350,11 +366,12 @@ final class RecordingV2PlanTreeValidator {
             throw new IllegalArgumentException(
                     "a recorded PARALLEL node must never carry a branch selection");
         }
-        if (node.step().status() != WorkflowStepStatus.SUCCEEDED) {
+        if (!parallelNodeMayCarryBranches(node.step())) {
             if (!node.children().isEmpty()) {
                 throw new IllegalArgumentException(
-                        "a recorded PARALLEL node that is not SUCCEEDED must carry zero children -"
-                                + " no branch is ever launched unless the step itself succeeds");
+                        "a recorded PARALLEL node that did not launch any branch must carry zero"
+                                + " children - either it succeeded without launching one, or it"
+                                + " failed before any branch could be launched");
             }
             return;
         }
@@ -363,6 +380,19 @@ final class RecordingV2PlanTreeValidator {
             throw new IllegalArgumentException(
                     "a SUCCEEDED recorded PARALLEL node's branch count does not match its recorded"
                             + " plan");
+        }
+        boolean interrupted = node.step().status() == WorkflowStepStatus.FAILED;
+        if (interrupted) {
+            for (RecordedExecutionNodeV2 branch : node.children()) {
+                if (branch.step().status() != WorkflowStepStatus.NOT_RUN) {
+                    throw new IllegalArgumentException(
+                            "a FAILED/PARALLEL_STEP_INTERRUPTED recorded PARALLEL node's own"
+                                    + " branches must all be NOT_RUN - WorkflowResult's global"
+                                    + " invariant forbids anything but NOT_RUN after a FAILED"
+                                    + " step, so no branch can ever be recorded as SUCCEEDED"
+                                    + " alongside it");
+                }
+            }
         }
         int childDepth = depth + 1;
         if (childDepth > MAX_TREE_DEPTH) {
@@ -378,6 +408,27 @@ final class RecordingV2PlanTreeValidator {
                     idSuffix,
                     i);
         }
+    }
+
+    /**
+     * True for the two states {@code WorkflowEngine.Session#executeParallelStepInto} can produce
+     * with branches recorded underneath: a {@code SUCCEEDED} step (every branch was launched), or a
+     * {@code FAILED} step whose failure is {@link WorkflowFailureType#PARALLEL_STEP_INTERRUPTED}
+     * and whose interruption was observed <em>while joining</em> already-launched branches rather
+     * than before any of them could launch - the latter, pre-launch case is indistinguishable from
+     * any other pre-launch failure only by checking whether the recorded node actually carries
+     * children, which is exactly the shape check the caller already performs; this method exists
+     * purely to decide, for a {@code FAILED} node, whether the {@code PARALLEL_STEP_INTERRUPTED}
+     * failure type is even structurally possible with branches underneath it, never to duplicate
+     * that count check itself.
+     */
+    private static boolean parallelNodeMayCarryBranches(RecordedWorkflowStepV2 step) {
+        if (step.status() == WorkflowStepStatus.SUCCEEDED) {
+            return true;
+        }
+        return step.status() == WorkflowStepStatus.FAILED
+                && step.failure().isPresent()
+                && step.failure().get().type() == WorkflowFailureType.PARALLEL_STEP_INTERRUPTED;
     }
 
     /**

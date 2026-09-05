@@ -16,6 +16,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
@@ -111,6 +112,21 @@ public final class WorkflowEngine {
      * real concurrency; the bound itself, and every other node's own outcome, never does.
      */
     static final int MAX_EXECUTED_WORKFLOW_NODES = 100_000;
+
+    /**
+     * Bounded grace period {@link Session#runBranchesConcurrently} waits, at most once, for a
+     * {@link WorkflowStepType#PARALLEL} step's own branch worker threads to reach a terminal state
+     * after the calling thread is interrupted mid-join - added in 1.3.0 to fix a genuine hang: the
+     * engine now always returns from {@link #execute}/{@link #executeWithTree} within a bounded
+     * time of the calling thread's own interruption, never waiting indefinitely for a branch. A
+     * fixed internal bound, not caller-configurable, since it exists purely to give a cooperative
+     * branch task - one that checks its own interruption at an ordinary boundary - a fair chance to
+     * unwind before the engine gives up and moves on; a branch task that ignores interruption
+     * entirely may still be running on its own daemon worker thread when this method returns (see
+     * {@code docs/workflow.md#parallel} and {@code docs/limitations.md}), but its eventual result
+     * is never waited for, merged, or observed again.
+     */
+    private static final long PARALLEL_INTERRUPT_SHUTDOWN_GRACE_SECONDS = 5;
 
     /** Creates a reusable, stateless engine. */
     public WorkflowEngine() {}
@@ -309,6 +325,25 @@ public final class WorkflowEngine {
         private final WorkflowInputs inputs;
         private final AtomicInteger executedNodeCount = new AtomicInteger();
 
+        /**
+         * Set once, permanently, the first time any {@link WorkflowStepType#PARALLEL} step's own
+         * {@link #runBranchesConcurrently} call - at any nesting depth, on any thread - observes
+         * the calling thread's own interruption while waiting for that step's branches to finish -
+         * added in 1.3.0. A single flag shared by the whole execution (never scoped to one {@code
+         * PARALLEL} invocation): a caller interruption is a terminal signal for this entire {@link
+         * #execute}/{@link #executeWithTree} call, not just the one step that happened to observe
+         * it first, so every other still-running boundary check in this same execution - another
+         * concurrently running sibling branch's own nested control flow included - must also stop
+         * starting new work once it is set. This exists specifically to defend against a hostile
+         * branch whose own code catches and discards {@link InterruptedException} (clearing the
+         * physical interrupt flag {@link Thread#isInterrupted()} alone would otherwise miss):
+         * {@link #executeConditionalStepInto}, {@link #executeLoopStepInto}, and {@link
+         * #executeParallelStepInto} each check this flag in addition to the physical flag at their
+         * own existing interruption boundaries. It never causes a retry and is never cleared once
+         * set - this execution is already being wound down.
+         */
+        private final AtomicBoolean cancellationRequested = new AtomicBoolean(false);
+
         Session(Workflow workflow, WorkflowInputs inputs) {
             this.workflow = workflow;
             this.inputs = inputs;
@@ -489,7 +524,7 @@ public final class WorkflowEngine {
                 List<PendingStepResult> accumulator,
                 List<PendingExecutionNode> nodeAccumulator) {
             WorkflowStepId resultId = qualify(step.id(), idSuffix);
-            if (Thread.currentThread().isInterrupted()) {
+            if (Thread.currentThread().isInterrupted() || cancellationRequested.get()) {
                 return addInterrupted(
                         resultId,
                         WorkflowStepType.CONDITIONAL,
@@ -524,7 +559,7 @@ public final class WorkflowEngine {
             Optional<PendingConditionResult> conditionResult = Optional.of(evaluation.pending());
             WorkflowBranchSelection selection = branchSelectionFor(step, evaluation.outcome());
 
-            if (Thread.currentThread().isInterrupted()) {
+            if (Thread.currentThread().isInterrupted() || cancellationRequested.get()) {
                 return addInterrupted(
                         resultId,
                         WorkflowStepType.CONDITIONAL,
@@ -668,7 +703,7 @@ public final class WorkflowEngine {
                 String iterationSuffix = idSuffix + "#" + iteration;
                 WorkflowStepId decisionId = qualify(step.id(), iterationSuffix);
 
-                if (Thread.currentThread().isInterrupted()) {
+                if (Thread.currentThread().isInterrupted() || cancellationRequested.get()) {
                     failure =
                             addInterrupted(
                                     decisionId,
@@ -763,7 +798,7 @@ public final class WorkflowEngine {
                     break;
                 }
 
-                if (Thread.currentThread().isInterrupted()) {
+                if (Thread.currentThread().isInterrupted() || cancellationRequested.get()) {
                     failure =
                             addInterrupted(
                                     decisionId,
@@ -829,7 +864,7 @@ public final class WorkflowEngine {
                 List<PendingStepResult> accumulator,
                 List<PendingExecutionNode> nodeAccumulator) {
             WorkflowStepId resultId = qualify(step.id(), idSuffix);
-            if (Thread.currentThread().isInterrupted()) {
+            if (Thread.currentThread().isInterrupted() || cancellationRequested.get()) {
                 return addInterrupted(
                         resultId,
                         WorkflowStepType.PARALLEL,
@@ -883,8 +918,33 @@ public final class WorkflowEngine {
             }
 
             List<List<IWorkflowStep>> branches = step.branches();
-            List<BranchOutcome> outcomes =
+            ConcurrentBranchJoinResult joinResult =
                     runBranchesConcurrently(branches, step.id(), idSuffix, state);
+
+            if (joinResult.abortedByCallerInterruption()) {
+                PendingStepResult wrapperResult =
+                        failedResult(
+                                resultId,
+                                WorkflowStepType.PARALLEL,
+                                conditionResult,
+                                WorkflowFailureType.PARALLEL_STEP_INTERRUPTED,
+                                "the executing thread was interrupted while waiting for this"
+                                        + " PARALLEL step's own branches to finish - every branch"
+                                        + " still unresolved at that moment was cancelled and its"
+                                        + " eventual result, if any, was discarded and never merged",
+                                null,
+                                null,
+                                null,
+                                state);
+                accumulator.add(wrapperResult);
+                List<PendingExecutionNode> branchNodes = new ArrayList<>(branches.size());
+                joinInterruptedParallelBranches(
+                        step.id(), idSuffix, joinResult.outcomes(), accumulator, branchNodes);
+                nodeAccumulator.add(
+                        new PendingExecutionNode(
+                                wrapperResult, Optional.empty(), List.copyOf(branchNodes)));
+                return wrapperResult.failure();
+            }
 
             PendingStepResult wrapperResult =
                     new PendingStepResult(
@@ -900,7 +960,12 @@ public final class WorkflowEngine {
             List<PendingExecutionNode> branchNodes = new ArrayList<>(branches.size());
             Optional<WorkflowFailure> failure =
                     joinParallelBranches(
-                            step.id(), idSuffix, state, outcomes, accumulator, branchNodes);
+                            step.id(),
+                            idSuffix,
+                            state,
+                            joinResult.outcomes(),
+                            accumulator,
+                            branchNodes);
             nodeAccumulator.add(
                     new PendingExecutionNode(
                             wrapperResult, Optional.empty(), List.copyOf(branchNodes)));
@@ -1093,6 +1158,18 @@ public final class WorkflowEngine {
         }
 
         /**
+         * One {@link #runBranchesConcurrently} call's own result - added in 1.3.0: {@code outcomes}
+         * is restored to branch-definition-index order with a placeholder for any branch this call
+         * gave up waiting for, exactly as before; {@code abortedByCallerInterruption} is {@code
+         * true} exactly when this step's own reported failure must be {@link
+         * WorkflowFailureType#PARALLEL_STEP_INTERRUPTED} rather than whatever branch-failure story
+         * {@code outcomes} alone would otherwise tell (see {@link
+         * #isJoinIrreversiblyDecided}/{@link #joinInterruptedParallelBranches}).
+         */
+        private record ConcurrentBranchJoinResult(
+                List<BranchOutcome> outcomes, boolean abortedByCallerInterruption) {}
+
+        /**
          * Launches every one of {@code branches} concurrently, each on its own dedicated worker
          * thread drawn from a small executor sized to exactly {@code branches.size()} and created
          * fresh for this one {@link WorkflowStepType#PARALLEL} step - never shared, never
@@ -1108,27 +1185,41 @@ public final class WorkflowEngine {
          * containing none at all) may simply outlive, in which case whatever it computes is safely
          * discarded later (see {@link #joinParallelBranches}), never forcibly killed mid-step. A
          * branch at an index less than or equal to the lowest failed index observed so far is
-         * <b>never</b> cancelled by this method, at any point: since the final reported failure is
-         * always the lowest-index branch that failed among <em>all</em> of them, every branch at or
-         * before whichever index has already been confirmed failed is certain to end up kept (see
-         * {@link #joinParallelBranches}) no matter what any other branch does later - cancelling it
-         * preemptively would fabricate a never-launched outcome for a branch this step's own
-         * contract already promises to keep genuine. (An earlier revision of this method cancelled
-         * every other branch on any failure, which could race a lower-index branch's own Future
-         * into being cancelled before it ever started, discarding real content the recorded result
-         * is supposed to retain - see {@code WorkflowParallelRecordingV2Test} for the regression
-         * this fixes.) This method always waits for every branch's task to reach a terminal state -
-         * normal completion or cancellation - and always shuts the executor down, with no orphaned
-         * task and no leaked thread, before returning; an interruption of the calling thread while
-         * waiting is tolerated (every branch strictly after the lowest failed index observed so far
-         * is cancelled and the wait continues) and re-applied to the calling thread's own interrupt
-         * flag before this method returns, never silently swallowed.
+         * <b>never</b> cancelled by this method for that reason, at any point: since the final
+         * reported failure is always the lowest-index branch that failed among <em>all</em> of
+         * them, every branch at or before whichever index has already been confirmed failed is
+         * certain to end up kept (see {@link #joinParallelBranches}) no matter what any other
+         * branch does later - cancelling it preemptively would fabricate a never-launched outcome
+         * for a branch this step's own contract already promises to keep genuine. (An earlier
+         * revision of this method cancelled every other branch on any failure, which could race a
+         * lower-index branch's own Future into being cancelled before it ever started, discarding
+         * real content the recorded result is supposed to retain - see {@code
+         * WorkflowParallelRecordingV2Test} for the regression this fixes.)
+         *
+         * <p><b>The calling thread's own interruption is a different, terminal signal</b> - added
+         * in 1.3.0 to fix a genuine hang: unlike an ordinary branch failure, it is never tolerated
+         * while this method keeps waiting for the rest. The moment it is observed, {@link
+         * #cancellationRequested} is set (see its own Javadoc), every branch's {@link Future} is
+         * cancelled regardless of index (see {@link #cancelAll}), and this method stops waiting for
+         * further outcomes - it never again calls an unbounded {@link
+         * ExecutorCompletionService#take()} or {@link Future#get()} once this happens. Whether this
+         * step's own reported failure becomes {@link WorkflowFailureType#PARALLEL_STEP_INTERRUPTED}
+         * or an already-decided branch failure is resolved once, deterministically, by {@link
+         * #isJoinIrreversiblyDecided} (see {@link ConcurrentBranchJoinResult}) - never left to
+         * whichever branch happens to be the caller's own current position in this method. The
+         * executor is then shut down through {@link #boundedShutdown} rather than the unbounded
+         * retry loop the normal, non-interrupted completion path below still uses: at most {@link
+         * #PARALLEL_INTERRUPT_SHUTDOWN_GRACE_SECONDS} is spent waiting for termination, never
+         * longer, so this method - and therefore {@link #execute}/{@link #executeWithTree} - always
+         * returns within a bounded time of the calling thread's own interruption, regardless of how
+         * any branch's own task behaves. The calling thread's own interrupt flag is always restored
+         * before this method returns, never silently swallowed, in either case.
          *
          * <p>Returned outcomes are not necessarily in branch-definition order - see {@link
-         * BranchOutcome#branchIndex()} and {@link #joinParallelBranches}, which restores that order
-         * deterministically.
+         * BranchOutcome#branchIndex()} and {@link #joinParallelBranches}/{@link
+         * #joinInterruptedParallelBranches}, which restore that order deterministically.
          */
-        private List<BranchOutcome> runBranchesConcurrently(
+        private ConcurrentBranchJoinResult runBranchesConcurrently(
                 List<List<IWorkflowStep>> branches,
                 WorkflowStepId parallelStepId,
                 String idSuffix,
@@ -1143,6 +1234,7 @@ public final class WorkflowEngine {
                     Executors.newFixedThreadPool(
                             branchCount, new ParallelBranchThreadFactory(parallelStepId));
             boolean interruptedWhileWaiting = false;
+            boolean abortedByCallerInterruption = false;
             try {
                 ExecutorCompletionService<BranchOutcome> completionService =
                         new ExecutorCompletionService<>(executor);
@@ -1164,34 +1256,37 @@ public final class WorkflowEngine {
                 @SuppressWarnings("unchecked")
                 BranchOutcome[] outcomes = new BranchOutcome[branchCount];
                 int lowestFailedIndexSoFar = Integer.MAX_VALUE;
-                for (int received = 0; received < branchCount; received++) {
-                    Future<BranchOutcome> completed = null;
-                    while (completed == null) {
-                        try {
-                            completed = completionService.take();
-                        } catch (InterruptedException e) {
-                            // The calling thread's own interrupt flag has no effect on any branch's
-                            // own, independent worker thread - there is nothing of ours to cancel
-                            // here; simply keep waiting for every branch's own genuine outcome, and
-                            // restore the flag once every branch is actually done (see below).
-                            interruptedWhileWaiting = true;
-                        }
+                int received = 0;
+                while (received < branchCount) {
+                    Future<BranchOutcome> completed;
+                    try {
+                        completed = completionService.take();
+                    } catch (InterruptedException e) {
+                        interruptedWhileWaiting = true;
+                        cancellationRequested.set(true);
+                        abortedByCallerInterruption =
+                                !isJoinIrreversiblyDecided(outcomes, lowestFailedIndexSoFar);
+                        cancelAll(futures);
+                        break;
                     }
                     try {
                         BranchOutcome outcome = completed.get();
                         outcomes[outcome.branchIndex()] = outcome;
+                        received++;
                         if (outcome.failure().isPresent()
                                 && outcome.branchIndex() < lowestFailedIndexSoFar) {
                             lowestFailedIndexSoFar = outcome.branchIndex();
                             cancelStrictlyAfter(futures, lowestFailedIndexSoFar);
                         }
                     } catch (CancellationException e) {
+                        received++;
                         // Left null; filled in below as a never-launched/discarded outcome.
                     } catch (InterruptedException e) {
                         // completed.get() on an already-done future never actually blocks, but
-                        // remains declared - treat identically to the take() interruption above.
+                        // remains declared - treat identically to the take() interruption above,
+                        // without discarding the outcome take() already handed us.
                         interruptedWhileWaiting = true;
-                        received--;
+                        cancellationRequested.set(true);
                     } catch (ExecutionException e) {
                         throw new IllegalStateException(
                                 "a PARALLEL branch task failed unexpectedly - runBranch must"
@@ -1207,15 +1302,20 @@ public final class WorkflowEngine {
                                         i, forks.get(i), List.of(), List.of(), Optional.empty());
                     }
                 }
-                return List.of(outcomes);
+                return new ConcurrentBranchJoinResult(
+                        List.of(outcomes), abortedByCallerInterruption);
             } finally {
-                executor.shutdown();
-                boolean terminated = false;
-                while (!terminated) {
-                    try {
-                        terminated = executor.awaitTermination(1, TimeUnit.DAYS);
-                    } catch (InterruptedException e) {
-                        interruptedWhileWaiting = true;
+                if (interruptedWhileWaiting) {
+                    boundedShutdown(executor);
+                } else {
+                    executor.shutdown();
+                    boolean terminated = false;
+                    while (!terminated) {
+                        try {
+                            terminated = executor.awaitTermination(1, TimeUnit.DAYS);
+                        } catch (InterruptedException e) {
+                            interruptedWhileWaiting = true;
+                        }
                     }
                 }
                 if (interruptedWhileWaiting) {
@@ -1225,17 +1325,136 @@ public final class WorkflowEngine {
         }
 
         /**
+         * Returns whether this {@link WorkflowStepType#PARALLEL} step's own eventual reported
+         * failure - the lowest-index branch that failed, if any (see {@link #joinParallelBranches})
+         * - is already irreversibly fixed: every branch at or before {@code lowestFailedIndexSoFar}
+         * has already reported its own outcome, so no branch that could still arrive later (every
+         * one of those is, by construction, at a strictly higher index that was already cancelled
+         * the moment {@code lowestFailedIndexSoFar} was set - see {@link #cancelStrictlyAfter} -
+         * and can therefore never end up kept) could ever change it. Used only by {@link
+         * #runBranchesConcurrently} at the moment the calling thread is itself interrupted while
+         * still waiting for such stragglers: {@code true} means that interruption changes nothing
+         * about this step's own already-decided outcome; {@code false} means no branch failure was
+         * yet provably final, so the interruption itself must become this step's reported failure
+         * instead, as {@link WorkflowFailureType#PARALLEL_STEP_INTERRUPTED}.
+         */
+        private static boolean isJoinIrreversiblyDecided(
+                BranchOutcome[] outcomes, int lowestFailedIndexSoFar) {
+            if (lowestFailedIndexSoFar == Integer.MAX_VALUE) {
+                return false;
+            }
+            for (int i = 0; i <= lowestFailedIndexSoFar; i++) {
+                if (outcomes[i] == null) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
          * Cancels every future at an index strictly greater than {@code lowestFailedIndexSoFar} -
          * {@code futures} is indexed identically to branch definition order, since {@link
          * #runBranchesConcurrently} submits them in that exact order. Never cancels index {@code
          * lowestFailedIndexSoFar} itself or anything before it: see {@link
          * #runBranchesConcurrently}'s own Javadoc for why a branch at or before the lowest failed
-         * index observed so far must never be cancelled by this engine's own logic.
+         * index observed so far must never be cancelled by this engine's own logic for an ordinary
+         * branch failure. Used only for that narrower case - see {@link #cancelAll} for the calling
+         * thread's own, unconditional interruption instead.
          */
         private static void cancelStrictlyAfter(
                 List<Future<BranchOutcome>> futures, int lowestFailedIndexSoFar) {
             for (int i = lowestFailedIndexSoFar + 1; i < futures.size(); i++) {
                 futures.get(i).cancel(true);
+            }
+        }
+
+        /**
+         * Cancels every branch's {@link Future}, regardless of its own index or current state -
+         * added in 1.3.0. Unlike {@link #cancelStrictlyAfter}'s narrower, index-aware cancellation
+         * for an ordinary branch failure, the calling thread's own interruption is a terminal
+         * signal for the whole {@link WorkflowStepType#PARALLEL} step, so every branch is cancelled
+         * here, including one at or before any already-confirmed failed index. Cancelling an
+         * already-completed {@link Future} is a harmless no-op.
+         */
+        private static void cancelAll(List<Future<BranchOutcome>> futures) {
+            for (Future<BranchOutcome> future : futures) {
+                future.cancel(true);
+            }
+        }
+
+        /**
+         * Shuts {@code executor} down after the calling thread was itself interrupted while waiting
+         * for this {@link WorkflowStepType#PARALLEL} step's own branches - added in 1.3.0: requests
+         * immediate cancellation of anything still running ({@link ExecutorService#shutdownNow()}),
+         * then waits, once, for at most {@link #PARALLEL_INTERRUPT_SHUTDOWN_GRACE_SECONDS} for
+         * every worker to actually terminate - never the unbounded retry loop {@link
+         * #runBranchesConcurrently}'s own normal, non-interrupted completion path still uses.
+         * Whether or not every worker terminates within that bound, this method always returns: a
+         * hostile branch task that ignores its own interruption entirely may still be running on
+         * its own daemon thread afterward, but its eventual result was already discarded before
+         * this call and is never retried, waited on, or merged into this execution again (see
+         * {@code docs/limitations.md}).
+         */
+        private static void boundedShutdown(ExecutorService executor) {
+            executor.shutdownNow();
+            try {
+                executor.awaitTermination(
+                        PARALLEL_INTERRUPT_SHUTDOWN_GRACE_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                // Already unwinding due to interruption - the calling thread's own flag is restored
+                // unconditionally by runBranchesConcurrently once this method returns either way.
+            }
+        }
+
+        /**
+         * Represents every branch as {@link WorkflowStepStatus#NOT_RUN} with zero children after
+         * the calling thread was interrupted while waiting for this {@link
+         * WorkflowStepType#PARALLEL} step's own branches - added in 1.3.0, the caller-interruption
+         * counterpart to {@link #joinParallelBranches}.
+         *
+         * <p>This cannot show a received branch's own real, already-computed content the way a kept
+         * branch does in the ordinary, non-interrupted case: {@link WorkflowResult}'s pre-existing
+         * global invariant requires every step after a {@code FAILED} one to be {@code NOT_RUN},
+         * and this step's own wrapper is itself {@code FAILED} with {@link
+         * WorkflowFailureType#PARALLEL_STEP_INTERRUPTED} (see {@link #executeParallelStepInto}) - a
+         * branch entry positioned after it in the flat result can therefore never be {@code
+         * SUCCEEDED}, no matter how much of that branch's own work genuinely completed. This is the
+         * same trade-off {@link #joinParallelBranches} already makes for a branch discarded after
+         * an ordinary sibling failure (see its own Javadoc) - never permitted to perform an
+         * observable side effect in the first place, so discarding its already-computed content
+         * unseen has no side effect to hide - extended here uniformly to every branch, since none
+         * of them can ever be "kept" once this step's own reported outcome is the interruption
+         * itself, regardless of whether any branch's own {@link BranchOutcome} was actually
+         * received before it occurred.
+         *
+         * <p>No branch's own variables, outputs, or discovered secrets are folded into {@code
+         * state} either, for the same reason {@link #joinParallelBranches} never would for a
+         * discarded branch: nothing a branch computed is ever surfaced once it is represented this
+         * way, so there is nothing left to protect from a missed redaction - unlike the ordinary
+         * kept-branch case, where a later step's already-recorded text still needs the full, merged
+         * secret set at finalization time.
+         */
+        private void joinInterruptedParallelBranches(
+                WorkflowStepId parallelStepId,
+                String idSuffix,
+                List<BranchOutcome> outcomes,
+                List<PendingStepResult> accumulator,
+                List<PendingExecutionNode> branchNodeAccumulator) {
+            for (BranchOutcome outcome : outcomes) {
+                WorkflowStepId branchWrapperId =
+                        qualify(parallelStepId, idSuffix + "@" + outcome.branchIndex());
+                PendingStepResult neverLaunched =
+                        new PendingStepResult(
+                                branchWrapperId,
+                                WorkflowStepType.PARALLEL_BRANCH,
+                                WorkflowStepStatus.NOT_RUN,
+                                Optional.empty(),
+                                Optional.empty(),
+                                Optional.empty(),
+                                Optional.empty());
+                accumulator.add(neverLaunched);
+                branchNodeAccumulator.add(
+                        new PendingExecutionNode(neverLaunched, Optional.empty(), List.of()));
             }
         }
 

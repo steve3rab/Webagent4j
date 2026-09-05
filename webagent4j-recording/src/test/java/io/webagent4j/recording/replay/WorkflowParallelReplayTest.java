@@ -2,14 +2,10 @@ package io.webagent4j.recording.replay;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import io.webagent4j.action.ActionExecutionMode;
-import io.webagent4j.action.ActionResult;
-import io.webagent4j.action.IPreparedAction;
 import io.webagent4j.recording.JsonWorkflowRecordingV2Codec;
 import io.webagent4j.recording.RecordingId;
 import io.webagent4j.recording.WorkflowRecorderV2;
 import io.webagent4j.recording.WorkflowRecordingV2;
-import io.webagent4j.workflow.IWorkflowActionFactory;
 import io.webagent4j.workflow.IWorkflowCondition;
 import io.webagent4j.workflow.IWorkflowStep;
 import io.webagent4j.workflow.IWorkflowVariables;
@@ -22,10 +18,8 @@ import io.webagent4j.workflow.WorkflowPlanner;
 import io.webagent4j.workflow.WorkflowStepType;
 import io.webagent4j.workflow.WorkflowSteps;
 import io.webagent4j.workflow.WorkflowVariable;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -34,6 +28,12 @@ import org.junit.jupiter.api.Test;
  * RPL-PAR coverage: Deterministic Replay of a real {@code PARALLEL} {@code WorkflowExecution}'s
  * recorded trace, including a loop nested inside a branch whose {@code maxIterations} bound must
  * still be resolved structurally against the live workflow. See {@code docs/recording.md#parallel}.
+ *
+ * <p>Since a Workflow {@code ACTION} step is never permitted inside a {@code PARALLEL} branch (see
+ * {@code io.webagent4j.workflow.WorkflowParallelActionSafetyTest}), every branch here is built from
+ * an always-true {@link IWorkflowCondition} driving an {@code ifThen} whose body is a deterministic
+ * {@code ASSIGN} - the allowed-step-type equivalent of the former test-only parallel-safe ACTION
+ * fixture.
  */
 class WorkflowParallelReplayTest {
 
@@ -41,107 +41,41 @@ class WorkflowParallelReplayTest {
     private final WorkflowRecorderV2 recorder = new WorkflowRecorderV2();
     private final JsonWorkflowRecordingV2Codec codec = new JsonWorkflowRecordingV2Codec();
 
-    /**
-     * A minimal, local {@code IPreparedAction<String>} fake that always succeeds - this package
-     * cannot reuse {@code io.webagent4j.recording}'s own package-private test helpers, mirroring
-     * {@code WorkflowLoopReplayTest}'s own identical local fake for the same reason.
-     */
-    private static final class SentinelPreparedAction implements IPreparedAction<String> {
-        private final String value;
+    private static IWorkflowCondition alwaysTrue() {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                return true;
+            }
 
-        SentinelPreparedAction(String value) {
-            this.value = value;
-        }
+            @Override
+            public String describe() {
+                return "true";
+            }
 
-        @Override
-        public IPreparedAction<String> precondition(
-                java.util.function.Predicate<io.webagent4j.dom.IElement> predicate) {
-            return this;
-        }
-
-        @Override
-        public IPreparedAction<String> require(
-                io.webagent4j.verification.IVerification verification) {
-            return this;
-        }
-
-        @Override
-        public IPreparedAction<String> expect(
-                io.webagent4j.verification.IVerification verification) {
-            return this;
-        }
-
-        @Override
-        public IPreparedAction<String> expectUrlContains(String expectedFragment) {
-            return this;
-        }
-
-        @Override
-        public IPreparedAction<String> timeout(Duration timeout) {
-            return this;
-        }
-
-        @Override
-        public IPreparedAction<String> retry(io.webagent4j.common.RetryPolicy retryPolicy) {
-            return this;
-        }
-
-        @Override
-        public IPreparedAction<String> captureObservations(
-                io.webagent4j.action.ObservationCapturePolicy policy) {
-            return this;
-        }
-
-        @Override
-        public ActionResult<String> execute() {
-            return new ActionResult<>(
-                    true,
-                    value,
-                    Duration.ZERO,
-                    List.of(),
-                    Optional.empty(),
-                    ActionExecutionMode.REAL);
-        }
-
-        @Override
-        public IPreparedAction<String> dryRun() {
-            return this;
-        }
-
-        @Override
-        public io.webagent4j.action.IActionPlan<String> plan() {
-            throw new UnsupportedOperationException("not used by this test");
-        }
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of();
+            }
+        };
     }
 
-    /**
-     * A local, named {@link IWorkflowActionFactory} declaring itself parallel-safe - a plain lambda
-     * cannot override {@link IWorkflowActionFactory#isParallelSafe()}.
-     */
-    private static final class SafeFactory implements IWorkflowActionFactory<String> {
-        private final String value;
-
-        SafeFactory(String value) {
-            this.value = value;
-        }
-
-        @Override
-        public IPreparedAction<String> prepare(IWorkflowVariables variables) {
-            return new SentinelPreparedAction(value);
-        }
-
-        @Override
-        public boolean isParallelSafe() {
-            return true;
-        }
+    private static IWorkflowStep publish(String id, WorkflowVariable<String> output) {
+        return WorkflowSteps.ifThen(
+                id,
+                alwaysTrue(),
+                List.of(WorkflowSteps.assign(id + "-assign", output, id + "-value")));
     }
 
-    private static IWorkflowStep safeAction(String id, WorkflowVariable<String> output) {
-        return WorkflowSteps.action(id, new SafeFactory(id + "-value"), output);
-    }
-
-    private static IWorkflowStep safeActionNoOutput(String id) {
-        return WorkflowSteps.action(id, new SafeFactory(id + "-value"));
+    private static IWorkflowStep noopStep(String id) {
+        return WorkflowSteps.ifThen(
+                id,
+                alwaysTrue(),
+                List.of(
+                        WorkflowSteps.assign(
+                                id + "-assign",
+                                WorkflowVariable.publicValue(id + "NoopVar", String.class),
+                                "x")));
     }
 
     // --- RPL-PAR-001: a genuine two-branch parallel execution replays exactly -------------
@@ -156,8 +90,8 @@ class WorkflowParallelReplayTest {
                                 WorkflowSteps.parallel(
                                         "par",
                                         List.of(
-                                                List.of(safeAction("a", outA)),
-                                                List.of(safeAction("b", outB)))))
+                                                List.of(publish("a", outA)),
+                                                List.of(publish("b", outB)))))
                         .build();
         WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
         WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());
@@ -172,12 +106,13 @@ class WorkflowParallelReplayTest {
 
         assertThat(outcome).isInstanceOf(IReplayOutcome.Replayed.class);
         ReplayedWorkflow replayed = ((IReplayOutcome.Replayed) outcome).workflow();
-        assertThat(replayed.steps()).hasSize(5); // PARALLEL + BRANCH0 + a@0 + BRANCH1 + b@1
+        // PARALLEL + BRANCH0 + a@0 + a-assign@0 + BRANCH1 + b@1 + b-assign@1
+        assertThat(replayed.steps()).hasSize(7);
         assertThat(replayed.steps().get(0).step().stepType()).isEqualTo(WorkflowStepType.PARALLEL);
         assertThat(replayed.steps().get(1).step().stepType())
                 .isEqualTo(WorkflowStepType.PARALLEL_BRANCH);
         assertThat(replayed.steps().get(2).step().stepId().value()).isEqualTo("a@0");
-        assertThat(replayed.steps().get(4).step().stepId().value()).isEqualTo("b@1");
+        assertThat(replayed.steps().get(5).step().stepId().value()).isEqualTo("b@1");
 
         // Also survives a JSON round-trip.
         WorkflowRecordingV2 decoded = codec.decode(codec.encode(recording));
@@ -196,8 +131,8 @@ class WorkflowParallelReplayTest {
                                 WorkflowSteps.parallel(
                                         "par",
                                         List.of(
-                                                List.of(safeAction("a", outA)),
-                                                List.of(safeAction("b", outB)))))
+                                                List.of(publish("a", outA)),
+                                                List.of(publish("b", outB)))))
                         .build();
         WorkflowExecutionPlan plan = WorkflowPlanner.plan(original);
         WorkflowExecution execution = engine.executeWithTree(original, WorkflowInputs.empty());
@@ -216,9 +151,9 @@ class WorkflowParallelReplayTest {
                                 WorkflowSteps.parallel(
                                         "par",
                                         List.of(
-                                                List.of(safeAction("a", outA)),
-                                                List.of(safeAction("b", outB)),
-                                                List.of(safeAction("c", outC)))))
+                                                List.of(publish("a", outA)),
+                                                List.of(publish("b", outB)),
+                                                List.of(publish("c", outC)))))
                         .build();
 
         IReplayOutcome outcome = WorkflowReplayer.replay(recording, changed);
@@ -262,10 +197,8 @@ class WorkflowParallelReplayTest {
                                                                 "innerLoop",
                                                                 trueTwiceThenFalse,
                                                                 5,
-                                                                List.of(
-                                                                        safeActionNoOutput(
-                                                                                "body")))),
-                                                List.of(safeAction("b", outB)))))
+                                                                List.of(noopStep("body")))),
+                                                List.of(publish("b", outB)))))
                         .build();
         WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
         WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());

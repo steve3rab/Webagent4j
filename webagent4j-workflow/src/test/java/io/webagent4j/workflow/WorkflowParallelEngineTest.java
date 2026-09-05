@@ -2,7 +2,6 @@ package io.webagent4j.workflow;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import io.webagent4j.action.ActionFailureType;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,9 +14,17 @@ import org.junit.jupiter.api.Test;
 /**
  * Deterministic Bounded Workflow Parallelism engine invariant matrix: branch-definition-order
  * joining regardless of real completion order, fail-closed cancellation of siblings, discarding a
- * later branch's already-computed work once an earlier one fails, secret propagation across
- * branches, and the {@code flatten(tree) == result.steps()} invariant. See {@code
- * docs/workflow.md#parallel}.
+ * later branch's already-computed work once an earlier one fails, secret redaction inside a branch,
+ * and the {@code flatten(tree) == result.steps()} invariant. See {@code docs/workflow.md#parallel}.
+ *
+ * <p>Since a Workflow {@code ACTION} step is never permitted inside a {@code PARALLEL} branch (see
+ * {@link WorkflowParallelActionSafetyTest}), every branch here is built from a caller-supplied
+ * {@link IWorkflowCondition} (a trusted extension point that remains allowed - see {@code
+ * docs/workflow.md#parallel}) driving an {@code ifThen}, with a deterministic {@code ASSIGN} as the
+ * body: the condition's own {@code evaluate()} can sleep, record execution order, count
+ * invocations, or throw to simulate a branch failure, exactly like the former test-only ACTION
+ * fixtures did, without depending on the now-forbidden step type. See {@link
+ * WorkflowParallelInterruptionTest} for the caller-interruption-during-join matrix (P1-1).
  */
 class WorkflowParallelEngineTest {
 
@@ -33,31 +40,48 @@ class WorkflowParallelEngineTest {
     }
 
     /**
-     * A parallel-safe action that sleeps {@code delay}, then records its own execution and result.
+     * A branch step whose condition sleeps {@code delay}, records its own execution, and either
+     * authorizes an {@code ASSIGN} that publishes {@code output} (on success) or throws (on
+     * failure) - the allowed-step-type equivalent of the former test-only parallel-safe ACTION
+     * fixture.
      */
-    private static IWorkflowStep timedAction(
+    private static IWorkflowStep timedStep(
             String id,
             Duration delay,
             boolean succeed,
             List<String> executionOrder,
             WorkflowVariable<String> output) {
-        ParallelSafeActionFactory<String> factory =
-                new ParallelSafeActionFactory<>(
-                        variables -> {
-                            sleep(delay);
-                            executionOrder.add(id);
-                            if (succeed) {
-                                return new FakePreparedAction<>(
-                                        ActionResults.success(id + "-value"), new AtomicInteger());
-                            }
-                            return new FakePreparedAction<>(
-                                    ActionResults.failure(
-                                            ActionFailureType.TARGET_NOT_FOUND, id + " not found"),
-                                    new AtomicInteger());
-                        });
-        return output == null
-                ? WorkflowSteps.action(id, factory)
-                : WorkflowSteps.action(id, factory, output);
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        sleep(delay);
+                        executionOrder.add(id);
+                        if (!succeed) {
+                            throw new RuntimeException(id + " failed");
+                        }
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return id;
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        List<IWorkflowStep> thenSteps =
+                output == null
+                        ? List.of(
+                                WorkflowSteps.assign(
+                                        id + "-assign",
+                                        WorkflowVariable.publicValue(id + "NoopVar", String.class),
+                                        "x"))
+                        : List.of(WorkflowSteps.assign(id + "-assign", output, id + "-value"));
+        return WorkflowSteps.ifThen(id, condition, thenSteps);
     }
 
     private static void sleep(Duration duration) {
@@ -83,14 +107,14 @@ class WorkflowParallelEngineTest {
                                         "par",
                                         List.of(
                                                 List.of(
-                                                        timedAction(
+                                                        timedStep(
                                                                 "a",
                                                                 Duration.ZERO,
                                                                 true,
                                                                 order,
                                                                 output("outA"))),
                                                 List.of(
-                                                        timedAction(
+                                                        timedStep(
                                                                 "b",
                                                                 Duration.ZERO,
                                                                 true,
@@ -101,14 +125,9 @@ class WorkflowParallelEngineTest {
         WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
 
         assertThat(result.completed()).isTrue();
-        assertThat(result.steps()).hasSize(5); // PARALLEL + BRANCH(0) + a + BRANCH(1) + b
-        assertThat(result.steps().get(0).stepType()).isEqualTo(WorkflowStepType.PARALLEL);
-        assertThat(result.steps().get(1).stepType()).isEqualTo(WorkflowStepType.PARALLEL_BRANCH);
-        assertThat(result.steps().get(1).stepId().value()).isEqualTo("par@0");
-        assertThat(result.steps().get(2).stepId().value()).isEqualTo("a@0");
-        assertThat(result.steps().get(3).stepType()).isEqualTo(WorkflowStepType.PARALLEL_BRANCH);
-        assertThat(result.steps().get(3).stepId().value()).isEqualTo("par@1");
-        assertThat(result.steps().get(4).stepId().value()).isEqualTo("b@1");
+        assertThat(result.steps())
+                .extracting(r -> r.stepId().value())
+                .containsExactly("par", "par@0", "a@0", "a-assign@0", "par@1", "b@1", "b-assign@1");
         assertThat(result.output(output("outA"))).contains("a-value");
         assertThat(result.output(output("outB"))).contains("b-value");
     }
@@ -122,21 +141,34 @@ class WorkflowParallelEngineTest {
         List<String> order = new CopyOnWriteArrayList<>();
         AtomicInteger branch2Executions = new AtomicInteger();
         IWorkflowStep branch0 =
-                timedAction("keep0", Duration.ofMillis(20), true, order, output("out0"));
-        IWorkflowStep branch1Fails =
-                timedAction("fail1", Duration.ofMillis(300), false, order, null);
+                timedStep("keep0", Duration.ofMillis(20), true, order, output("out0"));
+        IWorkflowStep branch1Fails = timedStep("fail1", Duration.ofMillis(300), false, order, null);
+        IWorkflowCondition fast2Condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        order.add("fast2");
+                        branch2Executions.incrementAndGet();
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "fast2";
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
         IWorkflowStep branch2Fast =
-                WorkflowSteps.action(
+                WorkflowSteps.ifThen(
                         "fast2",
-                        new ParallelSafeActionFactory<String>(
-                                variables -> {
-                                    order.add("fast2");
-                                    branch2Executions.incrementAndGet();
-                                    return new FakePreparedAction<>(
-                                            ActionResults.success("fast2-value"),
-                                            new AtomicInteger());
-                                }),
-                        output("out2"));
+                        fast2Condition,
+                        List.of(
+                                WorkflowSteps.assign(
+                                        "fast2-assign", output("out2"), "fast2-value")));
 
         Workflow workflow =
                 Workflow.builder("wf")
@@ -211,21 +243,21 @@ class WorkflowParallelEngineTest {
                                         "par",
                                         List.of(
                                                 List.of(
-                                                        timedAction(
+                                                        timedStep(
                                                                 "a",
                                                                 Duration.ZERO,
                                                                 true,
                                                                 order,
                                                                 output("outA"))),
                                                 List.of(
-                                                        timedAction(
+                                                        timedStep(
                                                                 "b",
                                                                 Duration.ofMillis(10),
                                                                 false,
                                                                 order,
                                                                 null)),
                                                 List.of(
-                                                        timedAction(
+                                                        timedStep(
                                                                 "c",
                                                                 Duration.ZERO,
                                                                 true,
@@ -247,28 +279,8 @@ class WorkflowParallelEngineTest {
                 WorkflowSteps.parallel(
                                 "par",
                                 List.of(
-                                        List.of(
-                                                WorkflowSteps.action(
-                                                        "a",
-                                                        new ParallelSafeActionFactory<String>(
-                                                                variables -> {
-                                                                    executions.incrementAndGet();
-                                                                    return new FakePreparedAction<>(
-                                                                            ActionResults.success(
-                                                                                    "v"),
-                                                                            new AtomicInteger());
-                                                                }))),
-                                        List.of(
-                                                WorkflowSteps.action(
-                                                        "b",
-                                                        new ParallelSafeActionFactory<String>(
-                                                                variables -> {
-                                                                    executions.incrementAndGet();
-                                                                    return new FakePreparedAction<>(
-                                                                            ActionResults.success(
-                                                                                    "v"),
-                                                                            new AtomicInteger());
-                                                                })))))
+                                        List.of(countingStep("a", executions)),
+                                        List.of(countingStep("b", executions))))
                         .when(falseCondition());
         Workflow workflow = Workflow.builder("wf").step(guardedParallel).build();
 
@@ -291,34 +303,8 @@ class WorkflowParallelEngineTest {
                                 WorkflowSteps.parallel(
                                         "par",
                                         List.of(
-                                                List.of(
-                                                        WorkflowSteps.action(
-                                                                "a",
-                                                                new ParallelSafeActionFactory<
-                                                                        String>(
-                                                                        variables -> {
-                                                                            executions
-                                                                                    .incrementAndGet();
-                                                                            return new FakePreparedAction<>(
-                                                                                    ActionResults
-                                                                                            .success(
-                                                                                                    "v"),
-                                                                                    new AtomicInteger());
-                                                                        }))),
-                                                List.of(
-                                                        WorkflowSteps.action(
-                                                                "b",
-                                                                new ParallelSafeActionFactory<
-                                                                        String>(
-                                                                        variables -> {
-                                                                            executions
-                                                                                    .incrementAndGet();
-                                                                            return new FakePreparedAction<>(
-                                                                                    ActionResults
-                                                                                            .success(
-                                                                                                    "v"),
-                                                                                    new AtomicInteger());
-                                                                        }))))))
+                                                List.of(countingStep("a", executions)),
+                                                List.of(countingStep("b", executions)))))
                         .build();
 
         Thread.currentThread().interrupt();
@@ -329,6 +315,35 @@ class WorkflowParallelEngineTest {
                 .isEqualTo(WorkflowFailureType.PARALLEL_STEP_INTERRUPTED);
         assertThat(executions).hasValue(0);
         assertThat(Thread.currentThread().isInterrupted()).isTrue();
+    }
+
+    private static IWorkflowStep countingStep(String id, AtomicInteger executions) {
+        IWorkflowCondition condition =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        executions.incrementAndGet();
+                        return true;
+                    }
+
+                    @Override
+                    public String describe() {
+                        return id;
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        return WorkflowSteps.ifThen(
+                id,
+                condition,
+                List.of(
+                        WorkflowSteps.assign(
+                                id + "-assign",
+                                WorkflowVariable.publicValue(id + "Var", String.class),
+                                "v")));
     }
 
     // --- PAR-ENG-006: a loop nested inside a parallel branch composes qualified step IDs ----
@@ -366,7 +381,7 @@ class WorkflowParallelEngineTest {
                                                                 trueOnceThenFalse,
                                                                 3,
                                                                 List.of(
-                                                                        timedAction(
+                                                                        timedStep(
                                                                                 "body",
                                                                                 Duration.ZERO,
                                                                                 true,
@@ -374,7 +389,7 @@ class WorkflowParallelEngineTest {
                                                                                 output(
                                                                                         "bodyOut"))))),
                                                 List.of(
-                                                        timedAction(
+                                                        timedStep(
                                                                 "b",
                                                                 Duration.ZERO,
                                                                 true,
@@ -389,52 +404,60 @@ class WorkflowParallelEngineTest {
                 .isTrue();
     }
 
-    // --- PAR-ENG-007: a secret discovered by an earlier-declared, kept sibling branch masks a -
-    // --- later-declared, failing branch's own already-redacted failure message, even though ---
-    // --- that branch's own isolated fork never saw the secret directly (see --------------------
-    // --- ExecutionState#fork and joinParallelBranches's re-redaction pass). --------------------
+    // --- PAR-ENG-007: a secret input is correctly redacted inside a failing branch's own -----
+    // --- message. Cross-branch secret *discovery* propagation (a branch minting a brand-new --
+    // --- secret at runtime and a sibling's failure message being retroactively masked) is no --
+    // --- longer constructible through the public API now that ACTION - the only step type ----
+    // --- able to publish a secret value - is forbidden inside a PARALLEL branch (see P1-2); --
+    // --- the re-redaction/secret-merge machinery itself is still exercised by ---------------
+    // --- WorkflowParallelInterruptionTest for the caller-interruption path. -----------------
 
     @Test
-    void parEng007SecretFromEarlierKeptBranchMasksLaterFailingBranchMessage() {
-        WorkflowVariable<String> secretOut = WorkflowVariable.secret("secretOut");
+    void parEng007SecretInputIsRedactedInsideAFailingBranch() {
+        WorkflowVariable<String> secretInput = WorkflowVariable.secret("secretIn");
         String secretValue = "sekrit-token-value";
+        List<String> order = new CopyOnWriteArrayList<>();
 
-        IWorkflowStep branch0DiscoversSecret =
-                WorkflowSteps.action(
-                        "discover",
-                        new ParallelSafeActionFactory<String>(
-                                variables ->
-                                        new FakePreparedAction<>(
-                                                ActionResults.success(secretValue),
-                                                new AtomicInteger())),
-                        secretOut);
-        // branch1's own message independently embeds the exact same underlying text - simulating
-        // two concurrent, isolated branches each observing the same sensitive value from their own
-        // vantage point - without branch1 ever reading branch0's variable (isolation is preserved;
-        // this is deliberately a literal, not a variable read, so the test does not depend on any
-        // cross-branch visibility that would itself be a bug).
-        IWorkflowStep branch1FailsWithSameText =
-                WorkflowSteps.action(
+        IWorkflowCondition failsEmbeddingSecret =
+                new IWorkflowCondition() {
+                    @Override
+                    public boolean evaluate(IWorkflowVariables variables) {
+                        order.add("leak");
+                        throw new RuntimeException("boom");
+                    }
+
+                    @Override
+                    public String describe() {
+                        return "unexpected page text: " + secretValue;
+                    }
+
+                    @Override
+                    public Set<WorkflowVariable<?>> referencedVariables() {
+                        return Set.of();
+                    }
+                };
+        IWorkflowStep branch0 = timedStep("keep0", Duration.ZERO, true, order, output("out0"));
+        IWorkflowStep branch1Fails =
+                WorkflowSteps.ifThen(
                         "leak",
-                        new ParallelSafeActionFactory<String>(
-                                variables ->
-                                        new FakePreparedAction<>(
-                                                ActionResults.failure(
-                                                        ActionFailureType.TARGET_NOT_FOUND,
-                                                        "unexpected page text: " + secretValue),
-                                                new AtomicInteger())));
+                        failsEmbeddingSecret,
+                        List.of(
+                                WorkflowSteps.assign(
+                                        "leak-assign",
+                                        WorkflowVariable.publicValue("leakVar", String.class),
+                                        "x")));
 
         Workflow workflow =
                 Workflow.builder("wf")
+                        .requiredInput(secretInput)
                         .step(
                                 WorkflowSteps.parallel(
-                                        "par",
-                                        List.of(
-                                                List.of(branch0DiscoversSecret),
-                                                List.of(branch1FailsWithSameText))))
+                                        "par", List.of(List.of(branch0), List.of(branch1Fails))))
                         .build();
 
-        WorkflowResult result = engine.execute(workflow, WorkflowInputs.empty());
+        WorkflowResult result =
+                engine.execute(
+                        workflow, WorkflowInputs.builder().put(secretInput, secretValue).build());
 
         assertThat(result.completed()).isFalse();
         String message = result.failure().orElseThrow().safeMessage();
