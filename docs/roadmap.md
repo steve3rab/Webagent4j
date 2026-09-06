@@ -76,15 +76,81 @@ too), and browser navigation has no equivalent transport-level seam at all - see
 See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this release.
 `1.1.x` (final release: `1.1.1`) is the previous stable line.
 
-## Post-1.2 candidates
+## 1.3: Recording V2, Deterministic Replay, bounded workflow loops and parallelism, and static introspection
+
+`1.3.0` is released and is the current stable line (`1.3.x`). It added:
+
+- **Static Workflow Introspection** - `new WorkflowIntrospector().inspect(workflow)` returns a
+  `WorkflowIntrospectionReport`: a deterministic, backend-neutral summary of an already-valid
+  `Workflow` definition's static complexity and safety surface (step counts, combined control-flow
+  depth, input/output metadata, and a saturating-arithmetic conservative upper bound on how many
+  flat result entries a single execution could produce), computed without ever evaluating a
+  condition, invoking an action factory, or touching a backend, browser, network resource, or
+  thread. A dedicated fourth structural concept alongside `WorkflowValidationReport`,
+  `WorkflowExecutionPlan`, and `WorkflowExecutionTree` - never merged with any of them. See
+  [Workflows](workflow.md#static-workflow-introspection).
+- **Recording V2 and Deterministic Replay** - `WorkflowRecordingV2` captures a tree-shaped
+  workflow execution (a `WorkflowExecutionPlan` plus a tree mirroring `WorkflowExecutionTree`) with
+  typed, secret-classified published outputs, replacing V1's flat step list and bare output-variable
+  name; a new `io.webagent4j.recording.replay` package validates a recording's compatibility with a
+  live workflow and deterministically replays its recorded decision path. This initial
+  implementation is structural/decision replay only - it never evaluates a condition, never invokes
+  an action factory, never touches a backend, and never performs any side effect; a `FAILED`
+  recording and real governed-target side-effect replay are explicitly out of scope for now. See
+  [Recording](recording.md#recording-v2).
+- **Bounded Workflow Loops** - `WorkflowSteps.loop` adds a deterministic, explicitly-bounded
+  repetition control-flow step: a mandatory `maxIterations` checked against a framework-wide
+  maximum, a continuation condition evaluated exactly once per iteration attempt, and fail-closed
+  behavior if the condition is still true once the bound is reached - never a disguised
+  repeat-until-success mechanism. It integrates across the full stack already established for
+  conditional branching: the Execution Plan represents it structurally as `LOOP { BODY }` without
+  unrolling `maxIterations` copies, the Execution Tree records only the iterations that actually
+  ran, and Recording V2/Deterministic Replay extend additively to capture and reproduce a loop's
+  actually-executed iterations, with `ReplayValidator` rejecting a recording that claims more
+  iterations than the live workflow's own declared bound authorizes. Parallel loop iterations and
+  arbitrary mutable inter-iteration state remain explicitly out of scope. See
+  [Workflows](workflow.md#bounded-loops) and [Recording](recording.md#bounded-loops).
+- **Deterministic Bounded Workflow Parallelism** - `WorkflowSteps.parallel` adds a new,
+  explicitly-bounded control-flow step distinct from the loop above: a fixed set of 2-8 declared
+  branches (`Workflow.MIN_PARALLEL_BRANCHES`/`MAX_PARALLEL_BRANCHES`), each of which structurally
+  always runs exactly once the step is reached, executed through a bounded, per-step thread pool
+  that is always created fresh and always shut down before the step completes - never a shared or
+  unbounded executor. Branches join in deterministic definition order regardless of real completion
+  order: if an earlier-declared branch fails, every later branch's outcome - even one that finished
+  first in wall-clock time - is discarded and reported `NOT_RUN`, preserving the same "exactly one
+  failure, ordered before/after" invariant every other step type already guarantees. Each branch
+  observes an isolated fork of workflow state (variables, secrets, outputs) that is merged back only
+  after every branch has finished, in branch order - no branch can observe another's in-flight
+  contribution. This first version is restricted to read-only/observational branches only: a
+  Workflow `ACTION` step is never permitted inside a branch, unconditionally - a fail-closed
+  structural rule the framework itself enforces, with no caller-declarable escape hatch, since it
+  has no way to mechanically verify that an arbitrary caller-supplied action factory's prepared
+  action never performs an observable side effect. The calling thread's own interruption while
+  joining an already-launched step's branches is a bounded, terminal signal: every branch is
+  cancelled, the engine never waits longer than a fixed internal grace period for its own executor
+  to shut down, and the interrupt flag is always restored - regardless of whether any branch
+  cooperates with its own cancellation. Concurrent browser side effects (clicks, typing,
+  navigation) are explicitly out of scope for this version and reserved for a future, separately
+  decided chantier. It integrates across the full stack already established for loops: the
+  Execution Plan, the Execution Tree, and Recording V2/Deterministic Replay all extend additively to
+  represent and reproduce parallel branches. See [Workflows](workflow.md#bounded-parallelism) and
+  [Recording](recording.md#bounded-parallelism).
+
+See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this release.
+`1.2.x` (final release: `1.2.0`) is the previous stable line.
+
+## Post-1.3 candidates
 
 Full SSRF isolation, `robots.txt` support, adversarial robustness qualification for Firefox and
 WebKit on operating systems beyond Linux, distributed crawling, additional observation/extraction
 capabilities, explicit persistence, and optional external decision-system/MCP adapters remain
 candidates.
 
-These are candidates only. None is implied by the 1.0 API contract or by the `1.2.0` release, none
-is a commitment to a `1.3.0` scope, and any optional decision/AI layer must consume the same
-fail-closed public contracts rather than bypassing them. In particular, live automatic recording
-replay, a Recording V2 schema, workflow loops, and workflow parallelism are not committed by this
-roadmap.
+These are candidates only. None is implied by the 1.0 API contract or by the `1.3.0` release, none
+is a commitment to any future scope, and any optional decision/AI layer must consume the same
+fail-closed public contracts rather than bypassing them. Real governed-target side-effect replay
+(actually re-invoking a recorded action against a freshly re-verified target) and workflow
+parallelism with concurrent, governed browser side effects (parallel branches that click, type, or
+navigate, rather than only read) remain undecided and are not committed by this roadmap - see
+[Recording](recording.md#deterministic-replay) for the side-effect-replay scope decision already
+made for 1.3. Development for the next release continues on `develop` after `1.3.0`.

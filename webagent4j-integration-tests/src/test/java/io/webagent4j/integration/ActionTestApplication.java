@@ -790,6 +790,19 @@ final class ActionTestApplication implements AutoCloseable {
                               }
                             </script>
                             """);
+            case "/actions/workflow-loop-pagination" ->
+                    document(
+                            "Workflow loop pagination",
+                            """
+                            <p id="page-indicator" role="status" aria-label="Current page">1</p>
+                            <button id="next" aria-label="Next" onclick="
+                              var indicator = document.getElementById('page-indicator');
+                              var next = Number(indicator.textContent) + 1;
+                              indicator.textContent = String(next);
+                              fetch('/count-click/next');
+                              if (next >= 3) { document.getElementById('next').remove(); }
+                            ">Next</button>
+                            """);
             case "/actions/click-timeout-oracle" ->
                     document(
                             "Click timeout oracle",

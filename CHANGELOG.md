@@ -8,6 +8,172 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-06
+
+### Added
+
+- Static Workflow Introspection: `new WorkflowIntrospector().inspect(workflow)` adds a new,
+  dedicated `webagent4j-workflow` type - a deterministic, backend-neutral
+  `WorkflowIntrospectionReport` summarizing an already-valid `Workflow` definition's static
+  complexity and safety surface, computed entirely from its structure. It never evaluates an
+  `IWorkflowCondition` (not even `referencedVariables()`), never invokes an
+  `IWorkflowActionFactory`, never touches a backend, browser, or network resource, and never
+  creates a thread - a `PARALLEL` step's branches are inspected sequentially, in declaration order.
+  The report exposes step/conditional/loop/parallel/action counts, combined control-flow depth
+  (reusing `Workflow#MAX_CONTROL_FLOW_NESTING_DEPTH`'s exact semantics), input/output metadata
+  (name, type, secret classification, and guard-aware definite availability - reusing the exact
+  same rule `Workflow`'s own definite-assignment analysis already documents, never a second,
+  divergent one), and `maximumPotentialExecutionNodes`: a conservative upper bound on how many
+  entries a single execution's flat `WorkflowResult#steps()` could contain, computed bottom-up in
+  `O(definition nodes)` time with no physical loop/branch unrolling - a conditional step takes the
+  larger of its two branches (never the sum, since exactly one runs), a loop is computed
+  mathematically from its declared `maxIterations` (never unrolled), and a parallel step sums every
+  declared branch (since every one genuinely runs). Every addition and multiplication uses
+  saturating arithmetic, capping at `Long.MAX_VALUE` with an explicit
+  `maximumPotentialExecutionNodesSaturated` flag rather than silently overflowing.
+  `mayExceedRuntimeNodeBudget` compares that bound against the engine's own cumulative
+  executed-step-node budget as information for a caller's own policy - never a validation failure,
+  and never folded into `WorkflowValidationReport`: a workflow whose declared bounds could in
+  principle exceed the runtime budget is not thereby invalid. `riskIndicators` lists a small,
+  fixed, deterministically-ordered set of named `WorkflowStaticRiskIndicator` structural facts
+  (contains loops/parallelism/actions/secret outputs, may exceed the runtime node budget) -
+  deliberately never a combined numeric "risk score." A fourth, deliberately separate structural
+  concept alongside the existing Validation Report, Execution Plan, and Execution Tree - never
+  merged with any of them. See [Workflows](docs/workflow.md#static-workflow-introspection).
+
+- Deterministic Bounded Workflow Parallelism: `WorkflowSteps.parallel(id, branches)` adds a
+  deterministic, strictly bounded fan-out control-flow step to `webagent4j-workflow` - between two
+  and a new framework-wide `MAX_PARALLEL_BRANCHES` (8) declared branches, launched concurrently on
+  a small executor `WorkflowEngine` creates, owns, and always shuts down before the step's own
+  result is produced, and joined strictly in **branch-definition order**, never the order branches
+  actually finished. Phase 1 scope is read-only/observational branches only: a Workflow `ACTION`
+  step is unconditionally forbidden inside a branch, at any nesting depth, with no
+  caller-declarable exception (new `PARALLEL_BRANCH_UNSAFE_STEP`), since `WorkflowEngine` has no way
+  to mechanically verify that an arbitrary `IWorkflowActionFactory` closure never mutates page
+  state, navigates, or performs any other observable side effect; a caller-supplied
+  `IWorkflowCondition` or `WorkflowSteps#assign`'s literal value remains a trusted, unverified
+  extension point subject to its own existing side-effect-free contract. Parallel governed side
+  effects (clicks, typing, navigation) remain out of scope, reserved for a future, separate
+  capability. Each branch runs against its own isolated fork of the
+  variables/secrets known immediately before the step - never a shared mutable map - merged back
+  into the real session state sequentially, in definition order, only once every branch has
+  finished. Two branches may never publish the same output name, even identically, unlike `ifElse`'s
+  two mutually exclusive branches (new build-time collision check, reusing the existing
+  `OUTPUT_COLLISION`/`OUTPUT_TYPE_MISMATCH`/`OUTPUT_SECRET_CLASSIFICATION_MISMATCH` diagnostics); an
+  unguarded branch output becomes definitely available afterward by union across every branch
+  (never the intersection `ifElse` computes, and never the "may run zero times" exclusion a loop
+  body gets), provided the `PARALLEL` step itself is also unguarded - unlike `ifElse`/`loop`, a
+  `PARALLEL` step supports the ordinary optional `when(...)` guard, since it makes no decision of
+  its own. If any branch fails, the reported failure is whichever failed branch has the lowest
+  definition index - never whichever branch failed first in wall-clock time - and every branch
+  after it is represented as `NOT_RUN`, its real, already-computed work (success or failure alike)
+  discarded unseen even if it finished first, which is what lets `WorkflowResult`'s existing
+  "exactly one `FAILED` step, strictly ordered before/after" invariant hold for `PARALLEL` exactly
+  as it already does for every other step type - safe specifically because a `PARALLEL` branch is
+  never permitted an observable side effect in the first place. Cancellation of a branch positioned
+  after a confirmed failure is best-effort and cooperative, never a forced kill; a branch at or
+  before the eventual reported failure's own index is never cancelled by this engine's own logic,
+  guaranteeing its genuine outcome always appears in the result. The calling thread's own
+  interruption while joining an already-launched step's branches is handled as a separate, bounded,
+  terminal signal distinct from an ordinary branch failure: every still-active branch is cancelled,
+  the step fails closed as `PARALLEL_STEP_INTERRUPTED` (unless a branch failure was already
+  irreversibly decided first, which then takes precedence), no late-arriving branch result is ever
+  merged, the engine never waits longer than a fixed internal grace period for its own executor to
+  shut down, and the interrupt flag is always restored on return - regardless of whether any branch
+  cooperates with its own cancellation. Secrets remain classified/redacted
+  regardless of which branch produced them or completion order: a kept branch's own failure message
+  is re-redacted, once, against the fully-merged secret set of every kept branch after the join, so
+  a secret an earlier-declared sibling branch discovered concurrently still masks a later branch's
+  own failure text. `PARALLEL` nesting shares the existing combined `MAX_CONTROL_FLOW_NESTING_DEPTH`
+  bound with `ifElse`/`loop` (new `PARALLEL_NESTING_DEPTH_EXCEEDED`), and the existing cumulative
+  `MAX_EXECUTED_WORKFLOW_NODES` budget is now a single counter shared atomically across every
+  concurrently running branch. The Execution Plan represents a `PARALLEL` step structurally as one
+  `THEN` branch per declared branch (reusing `WorkflowPlanBranch`/`WorkflowBranchSelection` rather
+  than adding a new public record component, so this stays additive against the frozen `1.0.0`
+  Revapi baseline); the Execution Tree adds `WorkflowStepType.PARALLEL`/`PARALLEL_BRANCH`, mirroring
+  `LOOP`/`LOOP_ITERATION`'s own established shape. Recording V2 and Deterministic Replay are
+  extended the same way: a recorded `PARALLEL` step captures its branches as `PARALLEL_BRANCH`
+  entries in definition order with the same structural, positional, engine-producible-shapes-only
+  validation `LOOP`/`LOOP_ITERATION` already has, and `ReplayValidator` resolves a loop nested
+  inside any `PARALLEL` branch's own declared `maxIterations` bound structurally, at any depth. See
+  [Workflows](docs/workflow.md#bounded-parallelism), [Recording](docs/recording.md#bounded-parallelism),
+  and [Limitations](docs/limitations.md#workflows).
+
+- Bounded Workflow Loops: `WorkflowSteps.loop(id, continueCondition, maxIterations, body)` adds a
+  deterministic, explicitly-bounded repetition control-flow step to `webagent4j-workflow` - a
+  mandatory `maxIterations` (checked against a new framework-wide `MAX_LOOP_ITERATIONS` maximum),
+  a continuation condition evaluated exactly once per iteration attempt, and a body run to
+  completion before the condition is ever re-evaluated. Reaching `maxIterations` while the
+  condition still evaluates `true` fails closed rather than silently stopping. A loop's own
+  control-flow nesting shares the exact same combined depth bound conditional branching already
+  uses, and a cumulative executed-step-node budget guards against a nested-loop structure that is
+  locally within every individual bound yet combinatorially explosive once multiplied together. A
+  loop body's own outputs are structurally declared but never treated as definitely available
+  afterward - a loop may run zero iterations, so nothing it produces can ever be statically
+  guaranteed, exactly like a guarded producer's output. The Execution Plan represents a loop
+  structurally as `LOOP { BODY }`, never unrolled into `maxIterations` copies; the Execution Tree
+  records only the iterations that actually ran, each its own `LOOP_ITERATION` node, with no
+  placeholder for one that never started. Recording V2 and Deterministic Replay are extended the
+  same way: a recorded loop captures only its actually-executed iterations, `ReplayValidator`
+  rejects a recording whose iteration count exceeds what the live workflow's own declared bound
+  authorizes, and replay reproduces the recorded iteration count and decisions without ever
+  re-evaluating the continuation condition or performing a side effect. See
+  [Workflows](docs/workflow.md#bounded-loops) and [Recording](docs/recording.md#bounded-loops).
+
+- Recording V2 and Deterministic Replay: `WorkflowRecordingV2` captures a tree-shaped workflow
+  execution - a `WorkflowExecutionPlan` plus a tree mirroring `WorkflowExecutionTree`, so a
+  branching execution's actual decision path is explicit - alongside a typed `WorkflowPlanOutput`
+  (name, type, secret classification) per published output instead of Recording V1's bare output
+  variable name. `WorkflowRecorderV2` captures a real `WorkflowExecution`
+  (`WorkflowEngine#executeWithTree`) into this format; `JsonWorkflowRecordingV2Codec` encodes and
+  decodes it with the same canonical-JSON, fail-closed, resource-bounded discipline
+  `JsonWorkflowRecordingCodec` established for V1, using a disjoint schema-version number space
+  (`RecordingSchemaVersionV2`) so a V1-shaped payload can never be silently accepted as a V2 one or
+  vice versa. There is no implicit or automatic V1-to-V2 conversion anywhere in this module.
+  `WorkflowRecordingV2`'s own construction unconditionally validates that its execution-node tree is
+  a structurally authorized path through its own plan - the same step IDs, types, and declared
+  outputs at the same positions, and every recorded branch selection corresponding exclusively to
+  that plan node's matching branch - on every construction path (direct construction,
+  `WorkflowRecorderV2`, and JSON decode alike), so a tree inconsistent with its own plan can never
+  exist. A `CONDITIONAL` node's captured decision is validated the same way: its condition outcome
+  and branch selection must be captured together or not at all, a `SUCCEEDED` conditional always
+  has both, and a present outcome must agree with the selection it implies (`true` only ever selects
+  `THEN`; `false` only ever selects the plan's own non-`THEN` branch) - so a recording can never
+  claim a condition succeeded without recording what it actually decided. Both the plan and the
+  execution tree are independently bounded to the same maximum conditional-nesting depth, checked
+  before any further recursive descent, at construction, encode, decode, and replay traversal alike,
+  using one single-source-of-truth constant.
+  New `io.webagent4j.recording.replay` package: `ReplayValidator` checks a `WorkflowRecordingV2`
+  against a live `Workflow`'s current structural plan before any replay is attempted - relying on
+  the recording's own already-guaranteed internal coherence as a precondition - and
+  `WorkflowReplayer` reconstructs the recorded decision trace as a flattened `ReplayedWorkflow` -
+  structural/decision replay only, in this initial implementation: it never evaluates a condition,
+  never invokes an action factory, never resolves or verifies a backend target, and never performs
+  any side effect. The recorded branch decision is the one replayed - a condition is never
+  re-evaluated, and there is no hidden retry, second attempt, or fallback to a different branch or
+  target. Only a `COMPLETED` recording can be replayed; a `FAILED` trace and real governed-target
+  side-effect replay are out of scope for this initial implementation - a deliberate, documented
+  scope decision, not an oversight. See [Recording](docs/recording.md#recording-v2) and
+  [Limitations](docs/limitations.md#recording).
+
+### Security
+
+- Adversarial hardening pass over Recording V2 and Deterministic Replay: an explicit audit
+  treating every `WorkflowRecordingV2` as hostile, stale, or fabricated input, confirming the
+  existing structural/positional plan-tree matching, exhaustive per-step-type status/failure
+  shape invariants, guard-aware definite-assignment cross-checks, live-workflow exact-plan-equality
+  gate, and codec resource bounds (node count, nesting depth, string/field-name/numeric-token
+  length, encoded size) already close every gap this pass checked for - no production behavior
+  changed. Adds a new mutation-driven adversarial regression suite built from a genuinely executed
+  workflow (rather than only hand-built fixtures) covering wrong node type, missing/extra/duplicate
+  children, unknown step IDs, positional reordering, workflow ID mismatch, impossible
+  status/failure and branch-selection combinations, deterministic-first-failure ordering, and
+  linear-time validation of a large recording; a dedicated `ReplayValidator` case proving a
+  self-consistent but fabricated duplicate-output-across-`PARALLEL`-branches plan is rejected only
+  because it is cross-checked against the live workflow's freshly recomputed plan, never by
+  self-consistency alone; and V2-codec-specific oversized numeric-token/field-name/string-value
+  coverage matching V1's own. See [Recording](docs/recording.md#deterministic-replay).
+
 ## [1.2.0] - 2026-09-04
 
 ### Added

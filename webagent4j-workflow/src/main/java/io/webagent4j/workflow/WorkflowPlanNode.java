@@ -19,11 +19,21 @@ import java.util.Optional;
  *     optional guard.
  * @param declaredOutput the variable this step declares it publishes on success, if any - metadata
  *     only, never a value, and never present for a {@link WorkflowStepType#CONDITIONAL} step
- * @param branches this step's structurally possible branches, present only for a {@link
+ * @param branches this step's structurally possible branches. For a {@link
  *     WorkflowStepType#CONDITIONAL} step: always exactly two, {@link WorkflowBranchSelection#THEN}
  *     first and then either {@link WorkflowBranchSelection#ELSE} or {@link
  *     WorkflowBranchSelection#NONE} - both potential paths represented, never only the one a
- *     runtime decision would select
+ *     runtime decision would select. For a {@link WorkflowStepType#LOOP} step: always exactly one,
+ *     of kind {@link WorkflowBranchSelection#THEN}, representing the loop's {@code body} - present
+ *     once, structurally, never unrolled into {@code maxIterations} copies (see {@link
+ *     WorkflowPlanner#plan}). For a {@link WorkflowStepType#PARALLEL} step - added in 1.3.0:
+ *     between {@link Workflow#MIN_PARALLEL_BRANCHES} and {@link Workflow#MAX_PARALLEL_BRANCHES}
+ *     entries, one per declared branch in definition order, every one of kind {@link
+ *     WorkflowBranchSelection#THEN} - reusing {@code THEN}'s existing "the branch that runs"
+ *     meaning, now shared across all three control-flow step types, since every {@code PARALLEL}
+ *     branch, like a loop's body, structurally always runs once this step is reached; the branch's
+ *     own position in this list, not any label, is what identifies it. Empty for every other step
+ *     type.
  */
 public record WorkflowPlanNode(
         WorkflowStepId stepId,
@@ -62,8 +72,46 @@ public record WorkflowPlanNode(
                 throw new IllegalArgumentException(
                         "a CONDITIONAL plan node's second branch must be ELSE or NONE");
             }
+        } else if (stepType == WorkflowStepType.LOOP) {
+            if (guarded) {
+                throw new IllegalArgumentException(
+                        "a LOOP plan node cannot be guarded - its condition is a mandatory"
+                                + " continuation check, not an optional when(...) guard");
+            }
+            if (declaredOutput.isPresent()) {
+                throw new IllegalArgumentException("a LOOP plan node cannot declare an output");
+            }
+            if (branches.size() != 1 || branches.get(0).kind() != WorkflowBranchSelection.THEN) {
+                throw new IllegalArgumentException(
+                        "a LOOP plan node must carry exactly one THEN branch, representing its"
+                                + " body");
+            }
+        } else if (stepType == WorkflowStepType.PARALLEL) {
+            // A PARALLEL step's guard is an ordinary optional when(...) skip-guard, unlike
+            // CONDITIONAL/LOOP's mandatory condition slot, so - unlike those two - a PARALLEL plan
+            // node legitimately may be guarded; nothing to reject about `guarded` here.
+            if (declaredOutput.isPresent()) {
+                throw new IllegalArgumentException("a PARALLEL plan node cannot declare an output");
+            }
+            if (branches.size() < Workflow.MIN_PARALLEL_BRANCHES
+                    || branches.size() > Workflow.MAX_PARALLEL_BRANCHES) {
+                throw new IllegalArgumentException(
+                        "a PARALLEL plan node must carry between "
+                                + Workflow.MIN_PARALLEL_BRANCHES
+                                + " and "
+                                + Workflow.MAX_PARALLEL_BRANCHES
+                                + " branches (inclusive)");
+            }
+            for (WorkflowPlanBranch branch : branches) {
+                if (branch.kind() != WorkflowBranchSelection.THEN) {
+                    throw new IllegalArgumentException(
+                            "every PARALLEL plan node branch must be of kind THEN - each declared"
+                                    + " branch structurally always runs");
+                }
+            }
         } else if (!branches.isEmpty()) {
-            throw new IllegalArgumentException("only a CONDITIONAL plan node may carry branches");
+            throw new IllegalArgumentException(
+                    "only a CONDITIONAL, LOOP, or PARALLEL plan node may carry branches");
         }
     }
 }

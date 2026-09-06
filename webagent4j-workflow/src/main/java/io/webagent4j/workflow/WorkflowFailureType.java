@@ -27,5 +27,38 @@ public enum WorkflowFailureType {
      * set at one of its two evaluate/select boundaries - added in 1.2.0, see {@code
      * docs/workflow.md#branching}.
      */
-    CONDITIONAL_STEP_INTERRUPTED
+    CONDITIONAL_STEP_INTERRUPTED,
+    /**
+     * A {@link WorkflowStepType#LOOP}'s continuation condition was still {@code true} after its
+     * declared {@code maxIterations} bound was reached - added in 1.3.0. Fail-closed: reaching the
+     * bound while continuation is still requested is a workflow failure, never silently treated as
+     * a successful stop (see {@code docs/workflow.md#bounded-loops}).
+     */
+    LOOP_ITERATION_LIMIT_EXCEEDED,
+    /**
+     * A {@link WorkflowStepType#LOOP_ITERATION} observed the executing thread's interrupt flag set
+     * at one of its evaluate/select boundaries - added in 1.3.0, mirroring {@link
+     * #CONDITIONAL_STEP_INTERRUPTED} for loop iterations.
+     */
+    LOOP_STEP_INTERRUPTED,
+    /**
+     * Execution stopped because it would have exceeded this engine's cumulative executed-step-node
+     * budget - added in 1.3.0. Guards against a combinatorially explosive but locally-valid
+     * nested-loop structure (see {@code docs/workflow.md#bounded-loops}); never triggered by a
+     * workflow with no {@link WorkflowStepType#LOOP} steps, since a purely sequential or
+     * conditional definition's total executed-node count is already bounded by its own step count.
+     */
+    EXECUTED_NODE_BUDGET_EXCEEDED,
+
+    /**
+     * A {@link WorkflowStepType#PARALLEL} step observed the executing thread's interrupt flag set
+     * before any of its branches could be launched - added in 1.3.0, mirroring {@link
+     * #CONDITIONAL_STEP_INTERRUPTED} for the single interruption boundary a {@code PARALLEL} step
+     * has before committing to launch every declared branch. A branch's own internal interruption,
+     * if any, surfaces instead as whichever ordinary failure type its own steps would already
+     * produce (for example {@link #CONDITIONAL_STEP_INTERRUPTED} or {@link #LOOP_STEP_INTERRUPTED}
+     * on one of the branch's own nested steps) - this type exists only for the outer step's own,
+     * single pre-launch boundary.
+     */
+    PARALLEL_STEP_INTERRUPTED
 }

@@ -12,7 +12,7 @@ closed rather than guess.
 Playwright is the first browser backend.
 
 > [!IMPORTANT]
-> `1.2.x` is the current stable line (latest: `1.2.0`); `1.1.x` (latest: `1.1.1`) is the previous
+> `1.3.x` is the current stable line (latest: `1.3.0`); `1.2.x` (latest: `1.2.0`) is the previous
 > stable line. Public Maven artifacts are not yet published from this repository's release workflow.
 > Until publication is enabled, build and install the artifacts locally.
 
@@ -113,7 +113,7 @@ Then use one version property for the BOM:
 The authoritative supported-artifact list is maintained in
 [`docs/api-stability.md`](docs/api-stability.md).
 
-## Browser example
+## Quick start
 
 ```java
 import static io.webagent4j.verification.Verifications.urlContains;
@@ -147,7 +147,173 @@ try (IBrowser browser =
 ```
 
 Use try-with-resources for browsers. The creating caller owns the browser unless a more specific API
-explicitly transfers ownership.
+explicitly transfers ownership. This one governed click is the smallest unit of what WebAgent4J
+does; the next section shows the whole architecture working together.
+
+## Browser workflow example
+
+WebAgent4J is not just a Playwright wrapper with nicer locators - `webagent4j-workflow` and
+`webagent4j-recording` add typed data flow, deterministic control flow, pre-execution validation
+and planning, post-execution introspection, and a versioned, replayable recording format on top of
+the governed action pipeline above. The walkthrough below exercises essentially all of it in one
+coherent scenario: browsing a small paginated catalog, applying a discount only for premium
+customers, and stopping once the last page is reached - never guessing, never looping forever.
+
+The full runnable source is
+[`webagent4j-examples/.../BoundedBrowserWorkflowShowcaseExample.java`](webagent4j-examples/src/main/java/io/webagent4j/examples/BoundedBrowserWorkflowShowcaseExample.java);
+it compiles and is exercised as part of this repository's own build. It runs against a tiny local
+HTTP fixture started inline in `main()` (omitted below for brevity, along with the small helper
+methods) - never a public website - so the whole example stays deterministic and Internet-free.
+
+```java
+// Typed inputs: a live page, a boolean flag, a secret API key never printed or logged
+// in the clear - and a conditional branch that runs a governed click only when true.
+Workflow.Builder builder =
+        Workflow.builder("catalog-browse")
+                .requiredInput(PAGE)
+                .requiredInput(API_KEY)
+                .requiredInput(PREMIUM_CUSTOMER)
+                .step(
+                        WorkflowSteps.ifThen(
+                                "apply-discount-if-premium",
+                                WorkflowConditions.isTrue(PREMIUM_CUSTOMER),
+                                List.of(clickStep("Apply Discount"))))
+                .step(
+                        WorkflowSteps.loop(
+                                "paginate",
+                                pageIndicatorNotAtLastPage(),
+                                5, // maxIterations - no hidden infinite loop, ever
+                                List.of(clickStep("Next"), readPageIndicatorStep())));
+
+// Validate before ever touching the browser - structural only, zero side effects.
+var report = builder.validate();
+System.out.println("Valid: " + report.valid() + ", steps=" + report.stepCount());
+
+Workflow workflow = builder.build();
+
+// Inspect the side-effect-free execution plan: the loop appears once, as LOOP{BODY},
+// never unrolled into 5 copies.
+WorkflowExecutionPlan plan = WorkflowPlanner.plan(workflow);
+System.out.println("Plan top-level steps: " + plan.nodes().size());
+
+WorkflowInputs inputs =
+        WorkflowInputs.builder()
+                .put(PAGE, page)
+                .put(API_KEY, "sk_demo_51fddc2c_not_real")
+                .put(PREMIUM_CUSTOMER, true)
+                .build();
+
+// Execute the bounded pagination loop through the real action pipeline.
+WorkflowExecution execution = new WorkflowEngine().executeWithTree(workflow, inputs);
+execution.result().throwIfFailed();
+
+// Inspect the actual execution tree: exactly the iterations that ran.
+var loopNode = execution.tree().nodes().get(1);
+System.out.println("Loop iterations recorded: " + loopNode.children().size());
+
+// Capture Recording V2 and encode it to canonical JSON.
+WorkflowRecorderV2 recorder = new WorkflowRecorderV2();
+WorkflowRecordingV2 recording =
+        recorder.record(
+                new RecordingId("catalog-run-1"), Instant.now(), plan, execution);
+String encoded = new JsonWorkflowRecordingV2Codec().encode(recording);
+System.out.println("Recording encoded: " + encoded.length() + " bytes");
+
+// Deterministic Replay: structural/decision replay only - it reproduces the recorded
+// decisions and iteration count, but never re-clicks or re-visits the browser.
+ReplayValidator.validate(recording, workflow)
+        .ifPresentOrElse(
+                failure -> System.out.println("Replay incompatible: " + failure.type()),
+                () -> {
+                    IReplayOutcome outcome =
+                            WorkflowReplayer.replay(recording, workflow);
+                    System.out.println("Replay outcome: " + outcome);
+                });
+```
+
+**What this example guarantees:**
+
+- The loop is bounded - `maxIterations = 5` is visible in the source, and reaching it while the
+  continuation condition is still true would fail the workflow closed, never loop forever.
+- The continuation condition is evaluated exactly once per iteration attempt, per `WorkflowEngine`'s
+  own semantics - never re-evaluated while an iteration's body runs.
+- Only the selected branch of `apply-discount-if-premium` ever runs - the discount click never
+  happens for a non-premium customer, and there is no fallback or speculative execution.
+- Every workflow variable is typed (`WorkflowVariable<T>`); `API_KEY` is a secret variable and is
+  never exposed by any diagnostic rendering, the execution tree, or the recording.
+- Every click is a governed, exact-target action - the click pipeline atomically reproves its
+  physical target immediately before the backend call, exactly as it does outside a loop.
+- `builder.validate()` inspects the definition before any browser is touched - zero side effects.
+- `WorkflowPlanner.plan(workflow)` is a real, side-effect-free structural plan - the loop is
+  represented once, never unrolled into five copies.
+- The execution tree (`execution.tree()`) reflects exactly what ran: the actual iteration count,
+  never a placeholder for an iteration that never started.
+- Recording V2 captures only the actually-executed path, in exact order.
+- Deterministic Replay reproduces the recorded decisions and iteration count without ever
+  re-evaluating a condition or touching the browser - it is structural/decision replay only, never
+  "browser replay."
+- There is no hidden retry anywhere in this example: a failed click fails the workflow, once.
+
+See [Workflows](docs/workflow.md) and [Recording](docs/recording.md) for the complete model behind
+every step above.
+
+### Bounded parallelism example
+
+`WorkflowSteps.parallel` declares a fixed, structurally-represented set of read-only branches that
+all run once the step is reached, joined deterministically:
+
+```java
+.step(
+        WorkflowSteps.parallel(
+                "check-pages",
+                List.of(
+                        List.of(readPageIndicatorStep()), // branch 0
+                        List.of(readCatalogTotalStep())))) // branch 1
+```
+
+- The branch count is checked against `Workflow.MIN_PARALLEL_BRANCHES`/`MAX_PARALLEL_BRANCHES` (2-8)
+  at build time - never unbounded, never a single implicit branch.
+- Every Workflow `ACTION` step is unconditionally forbidden inside a branch - there is no
+  caller-declarable exception; the framework has no way to mechanically verify that an arbitrary
+  action factory's prepared action never performs an observable side effect, so this is rejected
+  at validation time, fail closed, not fail open.
+- Branches join in declaration order, not real completion order: if branch 0 fails, branch 1's
+  result - even if it finished first - is discarded and reported `NOT_RUN`, preserving the same
+  "exactly one failure, ordered before/after" guarantee that every other step type already provides.
+- Each branch observes an isolated fork of workflow state; no branch can see another branch's
+  in-flight variables, secrets, or outputs while any branch is still running.
+
+See [Workflows](docs/workflow.md#bounded-parallelism) and
+[Recording](docs/recording.md#bounded-parallelism) for the complete model, and
+[Limitations](docs/limitations.md) for the caller-responsibility caveat around concurrent access to
+a shared resource such as an `IPage`.
+
+### Static workflow introspection example
+
+`WorkflowIntrospector` answers *how complex is this definition, and what bounded runtime pressure
+may it represent?* — entirely from the built `Workflow`, before any execution exists:
+
+```java
+WorkflowIntrospectionReport report = new WorkflowIntrospector().inspect(workflow);
+System.out.println("Control-flow depth: " + report.maximumControlFlowDepth());
+System.out.println("Worst-case executed nodes: " + report.maximumPotentialExecutionNodes());
+System.out.println("May exceed runtime budget: " + report.mayExceedRuntimeNodeBudget());
+System.out.println("Risk indicators: " + report.riskIndicators());
+```
+
+- Never evaluates a condition, never invokes an action factory, never touches a backend, browser,
+  or network resource, and never creates a thread - a `PARALLEL` step's branches are inspected
+  sequentially, in declaration order.
+- `maximumPotentialExecutionNodes()` is a conservative, saturating-arithmetic upper bound (an `ifElse`
+  takes the larger branch, never the sum; a `PARALLEL` step sums every branch, since all of them
+  genuinely run; a `LOOP` is computed mathematically from `maxIterations`, never physically unrolled)
+  - never a prediction of what a real execution will do.
+- `mayExceedRuntimeNodeBudget()` exceeding the engine's own node budget is information for a
+  caller's own policy, never a validation failure or a reason `build()` would reject the definition.
+- `riskIndicators()` lists small, named structural facts (contains loops, parallelism, actions,
+  secret outputs) — never a combined numeric "risk score".
+
+See [Workflows](docs/workflow.md#static-workflow-introspection) for the complete model.
 
 ## Main capabilities
 
@@ -164,8 +330,8 @@ explicitly transfers ownership.
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
 | HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
 | Browser crawler | `webagent4j-browser-crawler` | Single-lane crawling of JavaScript-rendered pages |
-| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, validation, static planning, and structured execution results |
-| Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison |
+| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, bounded loops, bounded parallelism, validation, static planning, static complexity introspection, and structured execution results |
+| Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison; Recording V2 and Deterministic Replay (`io.webagent4j.recording.replay`) |
 | Plugins | `webagent4j-plugin-api` | Explicit trusted custom locator strategies |
 | CLI | `webagent4j-cli` | Small command-line application |
 
@@ -183,20 +349,52 @@ assignments:
 - **Deterministic branching** — `WorkflowSteps.ifElse`/`ifThen` evaluate a condition exactly once
   and run exactly one branch; the branch not selected produces zero step executions, zero action
   calls, and zero backend invocations. There is no speculative or fallback branch execution.
-- **Three deliberately separate introspection views**, never merged or toggled between:
+- **Bounded loops** — `WorkflowSteps.loop` adds an explicitly-bounded repetition
+  step: a mandatory `maxIterations` checked against a framework-wide maximum, a continuation
+  condition evaluated exactly once per iteration attempt, and fail-closed behavior if the bound is
+  reached while the condition is still true — never a disguised repeat-until-success mechanism.
+  Arbitrary mutable inter-iteration state is explicitly out of scope. See
+  [Workflows](docs/workflow.md#bounded-loops).
+- **Bounded parallelism** — `WorkflowSteps.parallel` declares a fixed set of 2-8
+  branches (`Workflow.MAX_PARALLEL_BRANCHES`) that all structurally run once the step is reached,
+  joined in deterministic branch-definition order regardless of real completion order; a bounded,
+  per-step thread pool executes them with isolated per-branch state, deterministic output merge and
+  failure-selection rules, and reactive cancellation of branches that can no longer affect the
+  result. This first version is restricted to read-only/observational branches only — a Workflow
+  `ACTION` step is unconditionally forbidden inside a branch, with no caller-declarable exception,
+  since the framework cannot mechanically verify that an arbitrary action factory's prepared
+  action never performs an observable side effect. Concurrent browser side effects (clicks,
+  typing, navigation) are explicitly out of scope for this version. See
+  [Workflows](docs/workflow.md#bounded-parallelism).
+- **Static workflow introspection** — `new WorkflowIntrospector().inspect(workflow)`
+  returns a deterministic, backend-neutral `WorkflowIntrospectionReport`: step/depth/input/output
+  counts, and a saturating-arithmetic conservative upper bound on how many flat result entries a
+  single execution could produce, computed without ever evaluating a condition, invoking an action
+  factory, or touching a backend, browser, network resource, or thread. See
+  [Workflows](docs/workflow.md#static-workflow-introspection).
+- **Four deliberately separate introspection views**, never merged or toggled between:
 
   ```text
-  Validation Report  -> is this workflow definition valid, and why?
-  Execution Plan     -> what can it structurally execute?
-  Execution Tree     -> what did one execution actually do?
+  Validation Report        -> is this workflow definition valid, and why?
+  Execution Plan           -> what can it structurally execute?
+  Static Introspection Report -> how complex is that structure, and what bounded
+                                  runtime pressure may it represent?
+  Execution Tree           -> what did one execution actually do?
   ```
 
   `Workflow.Builder#validate()` never throws or mutates the builder. `WorkflowPlanner.plan(...)`
-  never evaluates a condition/guard or calls an action factory. `WorkflowEngine#executeWithTree(...)`
+  never evaluates a condition/guard or calls an action factory. `new
+  WorkflowIntrospector().inspect(...)` computes deterministic complexity/safety
+  metrics from the definition alone, with the same zero-side-effect guarantee. `WorkflowEngine#executeWithTree(...)`
   runs the workflow exactly once and returns the same result as `execute(...)`, plus a hierarchical
   view of the path actually taken.
 
-See [`docs/workflow.md`](docs/workflow.md) for the complete model.
+`webagent4j-recording`'s Recording V2 format captures the Execution Plan
+together with a tree mirroring the Execution Tree above, and `io.webagent4j.recording.replay`
+validates a recording's compatibility with a live workflow and deterministically replays its
+recorded decision path — structural/decision replay only, never a re-invocation of an action factory
+or a backend. See [`docs/workflow.md`](docs/workflow.md) and
+[`docs/recording.md`](docs/recording.md#recording-v2) for the complete model.
 
 ## Browser support
 
@@ -290,7 +488,7 @@ must not be inferred from Java serialization or Java object identity.
 
 ## Project status
 
-`1.2.0` is released and is the current stable line (`1.2.x`). Its functional scope is implemented:
+`1.3.0` is released and is the current stable line (`1.3.x`). Its functional scope is implemented:
 
 - browser lifecycle and semantic location;
 - bounded observation;
@@ -298,18 +496,22 @@ must not be inferred from Java serialization or Java object identity.
 - extraction;
 - HTTP and browser crawling;
 - deterministic workflows: typed inputs/outputs with guard-aware definite assignment, conditional
-  branching (`ifElse`/`ifThen`), and the Validation Report / Execution Plan / Execution Tree
-  introspection views (see [Workflows](#workflows) above);
-- Recording JSON V1 and offline comparison;
+  branching (`ifElse`/`ifThen`), bounded loops (`loop`), deterministic bounded parallelism
+  (`parallel`), and the Validation Report / Execution Plan / Static Introspection Report / Execution
+  Tree introspection views (see [Workflows](#workflows) above);
+- Recording V2 and Deterministic Replay (`io.webagent4j.recording.replay`), alongside Recording
+  JSON V1 and offline comparison;
 - explicit trusted locator plugins;
 - governed execution (`IActionPolicy`/`INetworkPolicy`) with exact verified-target execution across
   every target-bound governed action (including a dedicated `typeSequentially` action for
   per-character input, distinct from replacement `type`/`fill` semantics), decision provenance, and
   transport-bound address pinning for `HttpCrawler`;
-- adversarial hardening of cross-module contracts.
+- adversarial hardening of cross-module contracts, including Recording V2/Deterministic Replay.
 
-`1.1.x` (final release: `1.1.1`) is the previous stable line. Development for the next release
-continues on `develop`.
+`1.2.x` (final release: `1.2.0`) is the previous stable line; `1.1.x` (final release: `1.1.1`) came
+before it. Development for the next release continues on `develop`.
+
+See [Roadmap](docs/roadmap.md) for the complete, non-normative direction.
 
 ## Contributing
 
