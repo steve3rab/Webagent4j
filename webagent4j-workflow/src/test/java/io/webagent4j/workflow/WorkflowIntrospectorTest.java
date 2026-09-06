@@ -689,4 +689,400 @@ class WorkflowIntrospectorTest {
         WorkflowIntrospectionReport report = introspector.inspect(workflow);
         assertThat(report.mayExceedRuntimeNodeBudget()).isTrue();
     }
+
+    // --- INTROSPECT-GUARD-001..006: guard-aware definite assignment around CONDITIONAL/PARALLEL --
+
+    /**
+     * GUARD-001/002 establish, rather than assume, the exact scenario the guard-aware CONDITIONAL
+     * merge in {@link WorkflowIntrospector#inspect(Workflow)} must reason about: unlike a leaf
+     * ACTION/ASSIGN step or a {@code PARALLEL} step, an {@code ifElse}/{@code ifThen}-built step's
+     * inherited condition slot is never an optional {@link IWorkflowStep#when} skip-guard - it is
+     * the mandatory branch selector - and {@link ConditionalWorkflowStep#withCondition}/{@link
+     * LoopWorkflowStep#withCondition} unconditionally throw {@link UnsupportedOperationException}.
+     * A "guarded CONDITIONAL" (or "guarded LOOP") therefore cannot be constructed at all: {@code
+     * step.condition().isPresent()} is always {@code true} for these two step types, holding their
+     * mandatory selector/continuation-check, not an actual guard - which is exactly why {@link
+     * WorkflowIntrospector#inspectStep} never consults it for either of them (see the comment at
+     * the top of its {@code ConditionalWorkflowStep} branch).
+     */
+    @Test
+    void introspectGuard001IfElseDoesNotSupportGuard() {
+        IWorkflowStep ifElseStep =
+                ifElse("dec", List.of(neverRunAction("t")), List.of(neverRunAction("e")));
+
+        assertThatThrownBy(() -> ifElseStep.when(NEVER_EVALUATED))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void introspectGuard002IfThenDoesNotSupportGuard() {
+        IWorkflowStep ifThenStep = ifThen("dec", List.of(neverRunAction("t")));
+
+        assertThatThrownBy(() -> ifThenStep.when(NEVER_EVALUATED))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    // --- INTROSPECT-GUARD-003: unguarded ifElse, identical output in both branches, is definite --
+
+    @Test
+    void introspectGuard003UnguardedIfElseBothBranchesIdenticalOutputIsDefinite() {
+        WorkflowVariable<String> shared = WorkflowVariable.publicValue("shared", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(
+                                ifElse(
+                                        "dec",
+                                        List.of(neverRunAction("t", shared)),
+                                        List.of(neverRunAction("e", shared))))
+                        .build();
+
+        WorkflowIntrospectionReport report = introspector.inspect(workflow);
+
+        assertThat(report.declaredOutputCount()).isEqualTo(1);
+        assertThat(report.definitelyAvailableOutputCount()).isEqualTo(1);
+        assertThat(report.outputs().get(0).definitelyAvailable()).isTrue();
+    }
+
+    // --- INTROSPECT-GUARD-004: a prior definite output survives a later conditional untouched ----
+
+    @Test
+    void introspectGuard004PriorDefiniteSurvivesAcrossConditional() {
+        WorkflowVariable<String> earlier = WorkflowVariable.publicValue("earlier", String.class);
+        Workflow workflow =
+                Workflow.builder("wf")
+                        .step(neverRunAction("a", earlier))
+                        .step(ifThen("dec", List.of(neverRunAction("t"))))
+                        .build();
+
+        WorkflowIntrospectionReport report = introspector.inspect(workflow);
+
+        assertThat(report.definitelyAvailableOutputCount()).isEqualTo(1);
+        WorkflowIntrospectionOutput earlierOutput =
+                report.outputs().stream()
+                        .filter(output -> output.name().equals("earlier"))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(earlierOutput.definitelyAvailable()).isTrue();
+    }
+
+    // --- INTROSPECT-GUARD-005: an unguarded ifElse nested in a guarded PARALLEL is not promoted --
+
+    @Test
+    void introspectGuard005GuardedParallelSuppressesNestedConditionalDefinite() {
+        WorkflowVariable<String> shared = WorkflowVariable.publicValue("shared", String.class);
+        IWorkflowStep nestedIfElse =
+                ifElse(
+                        "dec",
+                        List.of(WorkflowSteps.assign("t", shared, "x")),
+                        List.of(WorkflowSteps.assign("e", shared, "x")));
+        IWorkflowStep guardedParallel =
+                parallel("par", List.of(List.of(nestedIfElse), assigns("b1", 1)))
+                        .when(NEVER_EVALUATED);
+        Workflow workflow = Workflow.builder("wf").step(guardedParallel).build();
+
+        WorkflowIntrospectionReport report = introspector.inspect(workflow);
+
+        WorkflowIntrospectionOutput sharedOutput =
+                report.outputs().stream()
+                        .filter(output -> output.name().equals("shared"))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(sharedOutput.definitelyAvailable()).isFalse();
+        assertThat(report.definitelyAvailableOutputCount()).isZero();
+    }
+
+    // --- INTROSPECT-GUARD-006: a guarded PARALLEL's own leaf output is never definite ------------
+
+    @Test
+    void introspectGuard006GuardedParallelLeafOutputIsNotDefinite() {
+        WorkflowVariable<String> produced = WorkflowVariable.publicValue("produced", String.class);
+        IWorkflowStep guardedParallel =
+                parallel(
+                                "par",
+                                List.of(
+                                        List.of(WorkflowSteps.assign("b0", produced, "x")),
+                                        assigns("b1", 1)))
+                        .when(NEVER_EVALUATED);
+        Workflow workflow = Workflow.builder("wf").step(guardedParallel).build();
+
+        WorkflowIntrospectionReport report = introspector.inspect(workflow);
+
+        assertThat(report.declaredOutputCount()).isEqualTo(2);
+        assertThat(report.definitelyAvailableOutputCount()).isZero();
+        WorkflowIntrospectionOutput producedOutput =
+                report.outputs().stream()
+                        .filter(output -> output.name().equals("produced"))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(producedOutput.definitelyAvailable()).isFalse();
+    }
+
+    // --- INTROSPECT-COST-001..005: linear-cost delta traversal, not cumulative full-state copies
+    // --
+
+    @Test
+    void introspectCost001LargeSequentialDefinitionCompletesQuickly() {
+        Workflow.Builder builder = Workflow.builder("wf");
+        for (IWorkflowStep step : assigns("leaf", 50_000)) {
+            builder.step(step);
+        }
+        Workflow workflow = builder.build();
+
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(10),
+                () -> {
+                    WorkflowIntrospectionReport report = introspector.inspect(workflow);
+                    assertThat(report.declaredOutputCount()).isEqualTo(50_000);
+                    assertThat(report.definitelyAvailableOutputCount()).isEqualTo(50_000);
+                });
+    }
+
+    /**
+     * Many sequential (never nested) {@code ifElse} steps, each declaring its own new pair of
+     * identically-named then/else outputs: by the time the traversal reaches the last one, the
+     * running {@code declared}/{@code definite} sets already hold thousands of entries. The
+     * pre-fix, full-state-copy {@code inspectBranch} would copy that entire growing history into
+     * both branches of every single one of these conditionals - quadratic in the count below; the
+     * delta-based traversal never does, so this stays fast regardless of count.
+     */
+    @Test
+    void introspectCost002ManyConditionalsWithGrowingOutputHistoryCompletesQuickly() {
+        Workflow.Builder builder = Workflow.builder("wf");
+        int count = 5_000;
+        for (int i = 0; i < count; i++) {
+            WorkflowVariable<String> shared =
+                    WorkflowVariable.publicValue("cond-shared-" + i, String.class);
+            builder.step(
+                    ifElse(
+                            "dec-" + i,
+                            List.of(neverRunAction("t-" + i, shared)),
+                            List.of(neverRunAction("e-" + i, shared))));
+        }
+        Workflow workflow = builder.build();
+
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(10),
+                () -> {
+                    WorkflowIntrospectionReport report = introspector.inspect(workflow);
+                    assertThat(report.declaredOutputCount()).isEqualTo(count);
+                    assertThat(report.definitelyAvailableOutputCount()).isEqualTo(count);
+                });
+    }
+
+    /**
+     * Same growing-history hazard as COST-002, for sequential (never nested) {@code PARALLEL}
+     * containers instead of conditionals.
+     */
+    @Test
+    void introspectCost003ManyParallelContainersWithGrowingOutputHistoryCompletesQuickly() {
+        Workflow.Builder builder = Workflow.builder("wf");
+        int count = 2_000;
+        for (int i = 0; i < count; i++) {
+            builder.step(
+                    parallel(
+                            "par-" + i,
+                            List.of(
+                                    assigns("par-" + i + "-b0", 1),
+                                    assigns("par-" + i + "-b1", 1))));
+        }
+        Workflow workflow = builder.build();
+
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(10),
+                () -> {
+                    WorkflowIntrospectionReport report = introspector.inspect(workflow);
+                    assertThat(report.declaredOutputCount()).isEqualTo(count * 2);
+                    assertThat(report.definitelyAvailableOutputCount()).isEqualTo(count * 2);
+                });
+    }
+
+    /** Deep (but within {@code Workflow}'s own bound), rather than wide, nested control flow. */
+    @Test
+    void introspectCost004DeepNestedBoundedControlFlowCompletesQuickly() {
+        // MAX_CONDITIONAL_NESTING_DEPTH / MAX_CONTROL_FLOW_NESTING_DEPTH is 64: alternate
+        // ifThen/loop/parallel nesting up to that bound, one level at a time.
+        IWorkflowStep current = assigns("leaf", 1).get(0);
+        for (int level = 0; level < 60; level++) {
+            IWorkflowStep next =
+                    switch (level % 3) {
+                        case 0 -> ifThen("d" + level, List.of(current));
+                        case 1 -> loop("l" + level, 3, List.of(current));
+                        default ->
+                                parallel(
+                                        "p" + level,
+                                        List.of(List.of(current), assigns("b" + level, 1)));
+                    };
+            current = next;
+        }
+        Workflow workflow = Workflow.builder("wf").step(current).build();
+
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> introspector.inspect(workflow));
+    }
+
+    /**
+     * Output order stays first-appearance-in-declaration order - never hash-based - even once the
+     * traversal has accumulated a large number of entries across many sequential branches.
+     */
+    @Test
+    void introspectCost005OutputOrderRemainsDeterministic() {
+        Workflow.Builder builder = Workflow.builder("wf");
+        List<String> expectedOrder = new ArrayList<>();
+        int count = 500;
+        for (int i = 0; i < count; i++) {
+            String name = "seq-" + i;
+            builder.step(
+                    neverRunAction("a-" + i, WorkflowVariable.publicValue(name, String.class)));
+            expectedOrder.add(name);
+        }
+        Workflow workflow = builder.build();
+
+        WorkflowIntrospectionReport first = introspector.inspect(workflow);
+        WorkflowIntrospectionReport second = introspector.inspect(workflow);
+
+        List<String> actualOrder =
+                first.outputs().stream().map(WorkflowIntrospectionOutput::name).toList();
+        assertThat(actualOrder).containsExactlyElementsOf(expectedOrder);
+        assertThat(second.outputs().stream().map(WorkflowIntrospectionOutput::name).toList())
+                .containsExactlyElementsOf(expectedOrder);
+    }
+
+    // --- INTROSPECT-DATAFLOW-001: WorkflowIntrospector agrees with Workflow.Builder
+    // ---------------
+
+    /**
+     * A condition whose {@code referencedVariables()} answers normally (so {@code
+     * Workflow.Builder#build()}'s metadata-driven {@code OUTPUT_NOT_DEFINITELY_AVAILABLE} check can
+     * actually run against it) but whose {@code evaluate()}/{@code describe()} still throw, since
+     * neither {@code build()} nor {@link WorkflowIntrospector#inspect(Workflow)} ever needs to call
+     * either.
+     */
+    private static IWorkflowCondition requiring(WorkflowVariable<?> variable) {
+        return new IWorkflowCondition() {
+            @Override
+            public boolean evaluate(IWorkflowVariables variables) {
+                throw new AssertionError("must not evaluate during build()/introspection");
+            }
+
+            @Override
+            public String describe() {
+                throw new AssertionError("must not describe during build()/introspection");
+            }
+
+            @Override
+            public Set<WorkflowVariable<?>> referencedVariables() {
+                return Set.of(variable);
+            }
+        };
+    }
+
+    /**
+     * Builds {@code producerStep} alone, reads {@link WorkflowIntrospector}'s own {@code
+     * definitelyAvailable} conclusion for {@code produced} from it, then builds a second workflow
+     * appending a trailing, guarded no-op {@code ASSIGN} step whose guard requires {@code produced}
+     * - the same {@code OUTPUT_NOT_DEFINITELY_AVAILABLE} check {@code Workflow.Builder} already
+     * applies to any condition - and asserts {@code build()} accepts that second workflow if and
+     * only if the introspector already called {@code produced} definitely available.
+     */
+    private void assertBuilderAgreesWithIntrospector(
+            String label, WorkflowVariable<String> produced, IWorkflowStep producerStep) {
+        Workflow producerOnly = Workflow.builder("wf-" + label).step(producerStep).build();
+        WorkflowIntrospectionReport report = introspector.inspect(producerOnly);
+        boolean introspectorSaysDefinite =
+                report.outputs().stream()
+                        .filter(output -> output.name().equals(produced.name()))
+                        .findFirst()
+                        .orElseThrow()
+                        .definitelyAvailable();
+
+        WorkflowVariable<Boolean> consumerOutput =
+                WorkflowVariable.publicValue(label + "-consumer-out", Boolean.class);
+        Workflow.Builder consumerBuilder =
+                Workflow.builder("wf-" + label + "-consumer")
+                        .step(producerStep)
+                        .step(
+                                WorkflowSteps.assign("consumer-" + label, consumerOutput, true)
+                                        .when(requiring(produced)));
+        boolean builderAccepts;
+        try {
+            consumerBuilder.build();
+            builderAccepts = true;
+        } catch (IllegalArgumentException rejectedAsNotDefinitelyAvailable) {
+            builderAccepts = false;
+        }
+
+        assertThat(introspectorSaysDefinite)
+                .as(
+                        "shape '%s': WorkflowIntrospector.definitelyAvailable=%s vs"
+                                + " Workflow.Builder accepted=%s",
+                        label, introspectorSaysDefinite, builderAccepts)
+                .isEqualTo(builderAccepts);
+    }
+
+    /**
+     * Cross-checks {@link WorkflowIntrospector}'s independently-recomputed {@code
+     * definitelyAvailable} conclusion against {@code Workflow.Builder}'s own accept/reject behavior
+     * across every shape the guard-aware rule must handle. A "guarded ifElse"/"guarded ifThen"
+     * shape is intentionally not included: as GUARD-001/002 establish, {@code ifElse}/{@code
+     * ifThen} never support an optional guard at all ({@code when(...)} unconditionally throws
+     * {@link UnsupportedOperationException}), so that shape cannot be constructed to cross-check in
+     * the first place.
+     */
+    @Test
+    void introspectDataflow001BuilderAgreesWithIntrospectorAcrossShapes() {
+        assertBuilderAgreesWithIntrospector(
+                "leaf",
+                WorkflowVariable.publicValue("leaf-out", String.class),
+                neverRunAction("producer", WorkflowVariable.publicValue("leaf-out", String.class)));
+
+        WorkflowVariable<String> guardedLeafOut =
+                WorkflowVariable.publicValue("guarded-leaf-out", String.class);
+        assertBuilderAgreesWithIntrospector(
+                "guarded-leaf",
+                guardedLeafOut,
+                neverRunAction("producer", guardedLeafOut).when(NEVER_EVALUATED));
+
+        WorkflowVariable<String> ifThenOut =
+                WorkflowVariable.publicValue("ifthen-out", String.class);
+        assertBuilderAgreesWithIntrospector(
+                "ifthen", ifThenOut, ifThen("dec", List.of(neverRunAction("t", ifThenOut))));
+
+        WorkflowVariable<String> ifElseOut =
+                WorkflowVariable.publicValue("ifelse-out", String.class);
+        assertBuilderAgreesWithIntrospector(
+                "ifelse",
+                ifElseOut,
+                ifElse(
+                        "dec",
+                        List.of(neverRunAction("t", ifElseOut)),
+                        List.of(neverRunAction("e", ifElseOut))));
+
+        WorkflowVariable<String> loopOut = WorkflowVariable.publicValue("loop-out", String.class);
+        assertBuilderAgreesWithIntrospector(
+                "loop", loopOut, loop("lp", 3, List.of(neverRunAction("body", loopOut))));
+
+        WorkflowVariable<String> parallelOut =
+                WorkflowVariable.publicValue("parallel-out", String.class);
+        assertBuilderAgreesWithIntrospector(
+                "parallel",
+                parallelOut,
+                parallel(
+                        "par",
+                        List.of(
+                                List.of(WorkflowSteps.assign("b0", parallelOut, "x")),
+                                assigns("b1", 1))));
+
+        WorkflowVariable<String> guardedParallelOut =
+                WorkflowVariable.publicValue("guarded-parallel-out", String.class);
+        assertBuilderAgreesWithIntrospector(
+                "guarded-parallel",
+                guardedParallelOut,
+                parallel(
+                                "par",
+                                List.of(
+                                        List.of(
+                                                WorkflowSteps.assign(
+                                                        "b0", guardedParallelOut, "x")),
+                                        assigns("b1", 1)))
+                        .when(NEVER_EVALUATED));
+    }
 }
