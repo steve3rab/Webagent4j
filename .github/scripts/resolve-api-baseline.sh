@@ -170,10 +170,14 @@ resolve_maven_version() {
   printf '%s' "$version" | tr -d '\r\n'
 }
 
-# tag_exists_in_origin <tag>
+# tag_exists_in_origin <repo_dir> <tag>
+# Always scoped to an explicit checked-out repository directory -- never
+# the caller's own cwd, which need not be a git repository at all (the
+# job's default workspace root, for one, is not: only the "current" and
+# "main-ref" checkouts under it are).
 tag_exists_in_origin() {
-  local tag="$1"
-  git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null
+  local repo_dir="$1" tag="$2"
+  git -C "$repo_dir" ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null
 }
 
 main() {
@@ -197,7 +201,7 @@ main() {
   fi
 
   local declared_tag_exists="false"
-  if tag_exists_in_origin "v$declared_baseline"; then
+  if tag_exists_in_origin "$repo_root" "v$declared_baseline"; then
     declared_tag_exists="true"
   fi
 
@@ -227,7 +231,7 @@ main() {
       git -C "$repo_root" worktree remove --force "$main_ref_dir"
       rm -rf "$main_ref_dir"
 
-      if is_stable_version "$main_version" && tag_exists_in_origin "v$main_version"; then
+      if is_stable_version "$main_version" && tag_exists_in_origin "$repo_root" "v$main_version"; then
         main_tag_exists="true"
       fi
     fi
