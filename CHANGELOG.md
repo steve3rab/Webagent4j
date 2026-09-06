@@ -154,6 +154,24 @@ not imply a published compatibility line.
   scope decision, not an oversight. See [Recording](docs/recording.md#recording-v2) and
   [Limitations](docs/limitations.md#recording).
 
+### Security
+
+- Adversarial hardening pass over Recording V2 and Deterministic Replay: an explicit audit
+  treating every `WorkflowRecordingV2` as hostile, stale, or fabricated input, confirming the
+  existing structural/positional plan-tree matching, exhaustive per-step-type status/failure
+  shape invariants, guard-aware definite-assignment cross-checks, live-workflow exact-plan-equality
+  gate, and codec resource bounds (node count, nesting depth, string/field-name/numeric-token
+  length, encoded size) already close every gap this pass checked for - no production behavior
+  changed. Adds a new mutation-driven adversarial regression suite built from a genuinely executed
+  workflow (rather than only hand-built fixtures) covering wrong node type, missing/extra/duplicate
+  children, unknown step IDs, positional reordering, workflow ID mismatch, impossible
+  status/failure and branch-selection combinations, deterministic-first-failure ordering, and
+  linear-time validation of a large recording; a dedicated `ReplayValidator` case proving a
+  self-consistent but fabricated duplicate-output-across-`PARALLEL`-branches plan is rejected only
+  because it is cross-checked against the live workflow's freshly recomputed plan, never by
+  self-consistency alone; and V2-codec-specific oversized numeric-token/field-name/string-value
+  coverage matching V1's own. See [Recording](docs/recording.md#deterministic-replay).
+
 ## [1.2.0] - 2026-09-04
 
 ### Added
