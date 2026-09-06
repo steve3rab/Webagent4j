@@ -244,6 +244,47 @@ class JsonWorkflowRecordingV2CodecTest {
         assertThat(exception.getCause()).isNull();
     }
 
+    // ---- REC2-JSON: parser-level resource limits, mirroring V1's own numeric-token/field-name/
+    // string-length coverage (RecordingResourceBoundsTest) for this codec's own separate
+    // StreamReadConstraints configuration ----
+
+    @Test
+    void rejectsAnOversizedSchemaVersionNumericToken() {
+        String valid = codec.encode(RecordingV2Fixtures.minimalCompleted("wf"));
+        String hugeNumber = "1".repeat(JsonWorkflowRecordingV2Codec.MAX_NUMBER_LENGTH_DIGITS + 1);
+        String corrupted =
+                valid.replaceFirst("\"schemaVersion\":2", "\"schemaVersion\":" + hugeNumber);
+
+        assertThatThrownBy(() -> codec.decode(corrupted))
+                .isInstanceOf(RecordingFormatException.class)
+                .hasMessageNotContaining(hugeNumber);
+    }
+
+    @Test
+    void rejectsAnOversizedFieldName() {
+        String valid = codec.encode(RecordingV2Fixtures.minimalCompleted("wf"));
+        String hugeFieldName = "x".repeat(JsonWorkflowRecordingV2Codec.MAX_NAME_LENGTH_CHARS + 1);
+        String corrupted =
+                valid.replaceFirst("\"workflowId\":\"wf\"", "\"" + hugeFieldName + "\":\"wf\"");
+
+        assertThatThrownBy(() -> codec.decode(corrupted))
+                .isInstanceOf(RecordingFormatException.class)
+                .hasMessageNotContaining(hugeFieldName);
+    }
+
+    @Test
+    void rejectsAnOversizedStringValue() {
+        String valid = codec.encode(RecordingV2Fixtures.minimalCompleted("wf"));
+        String hugeValue = "y".repeat(JsonWorkflowRecordingV2Codec.MAX_STRING_LENGTH_CHARS + 1);
+        String corrupted =
+                valid.replaceFirst(
+                        "\"recordingId\":\"[^\"]*\"", "\"recordingId\":\"" + hugeValue + "\"");
+
+        assertThatThrownBy(() -> codec.decode(corrupted))
+                .isInstanceOf(RecordingFormatException.class)
+                .hasMessageNotContaining(hugeValue);
+    }
+
     // ---- REC2-BOUND-001: resource limits ----
 
     @Test
