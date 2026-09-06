@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -40,9 +41,20 @@ import java.util.Set;
  * <p>The whole traversal, including {@link
  * WorkflowIntrospectionReport#maximumPotentialExecutionNodes()}'s worst-case computation, visits
  * each declared step exactly a small, fixed number of times - never proportional to any declared
- * {@code maxIterations} or branch count, never a physical unrolling - so {@link
- * #inspect(Workflow)}'s cost is linear in the number of steps the definition declares, independent
- * of how large those steps' own declared bounds are.
+ * {@code maxIterations} or branch count, never a physical unrolling. Pass 1's guard-aware definite
+ * assignment (see {@link #inspectStep}) never copies the full accumulated {@code declared}/{@code
+ * definite} state into a branch: {@link #inspectStep}/{@link #inspectBranch} return only the {@link
+ * FlowDelta} - the variables a step or branch itself newly introduces relative to its own entry
+ * point - which a caller merges into its own running sets in time proportional to that delta's own
+ * size, not to how many steps already precede it in the traversal. Since {@code workflow} is
+ * already known to be collision-free, a given output variable can appear in at most two deltas
+ * across the whole definition (the {@code then}/{@code else} branches of the single {@link
+ * WorkflowStepType#CONDITIONAL} that may deliberately declare it identically in both - see {@link
+ * #inspectStep}), so the total size of every delta ever produced is {@code O(N)} in the number
+ * {@code N} of steps the definition declares. {@link #inspect(Workflow)}'s total cost - traversal
+ * plus every delta merge combined - is therefore {@code O(N)}, independent of how large those
+ * steps' own declared bounds ({@code maxIterations}, branch counts) are, and never proportional to
+ * how many steps already precede a given branch.
  */
 public final class WorkflowIntrospector {
 
@@ -61,7 +73,9 @@ public final class WorkflowIntrospector {
         Set<WorkflowVariable<?>> declared = new LinkedHashSet<>();
         Set<WorkflowVariable<?>> definite = new LinkedHashSet<>();
         for (IWorkflowStep step : workflow.steps()) {
-            inspectStep(step, 0, declared, definite, metrics);
+            FlowDelta delta = inspectStep(step, 0, metrics);
+            declared.addAll(delta.declared());
+            definite.addAll(delta.definite());
         }
 
         List<WorkflowIntrospectionInput> inputs = new ArrayList<>();
@@ -178,23 +192,32 @@ public final class WorkflowIntrospector {
     }
 
     /**
-     * One branch's own resulting {@code declared}/{@code definite} sets, mirroring {@code
-     * Workflow.Builder}'s own {@code BranchResult} - see {@link #inspectBranch}.
+     * The variables one step or branch newly introduces relative to its own entry point - never a
+     * copy of everything already declared/definite before it. {@code declared} may list the same
+     * {@link WorkflowVariable} up to twice: once from each of a {@link
+     * WorkflowStepType#CONDITIONAL}'s {@code then}/{@code else} branches, the one case {@code
+     * workflow}'s own pre-validated collision-freedom allows the identical name to be
+     * (deliberately) declared twice, since at runtime only one of the two branches ever runs (see
+     * {@link #inspectStep}). Merging a delta into an enclosing {@link LinkedHashSet} is idempotent,
+     * so this duplication never affects the final result - only how many list entries carry it on
+     * the way there, which is why every delta size stays {@code O(1)} relative to the branch/step
+     * that produced it rather than to how much of the definition precedes it.
      */
-    private record BranchOutputs(
-            Set<WorkflowVariable<?>> declared, Set<WorkflowVariable<?>> definite) {}
+    private record FlowDelta(
+            List<WorkflowVariable<?>> declared, Set<WorkflowVariable<?>> definite) {
+
+        private static final FlowDelta EMPTY = new FlowDelta(List.of(), Set.of());
+    }
 
     /**
-     * Inspects one step, incrementing {@code metrics} and updating {@code declared}/{@code
-     * definite} in place exactly like {@code Workflow.Builder#validateStep} does - minus every
-     * collision diagnostic, since {@code workflow} is already known to be free of them.
+     * Inspects one step and returns the {@link FlowDelta} it alone newly introduces, exactly like
+     * {@code Workflow.Builder#validateStep} does for definite assignment - minus every collision
+     * diagnostic, since {@code workflow} is already known to be free of them. Never reads or
+     * mutates any outer accumulator: everything this method needs is already reachable from {@code
+     * step} itself, its own branches, and the same guard-aware rule applied recursively.
      */
-    private static void inspectStep(
-            IWorkflowStep step,
-            int controlFlowDepth,
-            Set<WorkflowVariable<?>> declared,
-            Set<WorkflowVariable<?>> definite,
-            Metrics metrics) {
+    private static FlowDelta inspectStep(
+            IWorkflowStep step, int controlFlowDepth, Metrics metrics) {
         metrics.definitionNodeCount++;
         boolean guarded = step.condition().isPresent();
         // Safe: IWorkflowStep is sealed and permits only AWorkflowStep (same precedent as
@@ -205,24 +228,32 @@ public final class WorkflowIntrospector {
             metrics.conditionalCount++;
             int nestedDepth = controlFlowDepth + 1;
             metrics.observeDepth(nestedDepth);
-            BranchOutputs thenResult =
-                    inspectBranch(
-                            conditional.thenSteps(), nestedDepth, declared, definite, metrics);
-            BranchOutputs elseResult =
-                    inspectBranch(
-                            conditional.elseSteps().orElse(List.of()),
-                            nestedDepth,
-                            declared,
-                            definite,
-                            metrics);
-            declared.addAll(thenResult.declared());
-            declared.addAll(elseResult.declared());
-            for (WorkflowVariable<?> candidate : thenResult.definite()) {
-                if (!definite.contains(candidate) && elseResult.definite().contains(candidate)) {
-                    definite.add(candidate);
+            FlowDelta thenDelta = inspectBranch(conditional.thenSteps(), nestedDepth, metrics);
+            FlowDelta elseDelta =
+                    inspectBranch(conditional.elseSteps().orElse(List.of()), nestedDepth, metrics);
+            List<WorkflowVariable<?>> declaredOut =
+                    new ArrayList<>(thenDelta.declared().size() + elseDelta.declared().size());
+            declaredOut.addAll(thenDelta.declared());
+            declaredOut.addAll(elseDelta.declared());
+            // NOTE on guard-awareness here: unlike every other step type, a CONDITIONAL step's
+            // inherited `condition` slot is never an optional when(...) skip-guard - it is the
+            // mandatory branch selector (see ConditionalWorkflowStep's Javadoc), and
+            // ConditionalWorkflowStep#withCondition unconditionally throws
+            // UnsupportedOperationException, so `guarded` above is always true for this branch and
+            // deliberately never consulted below - a "guarded conditional" cannot be constructed at
+            // all (WorkflowSteps#ifThen/#ifElse never support when(...); only a leaf ACTION/ASSIGN
+            // step or a PARALLEL step's condition slot is an actual optional guard). The
+            // intersection
+            // below is therefore unconditional: an output both branches newly and unconditionally
+            // guarantee identically is definite; ifThen's implicit empty else branch means a
+            // then-only output is never in the intersection, regardless.
+            Set<WorkflowVariable<?>> definiteOut = new LinkedHashSet<>();
+            for (WorkflowVariable<?> candidate : thenDelta.definite()) {
+                if (elseDelta.definite().contains(candidate)) {
+                    definiteOut.add(candidate);
                 }
             }
-            return;
+            return new FlowDelta(declaredOut, definiteOut);
         }
         if (concreteStep instanceof LoopWorkflowStep loop) {
             metrics.loopCount++;
@@ -231,13 +262,11 @@ public final class WorkflowIntrospector {
             if (loop.maxIterations() > metrics.maximumLoopIterations) {
                 metrics.maximumLoopIterations = loop.maxIterations();
             }
-            BranchOutputs bodyResult =
-                    inspectBranch(loop.body(), nestedDepth, declared, definite, metrics);
-            declared.addAll(bodyResult.declared());
+            FlowDelta bodyDelta = inspectBranch(loop.body(), nestedDepth, metrics);
             // A loop may run zero iterations, so nothing its body might produce is ever definite -
             // regardless of whether individual body steps are themselves guarded (see
             // Workflow.Builder#validateStep's own LOOP handling, and WorkflowSteps#loop's Javadoc).
-            return;
+            return new FlowDelta(bodyDelta.declared(), Set.of());
         }
         if (concreteStep instanceof ParallelWorkflowStep parallel) {
             metrics.parallelCount++;
@@ -248,48 +277,45 @@ public final class WorkflowIntrospector {
                 metrics.maximumParallelBranches = branches.size();
             }
             metrics.totalParallelBranches += branches.size();
+            List<WorkflowVariable<?>> declaredOut = new ArrayList<>();
+            Set<WorkflowVariable<?>> definiteOut = guarded ? Set.of() : new LinkedHashSet<>();
             for (List<IWorkflowStep> branch : branches) {
-                BranchOutputs branchResult =
-                        inspectBranch(branch, nestedDepth, declared, definite, metrics);
-                declared.addAll(branchResult.declared());
+                FlowDelta branchDelta = inspectBranch(branch, nestedDepth, metrics);
+                declaredOut.addAll(branchDelta.declared());
                 if (!guarded) {
-                    definite.addAll(branchResult.definite());
+                    definiteOut.addAll(branchDelta.definite());
                 }
             }
-            return;
+            return new FlowDelta(declaredOut, definiteOut);
         }
         if (concreteStep instanceof ActionWorkflowStep<?>) {
             metrics.actionCount++;
         }
-        concreteStep
-                .outputVariable()
-                .ifPresent(
-                        output -> {
-                            declared.add(output);
-                            if (!guarded) {
-                                definite.add(output);
-                            }
-                        });
+        Optional<WorkflowVariable<?>> output = concreteStep.outputVariable();
+        if (output.isEmpty()) {
+            return FlowDelta.EMPTY;
+        }
+        WorkflowVariable<?> variable = output.get();
+        return new FlowDelta(List.of(variable), guarded ? Set.of() : Set.of(variable));
     }
 
     /**
-     * Inspects one branch's steps in isolation, starting from a snapshot of {@code declared}/{@code
-     * definite} as they stood before the enclosing container step - mirroring {@code
-     * Workflow.Builder#validateBranch} - and returns the branch's own resulting sets for the caller
-     * to merge back.
+     * Inspects one branch's steps in isolation and returns only the {@link FlowDelta} the branch as
+     * a whole newly introduces - mirroring {@code Workflow.Builder#validateBranch}, but never
+     * copying the enclosing scope's already-accumulated {@code declared}/{@code definite} state:
+     * each step's own delta is merged into a fresh, branch-local accumulator whose final size is
+     * exactly what this branch itself declares, not what precedes it.
      */
-    private static BranchOutputs inspectBranch(
-            List<IWorkflowStep> branchSteps,
-            int controlFlowDepth,
-            Set<WorkflowVariable<?>> declared,
-            Set<WorkflowVariable<?>> definite,
-            Metrics metrics) {
-        Set<WorkflowVariable<?>> branchDeclared = new LinkedHashSet<>(declared);
-        Set<WorkflowVariable<?>> branchDefinite = new LinkedHashSet<>(definite);
+    private static FlowDelta inspectBranch(
+            List<IWorkflowStep> branchSteps, int controlFlowDepth, Metrics metrics) {
+        List<WorkflowVariable<?>> declared = new ArrayList<>();
+        Set<WorkflowVariable<?>> definite = new LinkedHashSet<>();
         for (IWorkflowStep step : branchSteps) {
-            inspectStep(step, controlFlowDepth, branchDeclared, branchDefinite, metrics);
+            FlowDelta delta = inspectStep(step, controlFlowDepth, metrics);
+            declared.addAll(delta.declared());
+            definite.addAll(delta.definite());
         }
-        return new BranchOutputs(branchDeclared, branchDefinite);
+        return new FlowDelta(declared, definite);
     }
 
     // --- Pass 2: saturating worst-case executed-node potential --------------------------------
