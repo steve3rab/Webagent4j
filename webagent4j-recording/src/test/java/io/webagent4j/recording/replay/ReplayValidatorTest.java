@@ -276,4 +276,104 @@ class ReplayValidatorTest {
 
         assertThat(result).isEmpty();
     }
+
+    /**
+     * A fabricated recording can pair a plan and tree that are perfectly self-consistent with each
+     * other (so {@link WorkflowRecordingV2}'s own construction-time invariants - {@link
+     * io.webagent4j.recording.RecordingV2PlanTreeValidator} included - accept it) while still
+     * describing a structure no live {@code Workflow} could ever legitimately produce: here, two
+     * {@code PARALLEL} branches both declaring the identical output name, which {@code
+     * WorkflowSteps#parallel} always rejects as a collision at {@code build()} time. This proves
+     * {@link ReplayValidator}'s exact-equality check against a freshly recomputed live plan - not
+     * only {@code RecordingV2PlanTreeValidator}'s own self-consistency check - is what actually
+     * closes this gap (see mission section on "recording vs live Workflow" / "plan duplicate
+     * structure").
+     */
+    @Test
+    void rplValidate011FabricatedDuplicateOutputAcrossParallelBranchesIsRejected() {
+        WorkflowVariable<Boolean> b0out = WorkflowVariable.publicValue("shared0", Boolean.class);
+        WorkflowVariable<Boolean> b1out = WorkflowVariable.publicValue("shared1", Boolean.class);
+        Workflow workflow =
+                Workflow.builder("wf-validate-11")
+                        .step(
+                                WorkflowSteps.parallel(
+                                        "par",
+                                        List.of(
+                                                List.of(WorkflowSteps.assign("b0", b0out, true)),
+                                                List.of(WorkflowSteps.assign("b1", b1out, true)))))
+                        .build();
+        WorkflowExecutionPlan realPlan = WorkflowPlanner.plan(workflow);
+        WorkflowExecution execution = engine.executeWithTree(workflow, WorkflowInputs.empty());
+        WorkflowRecordingV2 genuine =
+                recorder.record(new RecordingId("rec-11"), Instant.now(), realPlan, execution);
+
+        io.webagent4j.workflow.WorkflowPlanNode parPlanNode = realPlan.nodes().get(0);
+        List<io.webagent4j.workflow.WorkflowPlanBranch> branches = parPlanNode.branches();
+        io.webagent4j.workflow.WorkflowPlanBranch branch1 = branches.get(1);
+        io.webagent4j.workflow.WorkflowPlanNode branch1Assign = branch1.nodes().get(0);
+        io.webagent4j.workflow.WorkflowPlanOutput duplicated =
+                new io.webagent4j.workflow.WorkflowPlanOutput("shared0", "Boolean", false);
+        io.webagent4j.workflow.WorkflowPlanNode fabricatedBranch1Assign =
+                new io.webagent4j.workflow.WorkflowPlanNode(
+                        branch1Assign.stepId(),
+                        branch1Assign.stepType(),
+                        branch1Assign.guarded(),
+                        Optional.of(duplicated),
+                        branch1Assign.branches());
+        io.webagent4j.workflow.WorkflowPlanBranch fabricatedBranch1 =
+                new io.webagent4j.workflow.WorkflowPlanBranch(
+                        branch1.kind(), List.of(fabricatedBranch1Assign));
+        io.webagent4j.workflow.WorkflowPlanNode fabricatedParPlanNode =
+                new io.webagent4j.workflow.WorkflowPlanNode(
+                        parPlanNode.stepId(),
+                        parPlanNode.stepType(),
+                        parPlanNode.guarded(),
+                        parPlanNode.declaredOutput(),
+                        List.of(branches.get(0), fabricatedBranch1));
+        WorkflowExecutionPlan fabricatedPlan =
+                new WorkflowExecutionPlan(realPlan.workflowId(), List.of(fabricatedParPlanNode));
+
+        io.webagent4j.recording.RecordedExecutionNodeV2 parNode = genuine.nodes().get(0);
+        io.webagent4j.recording.RecordedExecutionNodeV2 branch1Node = parNode.children().get(1);
+        io.webagent4j.recording.RecordedExecutionNodeV2 branch1Leaf = branch1Node.children().get(0);
+        io.webagent4j.recording.RecordedWorkflowStepV2 fabricatedLeafStep =
+                new io.webagent4j.recording.RecordedWorkflowStepV2(
+                        branch1Leaf.step().stepId(),
+                        branch1Leaf.step().stepType(),
+                        branch1Leaf.step().status(),
+                        branch1Leaf.step().condition(),
+                        Optional.of(duplicated),
+                        branch1Leaf.step().failure(),
+                        branch1Leaf.step().action());
+        io.webagent4j.recording.RecordedExecutionNodeV2 fabricatedBranch1Leaf =
+                new io.webagent4j.recording.RecordedExecutionNodeV2(
+                        fabricatedLeafStep, branch1Leaf.branchSelection(), branch1Leaf.children());
+        io.webagent4j.recording.RecordedExecutionNodeV2 fabricatedBranch1Node =
+                new io.webagent4j.recording.RecordedExecutionNodeV2(
+                        branch1Node.step(),
+                        branch1Node.branchSelection(),
+                        List.of(fabricatedBranch1Leaf));
+        io.webagent4j.recording.RecordedExecutionNodeV2 fabricatedParNode =
+                new io.webagent4j.recording.RecordedExecutionNodeV2(
+                        parNode.step(),
+                        parNode.branchSelection(),
+                        List.of(parNode.children().get(0), fabricatedBranch1Node));
+
+        // Self-consistent (plan and tree agree with each other): construction must succeed.
+        WorkflowRecordingV2 fabricated =
+                new WorkflowRecordingV2(
+                        genuine.schemaVersion(),
+                        new RecordingId("rec-11-fabricated"),
+                        genuine.capturedAt(),
+                        genuine.workflowId(),
+                        genuine.status(),
+                        fabricatedPlan,
+                        List.of(fabricatedParNode),
+                        genuine.failure());
+
+        Optional<ReplayValidationFailure> result = ReplayValidator.validate(fabricated, workflow);
+
+        assertThat(result).isPresent();
+        assertThat(result.orElseThrow().type()).isEqualTo(ReplayFailureType.INCOMPATIBLE_WORKFLOW);
+    }
 }
