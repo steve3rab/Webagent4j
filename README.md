@@ -288,6 +288,33 @@ See [Workflows](docs/workflow.md#bounded-parallelism) and
 [Limitations](docs/limitations.md) for the caller-responsibility caveat around concurrent access to
 a shared resource such as an `IPage`.
 
+### Static workflow introspection example
+
+`WorkflowIntrospector` answers *how complex is this definition, and what bounded runtime pressure
+may it represent?* — entirely from the built `Workflow`, before any execution exists:
+
+```java
+WorkflowIntrospectionReport report = new WorkflowIntrospector().inspect(workflow);
+System.out.println("Control-flow depth: " + report.maximumControlFlowDepth());
+System.out.println("Worst-case executed nodes: " + report.maximumPotentialExecutionNodes());
+System.out.println("May exceed runtime budget: " + report.mayExceedRuntimeNodeBudget());
+System.out.println("Risk indicators: " + report.riskIndicators());
+```
+
+- Never evaluates a condition, never invokes an action factory, never touches a backend, browser,
+  or network resource, and never creates a thread - a `PARALLEL` step's branches are inspected
+  sequentially, in declaration order.
+- `maximumPotentialExecutionNodes()` is a conservative, saturating-arithmetic upper bound (an `ifElse`
+  takes the larger branch, never the sum; a `PARALLEL` step sums every branch, since all of them
+  genuinely run; a `LOOP` is computed mathematically from `maxIterations`, never physically unrolled)
+  - never a prediction of what a real execution will do.
+- `mayExceedRuntimeNodeBudget()` exceeding the engine's own node budget is information for a
+  caller's own policy, never a validation failure or a reason `build()` would reject the definition.
+- `riskIndicators()` lists small, named structural facts (contains loops, parallelism, actions,
+  secret outputs) — never a combined numeric "risk score".
+
+See [Workflows](docs/workflow.md#static-workflow-introspection) for the complete model.
+
 ## Main capabilities
 
 | Area | Main modules | Purpose |
@@ -303,7 +330,7 @@ a shared resource such as an `IPage`.
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
 | HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
 | Browser crawler | `webagent4j-browser-crawler` | Single-lane crawling of JavaScript-rendered pages |
-| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, bounded loops, bounded parallelism (`1.3`, in progress), validation, static planning, and structured execution results |
+| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, bounded loops, bounded parallelism (`1.3`, in progress), validation, static planning, static complexity introspection (`1.3`, in progress), and structured execution results |
 | Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison; Recording V2 and Deterministic Replay (`io.webagent4j.recording.replay`) for `1.3`, in progress |
 | Plugins | `webagent4j-plugin-api` | Explicit trusted custom locator strategies |
 | CLI | `webagent4j-cli` | Small command-line application |
@@ -339,16 +366,26 @@ assignments:
   action never performs an observable side effect. Concurrent browser side effects (clicks,
   typing, navigation) are explicitly out of scope for this version. See
   [Workflows](docs/workflow.md#bounded-parallelism).
-- **Three deliberately separate introspection views**, never merged or toggled between:
+- **Static workflow introspection** (`1.3`, in progress) — `new WorkflowIntrospector().inspect(workflow)`
+  returns a deterministic, backend-neutral `WorkflowIntrospectionReport`: step/depth/input/output
+  counts, and a saturating-arithmetic conservative upper bound on how many flat result entries a
+  single execution could produce, computed without ever evaluating a condition, invoking an action
+  factory, or touching a backend, browser, network resource, or thread. See
+  [Workflows](docs/workflow.md#static-workflow-introspection).
+- **Four deliberately separate introspection views**, never merged or toggled between:
 
   ```text
-  Validation Report  -> is this workflow definition valid, and why?
-  Execution Plan     -> what can it structurally execute?
-  Execution Tree     -> what did one execution actually do?
+  Validation Report        -> is this workflow definition valid, and why?
+  Execution Plan           -> what can it structurally execute?
+  Static Introspection Report -> how complex is that structure, and what bounded
+                                  runtime pressure may it represent?
+  Execution Tree           -> what did one execution actually do?
   ```
 
   `Workflow.Builder#validate()` never throws or mutates the builder. `WorkflowPlanner.plan(...)`
-  never evaluates a condition/guard or calls an action factory. `WorkflowEngine#executeWithTree(...)`
+  never evaluates a condition/guard or calls an action factory. `new
+  WorkflowIntrospector().inspect(...)` (`1.3`, in progress) computes deterministic complexity/safety
+  metrics from the definition alone, with the same zero-side-effect guarantee. `WorkflowEngine#executeWithTree(...)`
   runs the workflow exactly once and returns the same result as `execute(...)`, plus a hierarchical
   view of the path actually taken.
 
