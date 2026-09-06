@@ -1,1 +1,1 @@
-tagSearchIndex = [{"l":"Constant Field Values","h":"","u":"constant-values.html"},{"l":"Fetch identity","h":"class io.webagent4j.crawler.HttpCrawler","d":"Section","u":"io/webagent4j/crawler/HttpCrawler.html#fetch-identity-heading"},{"l":"Serialized Form","h":"","u":"serialized-form.html"}];updateSearchResults();
+tagSearchIndex = [{"l":"Serialized Form","h":"","u":"serialized-form.html"}];updateSearchResults();
