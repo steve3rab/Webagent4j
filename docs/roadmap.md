@@ -79,7 +79,9 @@ See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this relea
 ## 1.3: active development
 
 `develop` is `1.3.0-SNAPSHOT`, the active line for the next release. `1.2.0` remains the current
-stable line (`1.2.x`) until a future release supersedes it. In progress:
+stable line (`1.2.x`) until a future release supersedes it. The following functional additions are
+complete on `develop`; release engineering (version finalization, changelog closure, and exact-head
+qualification) remains before publication:
 
 - **Static Workflow Introspection** - `new WorkflowIntrospector().inspect(workflow)` returns a
   `WorkflowIntrospectionReport`: a deterministic, backend-neutral summary of an already-valid
