@@ -12,7 +12,7 @@ closed rather than guess.
 Playwright is the first browser backend.
 
 > [!IMPORTANT]
-> `1.2.x` is the current stable line (latest: `1.2.0`); `1.1.x` (latest: `1.1.1`) is the previous
+> `1.3.x` is the current stable line (latest: `1.3.0`); `1.2.x` (latest: `1.2.0`) is the previous
 > stable line. Public Maven artifacts are not yet published from this repository's release workflow.
 > Until publication is enabled, build and install the artifacts locally.
 
@@ -330,8 +330,8 @@ See [Workflows](docs/workflow.md#static-workflow-introspection) for the complete
 | Extraction | `webagent4j-extraction-api`, `webagent4j-extraction` | Typed text/attribute/value/list/table extraction |
 | HTTP crawler | `webagent4j-crawler-api`, `webagent4j-crawler` | Deterministic sequential HTTP crawling |
 | Browser crawler | `webagent4j-browser-crawler` | Single-lane crawling of JavaScript-rendered pages |
-| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, bounded loops, bounded parallelism (`1.3.0-SNAPSHOT`), validation, static planning, static complexity introspection (`1.3.0-SNAPSHOT`), and structured execution results |
-| Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison; Recording V2 and Deterministic Replay (`io.webagent4j.recording.replay`) for `1.3.0-SNAPSHOT` |
+| Workflows | `webagent4j-workflow` | Typed deterministic workflows with conditional branching, bounded loops, bounded parallelism, validation, static planning, static complexity introspection, and structured execution results |
+| Recording | `webagent4j-recording` | Schema-V1 recording and offline comparison; Recording V2 and Deterministic Replay (`io.webagent4j.recording.replay`) |
 | Plugins | `webagent4j-plugin-api` | Explicit trusted custom locator strategies |
 | CLI | `webagent4j-cli` | Small command-line application |
 
@@ -349,13 +349,13 @@ assignments:
 - **Deterministic branching** — `WorkflowSteps.ifElse`/`ifThen` evaluate a condition exactly once
   and run exactly one branch; the branch not selected produces zero step executions, zero action
   calls, and zero backend invocations. There is no speculative or fallback branch execution.
-- **Bounded loops** (`1.3.0-SNAPSHOT`) — `WorkflowSteps.loop` adds an explicitly-bounded repetition
+- **Bounded loops** — `WorkflowSteps.loop` adds an explicitly-bounded repetition
   step: a mandatory `maxIterations` checked against a framework-wide maximum, a continuation
   condition evaluated exactly once per iteration attempt, and fail-closed behavior if the bound is
   reached while the condition is still true — never a disguised repeat-until-success mechanism.
   Arbitrary mutable inter-iteration state is explicitly out of scope. See
   [Workflows](docs/workflow.md#bounded-loops).
-- **Bounded parallelism** (`1.3.0-SNAPSHOT`) — `WorkflowSteps.parallel` declares a fixed set of 2-8
+- **Bounded parallelism** — `WorkflowSteps.parallel` declares a fixed set of 2-8
   branches (`Workflow.MAX_PARALLEL_BRANCHES`) that all structurally run once the step is reached,
   joined in deterministic branch-definition order regardless of real completion order; a bounded,
   per-step thread pool executes them with isolated per-branch state, deterministic output merge and
@@ -366,7 +366,7 @@ assignments:
   action never performs an observable side effect. Concurrent browser side effects (clicks,
   typing, navigation) are explicitly out of scope for this version. See
   [Workflows](docs/workflow.md#bounded-parallelism).
-- **Static workflow introspection** (`1.3.0-SNAPSHOT`) — `new WorkflowIntrospector().inspect(workflow)`
+- **Static workflow introspection** — `new WorkflowIntrospector().inspect(workflow)`
   returns a deterministic, backend-neutral `WorkflowIntrospectionReport`: step/depth/input/output
   counts, and a saturating-arithmetic conservative upper bound on how many flat result entries a
   single execution could produce, computed without ever evaluating a condition, invoking an action
@@ -384,12 +384,12 @@ assignments:
 
   `Workflow.Builder#validate()` never throws or mutates the builder. `WorkflowPlanner.plan(...)`
   never evaluates a condition/guard or calls an action factory. `new
-  WorkflowIntrospector().inspect(...)` (`1.3.0-SNAPSHOT`) computes deterministic complexity/safety
+  WorkflowIntrospector().inspect(...)` computes deterministic complexity/safety
   metrics from the definition alone, with the same zero-side-effect guarantee. `WorkflowEngine#executeWithTree(...)`
   runs the workflow exactly once and returns the same result as `execute(...)`, plus a hierarchical
   view of the path actually taken.
 
-`webagent4j-recording`'s Recording V2 format (`1.3.0-SNAPSHOT`) captures the Execution Plan
+`webagent4j-recording`'s Recording V2 format captures the Execution Plan
 together with a tree mirroring the Execution Tree above, and `io.webagent4j.recording.replay`
 validates a recording's compatibility with a live workflow and deterministically replays its
 recorded decision path — structural/decision replay only, never a re-invocation of an action factory
@@ -488,7 +488,7 @@ must not be inferred from Java serialization or Java object identity.
 
 ## Project status
 
-`1.2.0` is released and is the current stable line (`1.2.x`). Its functional scope is implemented:
+`1.3.0` is released and is the current stable line (`1.3.x`). Its functional scope is implemented:
 
 - browser lifecycle and semantic location;
 - bounded observation;
@@ -496,40 +496,21 @@ must not be inferred from Java serialization or Java object identity.
 - extraction;
 - HTTP and browser crawling;
 - deterministic workflows: typed inputs/outputs with guard-aware definite assignment, conditional
-  branching (`ifElse`/`ifThen`), and the Validation Report / Execution Plan / Execution Tree
-  introspection views (see [Workflows](#workflows) above);
-- Recording JSON V1 and offline comparison;
+  branching (`ifElse`/`ifThen`), bounded loops (`loop`), deterministic bounded parallelism
+  (`parallel`), and the Validation Report / Execution Plan / Static Introspection Report / Execution
+  Tree introspection views (see [Workflows](#workflows) above);
+- Recording V2 and Deterministic Replay (`io.webagent4j.recording.replay`), alongside Recording
+  JSON V1 and offline comparison;
 - explicit trusted locator plugins;
 - governed execution (`IActionPolicy`/`INetworkPolicy`) with exact verified-target execution across
   every target-bound governed action (including a dedicated `typeSequentially` action for
   per-character input, distinct from replacement `type`/`fill` semantics), decision provenance, and
   transport-bound address pinning for `HttpCrawler`;
-- adversarial hardening of cross-module contracts.
+- adversarial hardening of cross-module contracts, including Recording V2/Deterministic Replay.
 
-`1.1.x` (final release: `1.1.1`) is the previous stable line. `develop` (`1.3.0-SNAPSHOT`) has
-completed the following functional additions for the next release; release engineering (version
-finalization, changelog closure, and exact-head qualification) remains before publication:
-
-- **Static Workflow Introspection** — `new WorkflowIntrospector().inspect(workflow)` returns a
-  deterministic, backend-neutral `WorkflowIntrospectionReport` summarizing an already-valid
-  `Workflow` definition's static complexity and safety surface, computed without ever evaluating a
-  condition, invoking an action factory, or touching a backend, browser, network resource, or
-  thread.
-- **Recording V2 and Deterministic Replay** — a tree-shaped recording format capturing an Execution
-  Plan plus a tree mirroring the Execution Tree, with typed, secret-classified published outputs, and
-  a new `io.webagent4j.recording.replay` package validating and deterministically replaying a
-  recording's decision path. Structural/decision replay only; real side-effect replay remains out of
-  scope for now.
-- **Bounded Workflow Loops** — `WorkflowSteps.loop` adds an explicitly-bounded repetition step
-  integrated across validation, the Execution Plan (`LOOP { BODY }`, never unrolled), the Execution
-  Tree (only actually-executed iterations recorded), and Recording V2/Deterministic Replay.
-- **Deterministic Bounded Workflow Parallelism** — `WorkflowSteps.parallel` adds a fixed set of
-  2-8 declared, always-run-once branches, executed through a bounded per-step thread pool with
-  isolated per-branch state, deterministic definition-order join and failure-selection semantics,
-  and fail-closed read-only/observational branch-safety validation - a Workflow `ACTION` step is
-  unconditionally forbidden inside a branch; integrated across validation, the Execution Plan, the
-  Execution Tree, and Recording V2/Deterministic Replay. Concurrent browser side effects remain out
-  of scope for this version.
+`1.2.x` (final release: `1.2.0`) is the previous stable line; `1.1.x` (final release: `1.1.1`) came
+before it. `develop` (`1.4.0-SNAPSHOT`) is the active line for the next release; no 1.4 feature scope
+is announced here.
 
 See [Roadmap](docs/roadmap.md) for the complete, non-normative direction.
 
