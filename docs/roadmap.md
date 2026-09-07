@@ -76,12 +76,9 @@ too), and browser navigation has no equivalent transport-level seam at all - see
 See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this release.
 `1.1.x` (final release: `1.1.1`) is the previous stable line.
 
-## 1.3: active development
+## 1.3: Recording V2, Deterministic Replay, bounded workflow loops and parallelism, and static introspection
 
-`develop` is `1.3.0-SNAPSHOT`, the active line for the next release. `1.2.0` remains the current
-stable line (`1.2.x`) until a future release supersedes it. The following functional additions are
-complete on `develop`; release engineering (version finalization, changelog closure, and exact-head
-qualification) remains before publication:
+`1.3.0` is released and is the current stable line (`1.3.x`). It added:
 
 - **Static Workflow Introspection** - `new WorkflowIntrospector().inspect(workflow)` returns a
   `WorkflowIntrospectionReport`: a deterministic, backend-neutral summary of an already-valid
@@ -139,21 +136,26 @@ qualification) remains before publication:
   represent and reproduce parallel branches. See [Workflows](workflow.md#bounded-parallelism) and
   [Recording](recording.md#bounded-parallelism).
 
-## Post-1.2 candidates
+See [`CHANGELOG.md`](../CHANGELOG.md) for the complete description of this release.
+`1.2.x` (final release: `1.2.0`) is the previous stable line.
+
+## 1.4: active development
+
+`develop` is `1.4.0-SNAPSHOT`, the active line for the next release. No 1.4 feature scope is
+committed by this roadmap.
+
+## Post-1.3 candidates
 
 Full SSRF isolation, `robots.txt` support, adversarial robustness qualification for Firefox and
 WebKit on operating systems beyond Linux, distributed crawling, additional observation/extraction
 capabilities, explicit persistence, and optional external decision-system/MCP adapters remain
 candidates.
 
-These are candidates only. None is implied by the 1.0 API contract or by the `1.2.0` release, none
-is a commitment to a `1.3.0` scope, and any optional decision/AI layer must consume the same
+These are candidates only. None is implied by the 1.0 API contract or by the `1.3.0` release, none
+is a commitment to any future scope, and any optional decision/AI layer must consume the same
 fail-closed public contracts rather than bypassing them. Real governed-target side-effect replay
 (actually re-invoking a recorded action against a freshly re-verified target) and workflow
 parallelism with concurrent, governed browser side effects (parallel branches that click, type, or
 navigate, rather than only read) remain undecided and are not committed by this roadmap - see
 [Recording](recording.md#deterministic-replay) for the side-effect-replay scope decision already
-made for 1.3, and see "1.3: active development" above for Bounded Workflow Loops and Deterministic
-Bounded Workflow Parallelism, both of which are decided and in progress rather than open candidates
-- the latter strictly for read-only/observational branches, with concurrent browser side effects
-reserved as a distinct, separately decided future chantier.
+made for 1.3. Development for the next release continues on `develop` after `1.3.0`.

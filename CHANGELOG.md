@@ -8,6 +8,8 @@ not imply a published compatibility line.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-06
+
 ### Added
 
 - Static Workflow Introspection: `new WorkflowIntrospector().inspect(workflow)` adds a new,
