@@ -225,7 +225,9 @@ resolve_main_stable_state() {
   local main_ref_dir
   main_ref_dir="$(mktemp -d)"
 
-  git -C "$repo_root" fetch --depth 1 origin main
+  # Two generations are required: a depth-1 fetch marks main's tip as a
+  # shallow root and hides the very parents this policy must validate.
+  git -C "$repo_root" fetch --depth 2 origin main
   git -C "$repo_root" worktree add --detach "$main_ref_dir" FETCH_HEAD > /dev/null
 
   local main_sha
