@@ -6,30 +6,51 @@
 # already has a matching git tag (v<version>) in origin -- that tag is
 # used, exactly as this workflow always required.
 #
-# Pre-tag release exception: a release candidate pull request targeting
-# main may legitimately declare its own future stable version as that
-# baseline (.github/api-baseline-version == the candidate's own Maven
-# version) *before* the corresponding tag exists -- the tag can only be
-# created after this exact PR merges. Requiring the tag to already exist
-# in that one situation is a circular dependency the release process could
-# never satisfy. In that narrow, strictly-gated situation only, the
-# *effective* Revapi comparison baseline instead becomes whatever stable
-# version is currently on `main` -- authoritative, protected branch state
-# the candidate branch cannot influence -- so Revapi still genuinely runs,
-# against the real current stable release, rather than being skipped or
-# bypassed.
+# Pre-tag release-PR exception: a release candidate pull request
+# targeting main may legitimately declare its own future stable version
+# as that baseline (.github/api-baseline-version == the candidate's own
+# Maven version) *before* the corresponding tag exists -- the tag can
+# only be created after this exact PR merges. In that narrow, strictly
+# gated situation, the *effective* Revapi comparison baseline instead
+# becomes whatever stable version is currently on `main` -- authoritative,
+# protected branch state the candidate branch cannot influence -- fetched
+# fresh, since main is a genuinely different ref than the candidate here.
+#
+# Pre-tag post-merge-push exception: once that same release PR merges,
+# GitHub's own merge fires a push event on main itself -- at that point
+# "current" already *is* main's new tip, so main's "previous" state can
+# no longer come from a separate fetch of "origin main" (that would just
+# be this exact same commit again). Instead, since GitHub's "Merge pull
+# request" always produces a standard two-parent merge commit whose
+# *first* parent is, by git's own definition of a merge (never a
+# convention this script invents), the exact previous tip of the branch
+# merged into, that first parent is fetched and its Maven version used as
+# the effective baseline -- with the resulting tag additionally checked
+# to point at that exact same commit, never merely a matching version
+# string.
+#
+# Neither exception is ever used once the declared tag actually exists,
+# and both leave every other situation (non-main PR, a push to any other
+# branch, a still-SNAPSHOT candidate, a declared baseline that disagrees
+# with the candidate, an unresolvable or already-used-up previous stable
+# version, or a missing/mismatched previous-stable tag) failing closed
+# exactly as before. Revapi itself is never skipped or bypassed in any
+# path.
 #
 # determine_effective_baseline is the pure decision function covering
-# every branch of this policy; main() performs the real file/git/Maven I/O
-# and hands its results to that function. See
+# every branch of this policy; main() performs the real file/git/Maven
+# I/O and hands its results to that function. See
 # .github/scripts/tests/resolve-api-baseline.test.sh for the exhaustive,
-# network-free regression matrix (API-REL-001..007 and beyond) against the
-# pure functions alone.
+# network-free regression matrix (API-REL-001..007, API-MAIN-001..008,
+# and beyond) against the pure functions alone.
 #
 # Usage: resolve-api-baseline.sh <repo_root>
 # Required env: GITHUB_EVENT_NAME
 # Optional env: GITHUB_BASE_REF (set by GitHub Actions for pull_request
 #   events; absent/empty for push, workflow_dispatch, and schedule)
+#   GITHUB_REF_NAME (set for push events to the pushed branch's short
+#   name; also set, differently, for other event types, so it is only
+#   ever consulted here when event_name is exactly "push")
 # On success, prints exactly two lines to stdout:
 #   version=<effective baseline version>
 #   tag=<effective baseline tag>
@@ -54,21 +75,27 @@ is_stable_version() {
   [[ "$1" =~ $SEMVER_STABLE_PATTERN ]]
 }
 
-# determine_effective_baseline <event_name> <base_ref> <candidate_version>
-#   <declared_baseline> <declared_tag_exists> <main_version> <main_tag_exists>
+# determine_effective_baseline <event_name> <base_ref> <ref_name>
+#   <candidate_version> <declared_baseline> <declared_tag_exists>
+#   <fallback_version> <fallback_tag_exists>
 #
 # Pure decision function: no I/O, no external command. Every argument is
 # an already-resolved plain string; <declared_tag_exists> and
-# <main_tag_exists> are exactly "true" or "false".
+# <fallback_tag_exists> are exactly "true" or "false". <fallback_version>
+# is whichever previous/current stable version main() already resolved
+# for the situation at hand (main's own live state for a release PR;
+# main's merge-commit first parent for a post-merge push) -- this
+# function does not care which mechanism produced it, only whether it is
+# usable.
 #
 # Prints "<effective_version> <effective_tag>" on stdout and returns 0
 # when a genuinely comparable baseline is determined; otherwise prints a
 # diagnostic on stderr and returns 1. Every failure mode fails closed --
 # there is no fallback that silently skips the comparison.
 determine_effective_baseline() {
-  local event_name="$1" base_ref="$2" candidate_version="$3" \
-    declared_baseline="$4" declared_tag_exists="$5" \
-    main_version="$6" main_tag_exists="$7"
+  local event_name="$1" base_ref="$2" ref_name="$3" candidate_version="$4" \
+    declared_baseline="$5" declared_tag_exists="$6" \
+    fallback_version="$7" fallback_tag_exists="$8"
 
   echo "Declared API baseline: $declared_baseline" >&2
   echo "Candidate reactor version: $candidate_version" >&2
@@ -81,46 +108,51 @@ determine_effective_baseline() {
 
   echo "Future baseline tag v$declared_baseline does not exist yet." >&2
 
-  if [[ "$event_name" != "pull_request" ]]; then
-    echo "Event is '$event_name', not 'pull_request': the pre-tag release exception never applies outside a pull request." >&2
-    return 1
-  fi
-
-  if [[ "$base_ref" != "main" ]]; then
-    echo "Pull request base is '${base_ref:-<unset>}', not 'main': the pre-tag release exception only applies to a release pull request targeting main." >&2
+  local exception_kind=""
+  if [[ "$event_name" == "pull_request" && "$base_ref" == "main" ]]; then
+    exception_kind="release-pr"
+  elif [[ "$event_name" == "push" && "$ref_name" == "main" ]]; then
+    exception_kind="push-main"
+  else
+    echo "Event is '$event_name' (base='${base_ref:-<unset>}', ref='${ref_name:-<unset>}'): the pre-tag exception only applies to a pull request targeting main, or a push directly on main." >&2
     return 1
   fi
 
   if ! is_stable_version "$candidate_version"; then
-    echo "Candidate reactor version '$candidate_version' is not a stable release version: a release pull request to main must carry a stable version before its future baseline tag exists." >&2
+    echo "Candidate reactor version '$candidate_version' is not a stable release version: the pre-tag exception requires a stable candidate before its future baseline tag exists." >&2
     return 1
   fi
 
   if [[ "$candidate_version" != "$declared_baseline" ]]; then
-    echo "Declared API baseline ($declared_baseline) does not equal the candidate release version ($candidate_version): the pre-tag release exception only applies when a release candidate declares itself as its own future baseline." >&2
+    echo "Declared API baseline ($declared_baseline) does not equal the candidate release version ($candidate_version): the pre-tag exception only applies when a release candidate declares itself as its own future baseline." >&2
     return 1
   fi
 
-  echo "Release PR to main detected: candidate $candidate_version declares itself as the future API baseline, and tag v$candidate_version does not exist yet." >&2
-  echo "Resolving the effective Revapi comparison baseline from the current stable version on main instead." >&2
+  if [[ "$exception_kind" == "release-pr" ]]; then
+    echo "Release PR to main detected: candidate $candidate_version declares itself as the future API baseline, and tag v$candidate_version does not exist yet." >&2
+    echo "Resolving the effective Revapi comparison baseline from the current stable version on main instead." >&2
+  else
+    echo "Post-merge push to main detected: candidate $candidate_version declares itself as the future API baseline, and tag v$candidate_version does not exist yet." >&2
+    echo "Resolving the effective Revapi comparison baseline from main's own previous state (its merge commit's first parent) instead." >&2
+  fi
 
-  if ! is_stable_version "$main_version"; then
-    echo "main's reactor version ('$main_version') is not a valid stable release version -- cannot use it as the effective Revapi baseline." >&2
+  if ! is_stable_version "$fallback_version"; then
+    echo "The resolved fallback reactor version ('$fallback_version') is not a valid stable release version -- cannot use it as the effective Revapi baseline." >&2
     return 1
   fi
 
-  if [[ "$main_version" == "$candidate_version" ]]; then
-    echo "main's stable version ($main_version) equals the candidate release version -- refusing to compare a release candidate against itself." >&2
+  if [[ "$fallback_version" == "$candidate_version" ]]; then
+    echo "The resolved fallback version ($fallback_version) equals the candidate release version -- refusing to compare a release candidate against itself." >&2
     return 1
   fi
 
-  if [[ "$main_tag_exists" != "true" ]]; then
-    echo "Current stable version on main ($main_version) has no matching tag in origin: v$main_version" >&2
+  if [[ "$fallback_tag_exists" != "true" ]]; then
+    echo "Resolved previous stable version ($fallback_version) has no matching, verified tag in origin: v$fallback_version" >&2
     return 1
   fi
 
-  echo "Using current main stable version $main_version as effective Revapi baseline (tag v$main_version)." >&2
-  printf '%s v%s\n' "$main_version" "$main_version"
+  echo "Using previous stable version $fallback_version as effective Revapi baseline (tag v$fallback_version)." >&2
+  printf '%s v%s\n' "$fallback_version" "$fallback_version"
   return 0
 }
 
@@ -174,10 +206,111 @@ resolve_maven_version() {
 # Always scoped to an explicit checked-out repository directory -- never
 # the caller's own cwd, which need not be a git repository at all (the
 # job's default workspace root, for one, is not: only the "current" and
-# "main-ref" checkouts under it are).
+# throwaway worktree checkouts under it are).
 tag_exists_in_origin() {
   local repo_dir="$1" tag="$2"
   git -C "$repo_dir" ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null
+}
+
+# resolve_tag_commit_sha <repo_dir> <tag>
+# Prints the exact commit SHA <tag> resolves to in origin, peeling an
+# annotated tag down to the commit it points at (the "^{}" line
+# ls-remote reports for one) rather than returning the tag object's own
+# SHA. Fails if the tag does not exist.
+resolve_tag_commit_sha() {
+  local repo_dir="$1" tag="$2"
+  local output
+  output="$(git -C "$repo_dir" ls-remote --tags origin "refs/tags/$tag")"
+  if [[ -z "$output" ]]; then
+    return 1
+  fi
+
+  local peeled
+  peeled="$(awk '$2 ~ /\^\{\}$/ {print $1; exit}' <<< "$output")"
+  if [[ -n "$peeled" ]]; then
+    printf '%s' "$peeled"
+    return 0
+  fi
+
+  awk 'NR==1 {print $1; exit}' <<< "$output"
+}
+
+# resolve_main_stable_version <repo_root>
+# Fetches main's exact current tip and resolves its Maven version via a
+# throwaway worktree checkout -- used only when a *different* branch (a
+# release candidate pull request) needs to know main's own live state.
+# Never used for a push directly on main: at that point "current" already
+# *is* that same tip, so this would just report the candidate back to
+# itself (see resolve_previous_stable_topology for that case instead).
+resolve_main_stable_version() {
+  local repo_root="$1"
+  local main_ref_dir
+  main_ref_dir="$(mktemp -d)"
+
+  git -C "$repo_root" fetch --depth 1 origin main
+  git -C "$repo_root" worktree add --detach "$main_ref_dir" FETCH_HEAD > /dev/null
+
+  local main_sha
+  main_sha="$(git -C "$main_ref_dir" rev-parse HEAD)"
+  echo "Resolving main's Maven version from its exact fetched HEAD: $main_sha" >&2
+
+  local main_version
+  main_version="$(resolve_maven_version "$main_ref_dir")"
+
+  git -C "$repo_root" worktree remove --force "$main_ref_dir"
+  rm -rf "$main_ref_dir"
+
+  printf '%s' "$main_version"
+}
+
+# resolve_previous_stable_topology <repo_root>
+# Only meaningful when repo_root's checked-out HEAD is a genuine
+# two-parent merge commit -- exactly what GitHub's "Merge pull request"
+# button always produces, with the *first* parent always being the exact
+# previous tip of the branch the PR was merged into. That is a guarantee
+# of how "git merge" itself defines a merge commit's parents, never a
+# convention this script invents or a heuristic like "latest tag" or
+# "git describe". Used for a push directly on main: at that point
+# "current" already *is* main's new tip, so main's own *previous* state
+# can only come from its own history.
+#
+# Prints "<version> <sha>" for that first parent on stdout when the
+# topology is a genuine two-parent merge; fails closed with a diagnostic
+# on stderr for anything else (a fast-forward push, a squash merge, an
+# octopus merge, or a root commit) -- never guessed at.
+resolve_previous_stable_topology() {
+  local repo_root="$1"
+
+  local parent_shas
+  parent_shas="$(git -C "$repo_root" log -1 --format='%P' HEAD)"
+
+  local parent_count=0
+  if [[ -n "$parent_shas" ]]; then
+    parent_count="$(wc -w <<< "$parent_shas")"
+  fi
+
+  if [[ "$parent_count" -ne 2 ]]; then
+    echo "HEAD is not a standard two-parent merge commit (found $parent_count parent(s)) -- cannot deterministically identify the previous main state from its own topology." >&2
+    return 1
+  fi
+
+  local old_main_sha
+  old_main_sha="$(awk '{print $1}' <<< "$parent_shas")"
+  echo "Merge commit detected; treating its first parent ($old_main_sha) as the exact previous tip of main." >&2
+
+  git -C "$repo_root" fetch --depth 1 origin "$old_main_sha"
+
+  local old_main_dir
+  old_main_dir="$(mktemp -d)"
+  git -C "$repo_root" worktree add --detach "$old_main_dir" "$old_main_sha" > /dev/null
+
+  local old_main_version
+  old_main_version="$(resolve_maven_version "$old_main_dir")"
+
+  git -C "$repo_root" worktree remove --force "$old_main_dir"
+  rm -rf "$old_main_dir"
+
+  printf '%s %s\n' "$old_main_version" "$old_main_sha"
 }
 
 main() {
@@ -189,6 +322,7 @@ main() {
   local repo_root="$1"
   local event_name="${GITHUB_EVENT_NAME:-}"
   local base_ref="${GITHUB_BASE_REF:-}"
+  local ref_name="${GITHUB_REF_NAME:-}"
 
   local declared_baseline
   declared_baseline="$(read_declared_baseline "$repo_root/.github/api-baseline-version")"
@@ -205,42 +339,48 @@ main() {
     declared_tag_exists="true"
   fi
 
-  local main_version="" main_tag_exists="false"
+  local fallback_version="" fallback_tag_exists="false"
 
-  if [[ "$declared_tag_exists" != "true" ]]; then
-    # Only pay for a main checkout when the declared tag is actually
-    # missing AND every cheap, purely-informational precondition for the
-    # exception is already met -- a non-release PR (or an ordinary
-    # push/workflow_dispatch) with a missing tag must fail fast, exactly
-    # as before, without ever touching main.
-    if [[ "$event_name" == "pull_request" && "$base_ref" == "main" ]] \
-      && is_stable_version "$candidate_version" \
-      && [[ "$candidate_version" == "$declared_baseline" ]]; then
-      local main_ref_dir
-      main_ref_dir="$(mktemp -d)"
+  # Only pay for any of this when the declared tag is actually missing
+  # AND every cheap, purely-informational precondition shared by both
+  # pre-tag exceptions is already met -- an ordinary PR/push (or a
+  # workflow_dispatch) with a missing tag must fail fast, exactly as
+  # before, without ever touching main or the commit graph.
+  if [[ "$declared_tag_exists" != "true" ]] \
+    && is_stable_version "$candidate_version" \
+    && [[ "$candidate_version" == "$declared_baseline" ]]; then
 
-      git -C "$repo_root" fetch --depth 1 origin main
-      git -C "$repo_root" worktree add --detach "$main_ref_dir" FETCH_HEAD > /dev/null
+    if [[ "$event_name" == "pull_request" && "$base_ref" == "main" ]]; then
+      fallback_version="$(resolve_main_stable_version "$repo_root")"
+      if is_stable_version "$fallback_version" \
+        && tag_exists_in_origin "$repo_root" "v$fallback_version"; then
+        fallback_tag_exists="true"
+      fi
 
-      local main_sha
-      main_sha="$(git -C "$main_ref_dir" rev-parse HEAD)"
-      echo "Resolving main's Maven version from its exact fetched HEAD: $main_sha" >&2
+    elif [[ "$event_name" == "push" && "$ref_name" == "main" ]]; then
+      local topo_result
+      if topo_result="$(resolve_previous_stable_topology "$repo_root")"; then
+        local old_main_version old_main_sha
+        read -r old_main_version old_main_sha <<< "$topo_result"
+        fallback_version="$old_main_version"
 
-      main_version="$(resolve_maven_version "$main_ref_dir")"
-
-      git -C "$repo_root" worktree remove --force "$main_ref_dir"
-      rm -rf "$main_ref_dir"
-
-      if is_stable_version "$main_version" && tag_exists_in_origin "$repo_root" "v$main_version"; then
-        main_tag_exists="true"
+        if is_stable_version "$fallback_version"; then
+          local tag_sha
+          if tag_sha="$(resolve_tag_commit_sha "$repo_root" "v$fallback_version")" \
+            && [[ "$tag_sha" == "$old_main_sha" ]]; then
+            fallback_tag_exists="true"
+          else
+            echo "Tag v$fallback_version does not point to the resolved previous main commit ($old_main_sha) -- refusing to trust a mismatched tag." >&2
+          fi
+        fi
       fi
     fi
   fi
 
   local result
   if ! result="$(determine_effective_baseline \
-    "$event_name" "$base_ref" "$candidate_version" "$declared_baseline" \
-    "$declared_tag_exists" "$main_version" "$main_tag_exists")"; then
+    "$event_name" "$base_ref" "$ref_name" "$candidate_version" "$declared_baseline" \
+    "$declared_tag_exists" "$fallback_version" "$fallback_tag_exists")"; then
     exit 1
   fi
 
