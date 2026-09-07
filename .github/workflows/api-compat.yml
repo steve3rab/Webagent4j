@@ -28,6 +28,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: current
+          # The pre-tag main path validates the protected first-parent
+          # chain until it reaches the prior stable release line.
+          fetch-depth: 0
 
       - name: Set up Java 21
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
@@ -36,41 +39,12 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Resolve and validate API baseline version
+      - name: Resolve effective API compatibility baseline
         id: baseline
         shell: bash
-        working-directory: current
-        run: |
-          set -euo pipefail
-
-          baseline_file=".github/api-baseline-version"
-
-          if [[ ! -f "$baseline_file" ]]; then
-            echo "API baseline file is missing: $baseline_file" >&2
-            exit 1
-          fi
-
-          baseline="$(tr -d '[:space:]' < "$baseline_file")"
-
-          if [[ -z "$baseline" ]]; then
-            echo "API baseline file is empty: $baseline_file" >&2
-            exit 1
-          fi
-
-          if [[ ! "$baseline" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "API baseline version is not a valid stable release version: '$baseline'" >&2
-            exit 1
-          fi
-
-          tag="v$baseline"
-
-          if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "API baseline tag does not exist in origin: $tag" >&2
-            exit 1
-          fi
-
-          echo "version=$baseline" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        run: >-
+          bash current/.github/scripts/resolve-api-baseline.sh current
+          >> "$GITHUB_OUTPUT"
 
       - name: Checkout baseline tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
