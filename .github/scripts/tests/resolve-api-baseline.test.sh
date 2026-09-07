@@ -4,10 +4,9 @@
 # Every case exercises the pure decision functions (determine_effective_
 # baseline, is_stable_version) or the local-file-only read_declared_
 # baseline directly, with already-resolved plain-string inputs. No git
-# remote, no network call, and no real Maven invocation is ever made --
-# main()'s own git fetch/worktree/mvnw orchestration is intentionally not
-# exercised here, exactly like this suite's siblings never touch a real
-# GitHub API or Maven repository.
+# remote, no network call, and no real Maven invocation is ever made.
+# One local-only git topology fixture covers consecutive same-version
+# merges on protected main; Maven resolution is stubbed by a version file.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -122,6 +121,40 @@ assert_exit_code "API-MAIN-007: missing previous stable tag fails closed" 1 "${r
 result="$(run_determine "pull_request" "main" "" "1.3.0" "1.3.0" "false" "1.2.0" "true")"
 assert_exit_code "API-MAIN-008: release PR pre-tag path remains valid" 0 "${result%%|*}"
 assert_equals "API-MAIN-008: release PR uses current stable main" "1.2.0 v1.2.0" "${result#*|}"
+
+# API-MAIN-009: governance merges after a release merge may keep the same
+# version. The resolver must remain on the exact first-parent chain until
+# it reaches the first prior stable line.
+topology_repo="$work_dir/topology-repo"
+mkdir -p "$topology_repo"
+git -C "$topology_repo" init -q
+git -C "$topology_repo" config user.name "API baseline test"
+git -C "$topology_repo" config user.email "api-baseline-test@example.invalid"
+printf '1.2.0\n' > "$topology_repo/version.txt"
+git -C "$topology_repo" add version.txt
+git -C "$topology_repo" commit -q -m "stable"
+mainline_branch="$(git -C "$topology_repo" branch --show-current)"
+prior_stable_sha="$(git -C "$topology_repo" rev-parse HEAD)"
+
+git -C "$topology_repo" checkout -q -b release
+printf '1.3.0\n' > "$topology_repo/version.txt"
+git -C "$topology_repo" commit -q -am "release"
+git -C "$topology_repo" checkout -q "$mainline_branch"
+git -C "$topology_repo" merge -q --no-ff release -m "merge release"
+
+git -C "$topology_repo" checkout -q -b governance
+printf 'governance\n' > "$topology_repo/governance.txt"
+git -C "$topology_repo" add governance.txt
+git -C "$topology_repo" commit -q -m "governance"
+git -C "$topology_repo" checkout -q "$mainline_branch"
+git -C "$topology_repo" merge -q --no-ff governance -m "merge governance"
+
+resolve_maven_version() {
+  tr -d '[:space:]' < "$1/version.txt"
+}
+
+result="$(resolve_previous_stable_topology "$topology_repo" "1.3.0" 2>/dev/null)"
+assert_equals "API-MAIN-009: same-version governance merge resolves through to prior stable" "1.2.0 $prior_stable_sha" "$result"
 
 # --- Additional coverage beyond the required matrix ------------------------
 
