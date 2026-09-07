@@ -44,7 +44,8 @@ assert_equals() {
   fi
 }
 
-# run_determine <event> <base_ref> <candidate> <declared> <declared_tag_exists> <main_version> <main_tag_exists>
+# run_determine <event> <base_ref> <ref_name> <candidate> <declared>
+#   <declared_tag_exists> <fallback_version> <fallback_tag_exists>
 # Invokes determine_effective_baseline and prints "<exit_code>|<stdout>".
 run_determine() {
   local out exit_code
@@ -57,61 +58,90 @@ run_determine() {
 
 # --- API-REL-001: normal PR, baseline tag exists ---------------------------
 
-result="$(run_determine "pull_request" "develop" "1.3.0-SNAPSHOT" "1.2.0" "true" "" "false")"
+result="$(run_determine "pull_request" "develop" "" "1.3.0-SNAPSHOT" "1.2.0" "true" "" "false")"
 assert_exit_code "API-REL-001: exits 0 when the declared baseline tag already exists" 0 "${result%%|*}"
 assert_equals "API-REL-001: effective baseline is the declared one (1.2.0 v1.2.0)" "1.2.0 v1.2.0" "${result#*|}"
 
 # --- API-REL-002: release PR to main, tag missing, main resolves -----------
 
-result="$(run_determine "pull_request" "main" "1.3.0" "1.3.0" "false" "1.2.0" "true")"
+result="$(run_determine "pull_request" "main" "" "1.3.0" "1.3.0" "false" "1.2.0" "true")"
 assert_exit_code "API-REL-002: exits 0 for a release PR to main whose future tag is missing" 0 "${result%%|*}"
 assert_equals "API-REL-002: effective baseline is main's current stable version (1.2.0 v1.2.0)" "1.2.0 v1.2.0" "${result#*|}"
 
 # --- API-REL-003: non-main PR, tag missing -> FAIL --------------------------
 
-result="$(run_determine "pull_request" "develop" "1.3.0" "1.3.0" "false" "" "false")"
+result="$(run_determine "pull_request" "develop" "" "1.3.0" "1.3.0" "false" "" "false")"
 assert_exit_code "API-REL-003: a non-main PR with a missing baseline tag fails closed" 1 "${result%%|*}"
 
 # --- API-REL-004: release PR but candidate is still -SNAPSHOT -> FAIL ------
 
-result="$(run_determine "pull_request" "main" "1.3.0-SNAPSHOT" "1.3.0" "false" "1.2.0" "true")"
+result="$(run_determine "pull_request" "main" "" "1.3.0-SNAPSHOT" "1.3.0" "false" "1.2.0" "true")"
 assert_exit_code "API-REL-004: a -SNAPSHOT candidate in a release PR to main fails closed" 1 "${result%%|*}"
 
 # --- API-REL-005: release PR but declared baseline != candidate -> FAIL ----
 
-result="$(run_determine "pull_request" "main" "1.3.0" "1.2.5" "false" "1.2.0" "true")"
+result="$(run_determine "pull_request" "main" "" "1.3.0" "1.2.5" "false" "1.2.0" "true")"
 assert_exit_code "API-REL-005: declared baseline not equal to the candidate version fails closed" 1 "${result%%|*}"
 
 # --- API-REL-006: previous stable tag on main is absent -> FAIL ------------
 
-result="$(run_determine "pull_request" "main" "1.3.0" "1.3.0" "false" "1.2.0" "false")"
+result="$(run_determine "pull_request" "main" "" "1.3.0" "1.3.0" "false" "1.2.0" "false")"
 assert_exit_code "API-REL-006: main's own stable version has no matching tag -- fails closed" 1 "${result%%|*}"
 
 # --- API-REL-007: future tag already exists -> normal baseline path --------
 
-result="$(run_determine "pull_request" "main" "1.3.0" "1.3.0" "true" "" "false")"
+result="$(run_determine "pull_request" "main" "" "1.3.0" "1.3.0" "true" "" "false")"
 assert_exit_code "API-REL-007: exits 0 when the future tag already exists, even on a release PR" 0 "${result%%|*}"
 assert_equals "API-REL-007: effective baseline is the now-existing declared one (1.3.0 v1.3.0)" "1.3.0 v1.3.0" "${result#*|}"
+
+# --- Push-to-main pre-tag matrix -------------------------------------------
+
+result="$(run_determine "push" "" "main" "1.3.0" "1.3.0" "false" "1.2.0" "true")"
+assert_exit_code "API-MAIN-001: pre-tag push to main resolves the previous stable" 0 "${result%%|*}"
+assert_equals "API-MAIN-001: effective baseline is the previous stable" "1.2.0 v1.2.0" "${result#*|}"
+
+result="$(run_determine "push" "" "main" "1.3.0" "1.3.0" "true" "" "false")"
+assert_exit_code "API-MAIN-002: existing future tag uses the normal path" 0 "${result%%|*}"
+assert_equals "API-MAIN-002: effective baseline is the declared stable" "1.3.0 v1.3.0" "${result#*|}"
+
+result="$(run_determine "push" "" "develop" "1.3.0" "1.3.0" "false" "1.2.0" "true")"
+assert_exit_code "API-MAIN-003: push to a non-main branch fails closed" 1 "${result%%|*}"
+
+result="$(run_determine "push" "" "main" "1.3.0" "1.2.0" "false" "1.1.1" "true")"
+assert_exit_code "API-MAIN-004: mismatched declared baseline fails closed" 1 "${result%%|*}"
+
+result="$(run_determine "push" "" "main" "1.3.0-SNAPSHOT" "1.3.0" "false" "1.2.0" "true")"
+assert_exit_code "API-MAIN-005: snapshot current version fails closed" 1 "${result%%|*}"
+
+result="$(run_determine "push" "" "main" "1.3.0" "1.3.0" "false" "" "false")"
+assert_exit_code "API-MAIN-006: unresolved previous stable fails closed" 1 "${result%%|*}"
+
+result="$(run_determine "push" "" "main" "1.3.0" "1.3.0" "false" "1.2.0" "false")"
+assert_exit_code "API-MAIN-007: missing previous stable tag fails closed" 1 "${result%%|*}"
+
+result="$(run_determine "pull_request" "main" "" "1.3.0" "1.3.0" "false" "1.2.0" "true")"
+assert_exit_code "API-MAIN-008: release PR pre-tag path remains valid" 0 "${result%%|*}"
+assert_equals "API-MAIN-008: release PR uses current stable main" "1.2.0 v1.2.0" "${result#*|}"
 
 # --- Additional coverage beyond the required matrix ------------------------
 
 # An ordinary push (develop/main CI) with a missing tag must still fail
 # closed exactly as it always did -- the exception never applies outside
 # a pull_request event at all.
-result="$(run_determine "push" "" "1.4.0-SNAPSHOT" "1.2.0" "false" "" "false")"
+result="$(run_determine "push" "" "develop" "1.4.0-SNAPSHOT" "1.2.0" "false" "" "false")"
 assert_exit_code "ordinary push with a missing baseline tag fails closed" 1 "${result%%|*}"
 
 # A workflow_dispatch run with a missing tag must also fail closed.
-result="$(run_determine "workflow_dispatch" "" "1.4.0-SNAPSHOT" "1.2.0" "false" "" "false")"
+result="$(run_determine "workflow_dispatch" "" "" "1.4.0-SNAPSHOT" "1.2.0" "false" "" "false")"
 assert_exit_code "workflow_dispatch with a missing baseline tag fails closed" 1 "${result%%|*}"
 
 # main's own resolved version is not a valid stable release version.
-result="$(run_determine "pull_request" "main" "1.3.0" "1.3.0" "false" "1.2.0-SNAPSHOT" "true")"
+result="$(run_determine "pull_request" "main" "" "1.3.0" "1.3.0" "false" "1.2.0-SNAPSHOT" "true")"
 assert_exit_code "main resolving to a non-stable version fails closed" 1 "${result%%|*}"
 
 # main's resolved version equals the candidate -- refuse to compare a
 # release candidate against itself.
-result="$(run_determine "pull_request" "main" "1.3.0" "1.3.0" "false" "1.3.0" "true")"
+result="$(run_determine "pull_request" "main" "" "1.3.0" "1.3.0" "false" "1.3.0" "true")"
 assert_exit_code "main's version equal to the candidate version fails closed" 1 "${result%%|*}"
 
 # --- is_stable_version: pure SemVer-stable predicate -----------------------

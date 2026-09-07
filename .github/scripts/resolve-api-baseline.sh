@@ -25,9 +25,8 @@
 # *first* parent is, by git's own definition of a merge (never a
 # convention this script invents), the exact previous tip of the branch
 # merged into, that first parent is fetched and its Maven version used as
-# the effective baseline -- with the resulting tag additionally checked
-# to point at that exact same commit, never merely a matching version
-# string.
+# the effective baseline. The exact corresponding version tag must exist;
+# the workflow then checks that tag's Maven version before Revapi runs.
 #
 # Neither exception is ever used once the declared tag actually exists,
 # and both leave every other situation (non-main PR, a push to any other
@@ -83,7 +82,8 @@ is_stable_version() {
 # an already-resolved plain string; <declared_tag_exists> and
 # <fallback_tag_exists> are exactly "true" or "false". <fallback_version>
 # is whichever previous/current stable version main() already resolved
-# for the situation at hand (main's own live state for a release PR;
+# for the situation at hand (main's own live state for a release PR, or
+# main's merge-commit first parent when it already carries the candidate;
 # main's merge-commit first parent for a post-merge push) -- this
 # function does not care which mechanism produced it, only whether it is
 # usable.
@@ -212,38 +212,16 @@ tag_exists_in_origin() {
   git -C "$repo_dir" ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null
 }
 
-# resolve_tag_commit_sha <repo_dir> <tag>
-# Prints the exact commit SHA <tag> resolves to in origin, peeling an
-# annotated tag down to the commit it points at (the "^{}" line
-# ls-remote reports for one) rather than returning the tag object's own
-# SHA. Fails if the tag does not exist.
-resolve_tag_commit_sha() {
-  local repo_dir="$1" tag="$2"
-  local output
-  output="$(git -C "$repo_dir" ls-remote --tags origin "refs/tags/$tag")"
-  if [[ -z "$output" ]]; then
-    return 1
-  fi
-
-  local peeled
-  peeled="$(awk '$2 ~ /\^\{\}$/ {print $1; exit}' <<< "$output")"
-  if [[ -n "$peeled" ]]; then
-    printf '%s' "$peeled"
-    return 0
-  fi
-
-  awk 'NR==1 {print $1; exit}' <<< "$output"
-}
-
-# resolve_main_stable_version <repo_root>
+# resolve_main_stable_state <repo_root> <candidate_version>
 # Fetches main's exact current tip and resolves its Maven version via a
 # throwaway worktree checkout -- used only when a *different* branch (a
 # release candidate pull request) needs to know main's own live state.
-# Never used for a push directly on main: at that point "current" already
-# *is* that same tip, so this would just report the candidate back to
-# itself (see resolve_previous_stable_topology for that case instead).
-resolve_main_stable_version() {
-  local repo_root="$1"
+# If protected main already carries the candidate version (as it does for
+# a governance-only PR opened during the post-release/pre-tag window),
+# resolve main's own previous state with the same strict topology rule as
+# a post-merge push. Prints "<version> <sha>".
+resolve_main_stable_state() {
+  local repo_root="$1" candidate_version="$2"
   local main_ref_dir
   main_ref_dir="$(mktemp -d)"
 
@@ -257,10 +235,18 @@ resolve_main_stable_version() {
   local main_version
   main_version="$(resolve_maven_version "$main_ref_dir")"
 
+  local result
+  if [[ "$main_version" == "$candidate_version" ]]; then
+    echo "Protected main already carries candidate version $candidate_version; resolving its previous stable state." >&2
+    result="$(resolve_previous_stable_topology "$main_ref_dir")"
+  else
+    result="$main_version $main_sha"
+  fi
+
   git -C "$repo_root" worktree remove --force "$main_ref_dir"
   rm -rf "$main_ref_dir"
 
-  printf '%s' "$main_version"
+  printf '%s\n' "$result"
 }
 
 # resolve_previous_stable_topology <repo_root>
@@ -351,7 +337,10 @@ main() {
     && [[ "$candidate_version" == "$declared_baseline" ]]; then
 
     if [[ "$event_name" == "pull_request" && "$base_ref" == "main" ]]; then
-      fallback_version="$(resolve_main_stable_version "$repo_root")"
+      local main_state
+      if main_state="$(resolve_main_stable_state "$repo_root" "$candidate_version")"; then
+        fallback_version="${main_state%% *}"
+      fi
       if is_stable_version "$fallback_version" \
         && tag_exists_in_origin "$repo_root" "v$fallback_version"; then
         fallback_tag_exists="true"
@@ -360,18 +349,11 @@ main() {
     elif [[ "$event_name" == "push" && "$ref_name" == "main" ]]; then
       local topo_result
       if topo_result="$(resolve_previous_stable_topology "$repo_root")"; then
-        local old_main_version old_main_sha
-        read -r old_main_version old_main_sha <<< "$topo_result"
-        fallback_version="$old_main_version"
+        fallback_version="${topo_result%% *}"
 
-        if is_stable_version "$fallback_version"; then
-          local tag_sha
-          if tag_sha="$(resolve_tag_commit_sha "$repo_root" "v$fallback_version")" \
-            && [[ "$tag_sha" == "$old_main_sha" ]]; then
-            fallback_tag_exists="true"
-          else
-            echo "Tag v$fallback_version does not point to the resolved previous main commit ($old_main_sha) -- refusing to trust a mismatched tag." >&2
-          fi
+        if is_stable_version "$fallback_version" \
+          && tag_exists_in_origin "$repo_root" "v$fallback_version"; then
+          fallback_tag_exists="true"
         fi
       fi
     fi
