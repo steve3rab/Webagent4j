@@ -24,8 +24,9 @@
 # request" always produces a standard two-parent merge commit whose
 # *first* parent is, by git's own definition of a merge (never a
 # convention this script invents), the exact previous tip of the branch
-# merged into, that first parent is fetched and its Maven version used as
-# the effective baseline. The exact corresponding version tag must exist;
+# merged into, that first-parent chain is followed through any subsequent
+# same-version governance merges until the prior stable line is reached.
+# Its Maven version is used as the effective baseline. The exact corresponding version tag must exist;
 # the workflow then checks that tag's Maven version before Revapi runs.
 #
 # Neither exception is ever used once the declared tag actually exists,
@@ -225,9 +226,7 @@ resolve_main_stable_state() {
   local main_ref_dir
   main_ref_dir="$(mktemp -d)"
 
-  # Two generations are required: a depth-1 fetch marks main's tip as a
-  # shallow root and hides the very parents this policy must validate.
-  git -C "$repo_root" fetch --depth 2 origin main
+  git -C "$repo_root" fetch origin main
   git -C "$repo_root" worktree add --detach "$main_ref_dir" FETCH_HEAD > /dev/null
 
   local main_sha
@@ -240,7 +239,7 @@ resolve_main_stable_state() {
   local result
   if [[ "$main_version" == "$candidate_version" ]]; then
     echo "Protected main already carries candidate version $candidate_version; resolving its previous stable state." >&2
-    result="$(resolve_previous_stable_topology "$main_ref_dir")"
+    result="$(resolve_previous_stable_topology "$main_ref_dir" "$candidate_version")"
   else
     result="$main_version $main_sha"
   fi
@@ -251,54 +250,58 @@ resolve_main_stable_state() {
   printf '%s\n' "$result"
 }
 
-# resolve_previous_stable_topology <repo_root>
-# Only meaningful when repo_root's checked-out HEAD is a genuine
-# two-parent merge commit -- exactly what GitHub's "Merge pull request"
-# button always produces, with the *first* parent always being the exact
-# previous tip of the branch the PR was merged into. That is a guarantee
-# of how "git merge" itself defines a merge commit's parents, never a
-# convention this script invents or a heuristic like "latest tag" or
-# "git describe". Used for a push directly on main: at that point
-# "current" already *is* main's new tip, so main's own *previous* state
-# can only come from its own history.
+# resolve_previous_stable_topology <repo_root> <current_version>
+# Walks only the protected branch's first-parent chain. Each traversed
+# commit must be a genuine two-parent merge, whose first parent is by
+# definition the exact previous tip of the branch merged into. Same-version
+# governance merges are skipped deterministically; the first different
+# stable Maven version is the prior release line. This is never a tag-order,
+# nearest-tag, git-describe, or HEAD~N heuristic.
 #
-# Prints "<version> <sha>" for that first parent on stdout when the
-# topology is a genuine two-parent merge; fails closed with a diagnostic
-# on stderr for anything else (a fast-forward push, a squash merge, an
-# octopus merge, or a root commit) -- never guessed at.
+# Prints "<version> <sha>" for the resolved prior stable state; fails
+# closed if any required topology or stable-version invariant is absent.
 resolve_previous_stable_topology() {
-  local repo_root="$1"
+  local repo_root="$1" current_version="$2" cursor="HEAD"
 
-  local parent_shas
-  parent_shas="$(git -C "$repo_root" log -1 --format='%P' HEAD)"
+  while true; do
+    local parent_shas parent_count=0
+    parent_shas="$(git -C "$repo_root" log -1 --format='%P' "$cursor")"
+    if [[ -n "$parent_shas" ]]; then
+      parent_count="$(wc -w <<< "$parent_shas")"
+    fi
 
-  local parent_count=0
-  if [[ -n "$parent_shas" ]]; then
-    parent_count="$(wc -w <<< "$parent_shas")"
-  fi
+    if [[ "$parent_count" -ne 2 ]]; then
+      echo "Commit $cursor is not a standard two-parent merge commit (found $parent_count parent(s)) -- cannot deterministically continue through previous main states." >&2
+      return 1
+    fi
 
-  if [[ "$parent_count" -ne 2 ]]; then
-    echo "HEAD is not a standard two-parent merge commit (found $parent_count parent(s)) -- cannot deterministically identify the previous main state from its own topology." >&2
-    return 1
-  fi
+    local old_main_sha
+    old_main_sha="$(awk '{print $1}' <<< "$parent_shas")"
+    echo "Merge commit $cursor: inspecting first parent $old_main_sha as the exact previous tip of main." >&2
 
-  local old_main_sha
-  old_main_sha="$(awk '{print $1}' <<< "$parent_shas")"
-  echo "Merge commit detected; treating its first parent ($old_main_sha) as the exact previous tip of main." >&2
+    local old_main_dir
+    old_main_dir="$(mktemp -d)"
+    git -C "$repo_root" worktree add --detach "$old_main_dir" "$old_main_sha" > /dev/null
 
-  git -C "$repo_root" fetch --depth 1 origin "$old_main_sha"
+    local old_main_version
+    old_main_version="$(resolve_maven_version "$old_main_dir")"
 
-  local old_main_dir
-  old_main_dir="$(mktemp -d)"
-  git -C "$repo_root" worktree add --detach "$old_main_dir" "$old_main_sha" > /dev/null
+    git -C "$repo_root" worktree remove --force "$old_main_dir"
+    rm -rf "$old_main_dir"
 
-  local old_main_version
-  old_main_version="$(resolve_maven_version "$old_main_dir")"
+    if ! is_stable_version "$old_main_version"; then
+      echo "Previous main state $old_main_sha has non-stable Maven version '$old_main_version' -- refusing to continue." >&2
+      return 1
+    fi
 
-  git -C "$repo_root" worktree remove --force "$old_main_dir"
-  rm -rf "$old_main_dir"
+    if [[ "$old_main_version" != "$current_version" ]]; then
+      printf '%s %s\n' "$old_main_version" "$old_main_sha"
+      return 0
+    fi
 
-  printf '%s %s\n' "$old_main_version" "$old_main_sha"
+    echo "Previous main state $old_main_sha still carries $current_version; continuing on the protected first-parent chain." >&2
+    cursor="$old_main_sha"
+  done
 }
 
 main() {
@@ -350,7 +353,7 @@ main() {
 
     elif [[ "$event_name" == "push" && "$ref_name" == "main" ]]; then
       local topo_result
-      if topo_result="$(resolve_previous_stable_topology "$repo_root")"; then
+      if topo_result="$(resolve_previous_stable_topology "$repo_root" "$candidate_version")"; then
         fallback_version="${topo_result%% *}"
 
         if is_stable_version "$fallback_version" \
