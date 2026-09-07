@@ -8,7 +8,6 @@ import io.webagent4j.locator.LocatorTestFixtures.TestElement;
 import io.webagent4j.locator.api.ElementRole;
 import io.webagent4j.locator.api.LocatorDefinition;
 import io.webagent4j.locator.api.TextMatch;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -104,6 +103,6 @@ class LocatorStrategyTest {
     }
 
     private static LocatorContext context(FakeBackend backend) {
-        return LocatorContext.page(backend, LocatorConfig.defaults(Duration.ofMillis(5)));
+        return LocatorContext.page(backend, LocatorConfig.defaults());
     }
 }
